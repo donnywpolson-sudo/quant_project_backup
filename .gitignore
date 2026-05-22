@@ -1,0 +1,13 @@
+# Python environment and caches
+__pycache__/
+.venv/
+*.pyc
+
+# Project Data (Do not sync these)
+artifacts/
+futures/
+
+# Secrets and Settings
+.env
+.DS_Store
+*.log

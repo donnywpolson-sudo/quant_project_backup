@@ -1,0 +1,169 @@
+"""
+src/features/engine.py
+Dynamic feature engineering engine.
+Implements memory-safe, deterministic pairwise feature interaction
+and baseline structural mapping per the specification.
+"""
+import json
+import os
+import logging
+from itertools import combinations
+import polars as pl
+from config import config
+
+logger = logging.getLogger(__name__)
+
+def _generate_target(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Generates a 1-hour forward discrete target (Long: 1.0, Short: -1.0, Neutral: 0.0).
+    Assumes data is temporally sorted 1-minute bars.
+    """
+    logger.info("Generating 1-hour forward classification target...")
+    
+    # 1-hour forward on 1-minute data = 60 rows
+    forward_window = 60
+    threshold = getattr(config, "MAGNITUDE_THRESHOLD", 0.002)
+
+    # 1. Calculate the exact return 60 minutes into the future
+    # shift(-60) pulls future data backward to the current row
+    df = df.with_columns(
+        ((pl.col("close").shift(-forward_window) / pl.col("close")) - 1.0)
+        .cast(pl.Float32)
+        .alias("future_1h_return")
+    )
+
+    # 2. Discretize into Long (1.0), Short (-1.0), Neutral (0.0)
+    df = df.with_columns(
+        pl.when(pl.col("future_1h_return") > threshold).then(1.0)
+        .when(pl.col("future_1h_return") < -threshold).then(-1.0)
+        .otherwise(0.0)
+        .cast(pl.Float32)
+        .alias("target")
+    )
+
+    # 3. Drop the very last 60 minutes of the dataset
+    # We cannot train on the final hour because the "future" hasn't happened yet
+    df = df.filter(pl.col("future_1h_return").is_not_null())
+
+    return df
+
+def _get_base_feature_exprs() -> list[pl.Expr]:
+    """
+    Generates the core baseline features.
+    Maps existing columns (close, high, low, volume) to technical feature layouts.
+    All expressions strictly return past-only pl.Float32 to protect against leakages.
+    """
+    # Defensive programming: ensure source columns are cast safely
+    close = pl.col("close").cast(pl.Float32)
+    high = pl.col("high").cast(pl.Float32)
+    low = pl.col("low").cast(pl.Float32)
+    volume = pl.col("volume").cast(pl.Float32)
+
+    exprs = [
+        # Returns / Momentum
+        ((close / close.shift(1)) - 1.0).alias("feature_ret_1"),
+        ((close / close.shift(5)) - 1.0).alias("feature_ret_5"),
+        ((close / close.shift(10)) - 1.0).alias("feature_ret_10"),
+        ((close / close.shift(20)) - 1.0).alias("feature_ret_20"),
+        
+        # Volatility / Ranges
+        ((high - low) / close).alias("feature_high_low_range_norm"),
+        ((close - low) / (high - low + 1e-8)).alias("feature_signed_bar_strength"),
+        
+        # Moving Average Distances
+        (close / close.rolling_mean(window_size=5) - 1.0).alias("feature_ma_5"),
+        (close / close.rolling_mean(window_size=20) - 1.0).alias("feature_ma_20"),
+        (close / close.rolling_mean(window_size=50) - 1.0).alias("feature_ma_50"),
+        
+        # Volume Interaction
+        (volume / volume.rolling_mean(window_size=20) - 1.0).alias("feature_vol_shocks"),
+    ]
+    return exprs
+
+def generate_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Constructs the complete pool of raw baseline features and expands them 
+    via memory-safe, deterministic pairwise interactions.
+    """
+    logger.info("Initializing raw candidate feature generation...")
+    
+    # 0. Fast assertion to ensure required base columns exist before processing
+    required_cols = {"close", "high", "low", "volume"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise KeyError(f"Cannot generate features. Missing required columns: {missing}")
+
+    # NEW: Generate the target FIRST
+    df = _generate_target(df)
+    
+    # 1. Evaluate baseline features expressions
+    base_exprs = _get_base_feature_exprs()
+    df_with_base = df.with_columns(base_exprs)
+    
+    # 2. Extract columns matching the feature pattern
+    base_feature_cols = [c for c in df_with_base.columns if c.startswith("feature_")]
+    
+    # 3. Generate combinatorial pairwise interactions (products/ratios)
+    interaction_exprs = []
+    for col_a, col_b in combinations(base_feature_cols, 2):
+        name_prod = f"{col_a}_x_{col_b}"
+        interaction_exprs.append((pl.col(col_a) * pl.col(col_b)).alias(name_prod))
+        
+    # Apply expansions lazily/efficiently
+    df_expanded = df_with_base.with_columns(interaction_exprs)
+    
+    # 4. Strict Type enforcement: Force all feature columns to Float32
+    final_feature_cols = [c for c in df_expanded.columns if c.startswith("feature_")]
+    df_expanded = df_expanded.with_columns([
+        pl.col(c).cast(pl.Float32) for c in final_feature_cols
+    ])
+    
+    logger.info(f"Generated complete feature matrix containing {len(final_feature_cols)} total columns.")
+    return df_expanded
+
+def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str) -> pl.DataFrame:
+    """
+    Implements Phase 2 feature filtering protocol.
+    Loads the frozen manifest generated by Phase 1 (ExtraTrees) and drops 
+    all unselected combinations to enforce a static signature layout.
+    
+    Prevents look-ahead bias by limiting training features to a historical selection.
+    """
+    if not manifest_path or not os.path.exists(manifest_path):
+        logger.warning(f"Manifest path '{manifest_path}' not found or unspecified. "
+                       "Proceeding with complete candidate pool.")
+        return df
+
+    try:
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+            
+        # Extract features array from either 'feature_names' or 'selected_features'
+        selected_features = manifest.get("feature_names", manifest.get("selected_features", []))
+        
+        if not selected_features:
+            logger.warning("Manifest file parsed but contained no features. Bypassing pruning.")
+            return df
+            
+        logger.info(f"Applying Manifest Contract: Masking dataframe down to {len(selected_features)} selected features.")
+        
+        # Accumulate mandatory administration/structural tracking columns (e.g., timestamps, fold markers)
+        non_feature_cols = [c for c in df.columns if not c.startswith("feature_")]
+        
+        # Intersect keys to verify they match up with what was engineered
+        valid_selected_features = [c for c in selected_features if c in df.columns]
+        missing_features = set(selected_features) - set(valid_selected_features)
+        
+        if missing_features:
+            logger.error(f"Critical: Manifest requests columns missing from generation: {missing_features}")
+            raise KeyError(f"Feature schema mismatch. Missing: {missing_features}")
+            
+        # Re-assemble final dataframe with ordered layout
+        columns_to_keep = non_feature_cols + valid_selected_features
+        pruned_df = df.select(columns_to_keep)
+        
+        return pruned_df
+        
+    except Exception as e:
+        logger.error(f"Failed to apply feature pruning using manifest at {manifest_path}: {e}")
+        raise

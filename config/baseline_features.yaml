@@ -1,0 +1,47 @@
+# config/baseline_features.yaml
+# Last Updated: 2026-05-21
+# Version: 1.0.0
+# Description: Frozen canonical baseline feature pool (40 features).
+# Usage: Loaded by discovery.py for ExtraTrees baseline discovery.
+
+baseline_features:
+  - feature_ret_1
+  - feature_ret_5
+  - feature_ret_10
+  - feature_ret_20
+  - feature_ma_5
+  - feature_ma_20
+  - feature_ma_50
+  - feature_dist_ma_20
+  - feature_dist_ma_50
+  - feature_ma_slope_20
+  - feature_price_z_20
+  - feature_price_z_50
+  - feature_high_low_range_norm
+  - feature_true_range
+  - feature_atr_14
+  - feature_realized_vol_5
+  - feature_realized_vol_20
+  - feature_ewma_vol_20
+  - feature_price_momentum_5
+  - feature_price_momentum_10
+  - feature_mom_z_5
+  - feature_mom_z_10
+  - feature_rsi_14
+  - feature_macd
+  - feature_macd_signal
+  - feature_stoch_k
+  - feature_log_volume
+  - feature_volume_z_20
+  - feature_obv
+  - feature_signed_bar_strength
+  - feature_volume_price_divergence
+  - feature_spread_proxy
+  - feature_session_pos
+  - feature_time_of_day_bucket
+  - feature_1h_bias
+  - feature_session_volatility
+  - feature_pair_prod_template
+  - feature_ratio_template
+  - feature_pca_comp_1
+  - feature_pca_comp_2
