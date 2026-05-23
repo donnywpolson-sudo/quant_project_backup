@@ -35,3 +35,29 @@ temp_*                      # temporary directories / files from resampling
 # OS metadata
 Thumbs.db
 desktop.ini
+
+# --- Additional entries for quant pipeline ---
+# Cache and model directories (from config)
+cache/
+models/
+
+# Generated test fixtures (synthetic data)
+tests/fixtures/
+!tests/fixtures/.gitkeep   # optional, to keep the directory
+
+# Serialized models / joblib files
+*.pkl
+*.joblib
+
+# CSV outputs (if any written outside artifacts)
+*.csv
+
+# Coverage and test reports
+.coverage
+htmlcov/
+.tox/
+
+# IDE folders (if not already covered)
+.idea/
+*.swp
+*.swo

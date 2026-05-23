@@ -1,13 +1,16 @@
 """
 src/ingest.py
 Handles ingestion of all three streams (5m, 1h, 1d) and alignment.
+Now caches aligned DataFrame to disk for reuse.
 """
 import polars as pl
 import logging
 import psutil
+from pathlib import Path
 from config import config
 from src.session import load_all_streams_chunked
 from src.align import align_htf_streams
+from src.io.canonical_parquet import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +44,18 @@ def validate_memory_and_integrity(df: pl.DataFrame):
     return rows_per_chunk
 
 
-def load_and_clean_data(data_glob: str) -> pl.DataFrame:
+def load_and_clean_data(data_glob: str, cache_path: str = None) -> pl.DataFrame:
     """
     Load all three streams (5m, 1h, 1d) from the given glob pattern,
     align them without lookahead, and validate.
+    If cache_path is provided and exists, load from cache instead of recomputing.
     """
+    if cache_path and Path(cache_path).exists():
+        logger.info(f"Loading aligned data from cache: {cache_path}")
+        df_aligned = pl.read_parquet(cache_path)
+        validate_memory_and_integrity(df_aligned)
+        return df_aligned
+
     logger.info(f"Loading three streams from: {data_glob}")
     print("DEBUG: Starting load_all_streams_chunked...", flush=True)
     streams = load_all_streams_chunked(data_glob)
@@ -57,6 +67,11 @@ def load_and_clean_data(data_glob: str) -> pl.DataFrame:
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
     print(f"DEBUG: Alignment done. Aligned rows: {df_aligned.height}", flush=True)
     validate_memory_and_integrity(df_aligned)
+    
+    if cache_path:
+        logger.info(f"Caching aligned data to {cache_path}")
+        write_canonical_parquet(df_aligned, cache_path)
+    
     if config.MEMORY_LOG_ENABLED:
         logger.info(f"RSS after load: {psutil.Process().memory_info().rss / 1024**3:.2f} GB")
     return df_aligned

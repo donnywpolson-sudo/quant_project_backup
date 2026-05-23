@@ -58,9 +58,8 @@ def fit_etree_fold(X, y, fold_idx, feature_names, rss_stop_bytes):
 
 def run_feature_discovery(data_path: str, manifest_out: str):
     logger.info("Phase 1: Feature Discovery")
-    df_raw = pl.read_parquet(data_path)
-    from src.features.engine import generate_features
-    df_features = generate_features(df_raw)
+    # Directly load the pre‑computed feature matrix (already contains all features + target)
+    df_features = pl.read_parquet(data_path)
 
     target_col = "target_5m"
     if target_col not in df_features.columns:

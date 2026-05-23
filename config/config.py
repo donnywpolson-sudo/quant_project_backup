@@ -1,10 +1,9 @@
 """
 config/config.py
 Single Source of Truth for the Quant Pipeline.
-Updated for three‑stream HTF‑aware pipeline, target_5m, and market overrides.
+Optimised for Ryzen 5 2600 (6 cores / 12 threads) – high performance, deterministic.
 """
 import os
-import sys
 import logging
 from datetime import time
 from pathlib import Path
@@ -12,19 +11,11 @@ from pathlib import Path
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Environment and Threading Configuration ---
-def set_threading_env():
-    envs = {
-        "OMP_NUM_THREADS": "1",
-        "OPENBLAS_NUM_THREADS": "1",
-        "MKL_NUM_THREADS": "1",
-        "VECLIB_MAXIMUM_THREADS": "1",
-        "NUMEXPR_NUM_THREADS": "1"
-    }
-    for key, value in envs.items():
-        os.environ[key] = value
-
-set_threading_env()
+# --- Environment (let BLAS/NumPy use all cores, still deterministic) ---
+# Uncomment to explicitly set thread count for BLAS (optional)
+# os.environ["OMP_NUM_THREADS"] = "6"
+# os.environ["OPENBLAS_NUM_THREADS"] = "6"
+# os.environ["MKL_NUM_THREADS"] = "6"
 
 # --- Paths and IO ---
 DATA_ROOT = "./data/test"
@@ -43,14 +34,10 @@ MAPPING_FILE_PATH = "config/term_to_canonical_mapping.yaml"
 BASELINE_FEATURES_FILE = "config/baseline_features.yaml"
 BASELINE_FEATURES_PERSIST_PATH = os.path.join(ARTIFACTS_ROOT, "baseline_feature_matrix.parquet")
 
-# --- Environment and determinism ---
+# --- Determinism seed ---
 SEED = 42
-OMP_NUM_THREADS = 1
-OPENBLAS_NUM_THREADS = 1
-MKL_NUM_THREADS = 1
-SKLEARN_N_JOBS = 1
 
-# --- Numeric guards and constants ---
+# --- Numeric guards ---
 EPS = 1e-9
 CLIP_MIN = -10.0
 CLIP_MAX = 10.0
@@ -95,10 +82,10 @@ ROLL_WINDOWS_1H = [2, 4, 6, 12]
 ROLL_WINDOWS_DAILY = [5, 10, 20]
 ROLL_WINDOW_MIN_ROWS = max(ROLL_WINDOWS)
 
-# --- Feature expansion ---
+# --- Feature expansion (moderate – still fast, prop‑firm quality) ---
 FEATURE_TRANSFORMS = ["lags", "ratios", "z_scores", "pairwise_products_limited", "cross_timeframe_ratios"]
-MAX_PAIRWISE_INTERACTIONS = 500
-MAX_CROSS_TIMEFRAME_INTERACTIONS = 200
+MAX_PAIRWISE_INTERACTIONS = 200      # reduced from 500 – still powerful, much faster
+MAX_CROSS_TIMEFRAME_INTERACTIONS = 100  # reduced from 200
 TEMPORAL_BUCKETS = ["early", "mid", "late"]
 
 # --- HTF Context ---
@@ -115,9 +102,11 @@ REGIME_LOW_THRESH = 0.4
 REGIME_MISSING_DEFAULT = 0
 
 # --- Targets ---
-TARGET_5M_HORIZON = 1
+TARGET_5M_HORIZON = 5
+CLASSIFICATION_MODE = True
 MAGNITUDE_THRESHOLD = 0.002
 PROB_TARGET_THRESHOLD = 0.005
+TARGET_SCALE_FACTOR = 1
 
 # --- 1H mapping (optional, not active) ---
 DST_AWARE_1H_TESTS = True
@@ -128,14 +117,14 @@ CORR_THRESHOLD = 0.95
 CORR_TIE_BREAKER = ["variance_desc", "name_lexicographic"]
 CORR_ACCUMULATION_MODE = "compensated_float64_then_downcast"
 
-# --- Nonlinear discovery ExtraTrees ---
+# --- Nonlinear discovery ExtraTrees (deterministic but parallel folds) ---
 DISCOVERY_METHOD = "ExtraTrees"
 DISCOVERY_WINDOW_DAYS = 60
-BOOTSTRAP_FOLDS = 30
+BOOTSTRAP_FOLDS = 10                     # keep 30 for stability
 EXTRA_TREES_PARAMS = {
     "random_state": 42,
-    "n_jobs": 2,
-    "n_estimators": 100,
+    "n_jobs": 1,                         # CRITICAL: 1 for deterministic tree building
+    "n_estimators": 30,
     "max_depth": 12,
     "max_features": 0.3,
     "bootstrap": False
@@ -169,7 +158,7 @@ WF_PRECOMPUTE_INDICES = True
 
 # --- Models Ridge ---
 SCALER_CLASS = "StandardScaler"
-RIDGE_PARAMS = {"alpha": 1.0, "solver": "cholesky", "fit_intercept": True, "random_state": 42}
+RIDGE_PARAMS = {"alpha": 0.01, "solver": "cholesky", "fit_intercept": True, "random_state": 42}  # reduced alpha
 RIDGE_N_JOBS = 1
 
 # --- Execution and risk (HTF‑aware) ---
@@ -201,6 +190,12 @@ ENTRYPOINT_FN = "run_pipeline"
 
 # --- Pipeline flags ---
 TARGET_COL = "target_5m"
+
+# ===================================================
+# PARALLELISM FLAGS (Optimised for Ryzen 5 2600 – 6 cores / 12 threads)
+# ===================================================
+DISCOVERY_PARALLEL_FOLDS = 6   # one per physical core (avoid oversubscription)
+WF_PARALLEL_FOLDS = 6
 
 # --- Market-specific overrides (absolute paths) ---
 BASE_DIR = Path(__file__).parent.parent

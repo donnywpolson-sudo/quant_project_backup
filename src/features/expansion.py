@@ -1,12 +1,11 @@
 """
 src/features/expansion.py
 Expand feature space with ratios, z-scores, regime-conditioned transforms,
-pairwise interactions (capped at MAX_PAIRWLE_INTERACTIONS), cross-timeframe interactions,
-and additional advanced features (quantiles, Fourier, moments, acceleration, VWAP, etc.).
+pairwise interactions (capped), cross-timeframe interactions,
+and additional advanced features (quantiles, Fourier, moments, acceleration, VWAP).
 
 All features are past-only, float32, clipped.
-
-Now with memory safety estimation to avoid OOM from combinatorial explosion.
+Now with memory safety estimation and fixed rolling skew/kurt (no missing methods).
 """
 import polars as pl
 import numpy as np
@@ -17,12 +16,12 @@ from config import config
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
-# Existing functions (unchanged)
+# Existing functions (unchanged except early casting)
 # ----------------------------------------------------------------------
 
 def add_regime(df: pl.DataFrame) -> pl.DataFrame:
     """Add regime column: 1=high vol, 0=low vol, using rolling median volatility."""
-    ret = (pl.col("close") / pl.col("close").shift(1)).log()
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     vol20 = ret.rolling_std(window_size=20)
     med_vol = vol20.rolling_median(window_size=config.VOL_MEDIAN_WINDOW)
     smooth_vol = med_vol.rolling_mean(window_size=config.VOL_SMOOTH_WINDOW)
@@ -34,7 +33,6 @@ def add_regime(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFrame:
-    """Add ratio features (feature_i / feature_j) and z-scores (rolling z-score)."""
     core = ["close", "volume", "feature_spread_proxy", "feature_high_low_range_norm"]
     existing = [c for c in core if c in df.columns]
     exprs = []
@@ -53,7 +51,6 @@ def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFra
     return df
 
 def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
-    """Multiply selected features by regime indicator."""
     regime = pl.col("regime")
     interact_cols = ["feature_ret_1", "feature_ret_5", "feature_ewma_vol_20", "feature_volume_z_20"]
     exprs = []
@@ -65,7 +62,6 @@ def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
-    """Generate pairwise products up to MAX_PAIRWISE_INTERACTIONS."""
     sorted_features = sorted(feature_cols)
     exprs = []
     count = 0
@@ -89,7 +85,6 @@ def safe_add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.D
     return add_pairwise_interactions(df, feature_cols)
 
 def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_features: list) -> pl.DataFrame:
-    """Multiply low‑frequency (5min) features with high‑frequency (1h/daily/htf) features."""
     ltf_sorted = sorted(ltf_features)
     htf_sorted = sorted(htf_features)
     exprs = []
@@ -109,14 +104,14 @@ def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_f
     return df
 
 # ----------------------------------------------------------------------
-# NEW FEATURE FAMILIES
+# NEW FEATURE FAMILIES (with fixed rolling skew/kurt)
 # ----------------------------------------------------------------------
 
 def add_rolling_quantiles(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
     """Add rolling quantiles (20th, 50th, 80th) of log returns."""
-    ret = (pl.col("close") / pl.col("close").shift(1)).log()
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     for q in [0.2, 0.5, 0.8]:
-        expr = ret.rolling_quantile(probability=q, window_size=window)
+        expr = ret.rolling_quantile(quantile=q, window_size=window)
         df = df.with_columns(expr.clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias(f"feature_ret_quantile_{q}_{window}"))
     return df
 
@@ -136,19 +131,51 @@ def add_fourier_features(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_rolling_moments(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
-    """Add rolling skewness and kurtosis of log returns."""
-    ret = (pl.col("close") / pl.col("close").shift(1)).log()
-    skew = ret.rolling_skew(window_size=window)
-    kurt = ret.rolling_kurt(window_size=window)
+    """
+    Add rolling skewness and kurtosis of log returns using central moments.
+    Avoids Polars methods that may be missing in older versions.
+    """
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
+    w = window
+
+    # Rolling sums of powers
+    sum_x = ret.rolling_sum(window_size=w)
+    sum_x2 = (ret * ret).rolling_sum(window_size=w)
+    sum_x3 = (ret * ret * ret).rolling_sum(window_size=w)
+    sum_x4 = (ret * ret * ret * ret).rolling_sum(window_size=w)
+
+    # Mean and variance (unbiased sample variance)
+    mean = sum_x / w
+    var = (sum_x2 - w * mean * mean) / (w - 1)
+    std = var.sqrt()
+
+    # 3rd central moment
+    m3 = sum_x3 - 3 * mean * sum_x2 + 2 * w * mean * mean * mean
+
+    # Sample skewness (bias‑corrected)
+    skew = pl.when(w > 2).then(
+        (m3 / (w - 1)) / (std.pow(3) + config.EPS) * (pl.lit(w) / (pl.lit(w) - 2))
+    ).otherwise(pl.lit(0.0))
+
+    # 4th central moment
+    m4 = (sum_x4 - 4 * mean * sum_x3 + 6 * mean * mean * sum_x2 - 3 * w * mean * mean * mean * mean)
+
+    # Excess kurtosis (population‑style, then subtract 3 for excess)
+    kurt = (m4 / (w * (var * var + config.EPS))) - 3.0
+
+    # Clean and cast
+    skew = skew.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
+    kurt = kurt.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
+
     df = df.with_columns([
-        skew.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias(f"feature_ret_skew_{window}"),
-        kurt.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias(f"feature_ret_kurt_{window}"),
+        skew.cast(pl.Float32).alias(f"feature_ret_skew_{window}"),
+        kurt.cast(pl.Float32).alias(f"feature_ret_kurt_{window}"),
     ])
     return df
 
 def add_acceleration(df: pl.DataFrame) -> pl.DataFrame:
     """Price acceleration: second difference of log returns."""
-    ret = (pl.col("close") / pl.col("close").shift(1)).log()
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     acc = ret - ret.shift(1)
     df = df.with_columns(acc.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias("feature_ret_acceleration"))
     return df
@@ -198,7 +225,7 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_ratios_and_z_scores(df, baseline_feature_cols)
     df = add_regime_conditioned_transforms(df)
 
-    # --- New features ---
+    # --- New features (using modern Polars API) ---
     df = add_rolling_quantiles(df)
     df = add_fourier_features(df)
     df = add_rolling_moments(df)
@@ -216,7 +243,7 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     if htf_cols:
         est_cross = min(config.MAX_CROSS_TIMEFRAME_INTERACTIONS, len(current_features) * len(htf_cols))
     total_est = len(df.columns) + est_pairwise + est_cross
-    if total_est > 5000:  # conservative limit to avoid OOM
+    if total_est > 5000:
         raise MemoryError(f"Estimated feature count {total_est} exceeds safety limit of 5000. "
                           f"Reduce MAX_PAIRWISE_INTERACTIONS or MAX_CROSS_TIMEFRAME_INTERACTIONS.")
 
