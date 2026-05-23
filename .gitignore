@@ -61,3 +61,6 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# Databento API Key
+.env

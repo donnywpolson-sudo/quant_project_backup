@@ -44,9 +44,27 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
             (daily_trend == 0) | (target_raw_expr.sign() == daily_trend)
         ).then(target_raw_expr).otherwise(0)
 
-    # ---- 3. Rate limit (same as before) ----
+    # ---- 3. Prepare for execution loop ----
     target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
     target_array = target_series.to_numpy()
+
+    # DEBUG: Check if we are using the correct signal
+    if "prediction_prob" in df.columns:
+        prob_mean = df["prediction_prob"].mean()
+        if prob_mean != 0.5:
+            print(f"DEBUG: prediction_prob mean = {prob_mean:.4f}")
+    # Compare with target_sign if present (only for debugging)
+    if "target_sign" in df.columns:
+        target_sign_arr = df["target_sign"].to_numpy()
+        target_sign_mean = target_sign_arr.mean()
+        print(f"DEBUG: target_sign mean = {target_sign_mean:.4f}")
+        # Compute correlation (only if enough data)
+        if len(target_sign_arr) > 1:
+            prob_arr = df["prediction_prob"].to_numpy()
+            corr = np.corrcoef(prob_arr, target_sign_arr)[0, 1]
+            print(f"DEBUG: correlation prediction_prob vs target_sign = {corr:.4f}")
+            if corr > 0.9:
+                print("WARNING: High correlation – target leakage detected!")
 
     # Spread proxy
     if "feature_spread_proxy" in df.columns:
@@ -63,7 +81,9 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     )
     last_bars_mask = (df["_session_rank"] > (df["_session_len"] - config.FLAT_BEFORE_CLOSE_MINUTES // 5)).to_numpy()
 
-    # Pre‑compute returns
+    # Pre‑compute returns (open to next open? Actually using open[t+1] - open[t]? Wait: use close[t+1] - open[t+1]? 
+    # The original: ret_exec = (close_next - open_next) / open_next, which is the return from open to close of the same bar.
+    # But position is set at open[t+1] (because we trade at open of next bar). The execution return is from that open to its close.
     open_next = np.roll(df["open"].to_numpy(), -1)
     close_next = np.roll(df["close"].to_numpy(), -1)
     open_next[-1] = np.nan
@@ -101,6 +121,4 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
 # Keep original for backward compatibility (if needed)
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
     """Legacy regression version (uses 'prediction' column)."""
-    # ... (original code unchanged) ...
-    # For brevity, not repeated here. Use the classification version.
     raise NotImplementedError("Use simulate_execution_classification for new pipeline.")

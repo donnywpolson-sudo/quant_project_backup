@@ -1,7 +1,13 @@
 # Project Snapshot for Audit
 
 # Root: C:\Users\donny\Desktop\quant_project
-# Created: 2026-05-23T00:04:53.556168
+# Created: 2026-05-23T00:22:39.438516
+
+--- 
+### File: .env
+```
+DATABENTO_API_KEY=db-rVH6VfvxcrSLfdPL5bQxDTPhQ9sPy
+```
 
 --- 
 ### File: .gitignore
@@ -69,6 +75,9 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# Databento API Key
+.env
 ```
 
 --- 
@@ -548,6 +557,60 @@ Generate a complete, runnable package that implements the three‑stream HTF‑a
 ```
 
 --- 
+### File: commit.py
+```
+import subprocess
+import os
+import sys
+
+def github_commit_all(commit_message="Update project files"):
+    try:
+        # 1. Check if we are in a git repo
+        if not os.path.exists(".git"):
+            print("Initializing Git repository...")
+            subprocess.run(["git", "init"], check=True)
+
+        # 2. Check if there is a remote 'origin'
+        result = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("ERROR: No remote 'origin' found. Please add it manually:")
+            print("  git remote add origin https://github.com/your-username/your-repo.git")
+            sys.exit(1)
+
+        # 3. Check for changes to commit
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        if not status.stdout.strip():
+            print("No changes to commit. Working tree clean.")
+            return
+
+        # 4. Add all files (respects .gitignore)
+        subprocess.run(["git", "add", "."], check=True)
+
+        # 5. Commit
+        subprocess.run(["git", "commit", "-m", commit_message], check=True)
+
+        # 6. Get current branch name
+        branch_result = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True)
+        current_branch = branch_result.stdout.strip()
+        if not current_branch:
+            current_branch = "main"  # fallback
+
+        # 7. Push
+        subprocess.run(["git", "push", "-u", "origin", current_branch], check=True)
+
+        print(f"Successfully committed and pushed to '{current_branch}'.")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Git command failed: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    # You can pass a custom message as a command-line argument
+    msg = sys.argv[1] if len(sys.argv) > 1 else "My automated commit"
+    github_commit_all(msg)
+```
+
+--- 
 ### File: config\baseline_features.yaml
 ```
 # config/baseline_features.yaml
@@ -909,13 +972,13 @@ def print_section(title):
 def main():
     # Allow command line argument for different market/year
     if len(sys.argv) > 1:
-        results_path = sys.argv[1]
-        manifest_path = Path(results_path).parent / "manifest.json"
+        results_path = Path(sys.argv[1])
     else:
-        results_path = "artifacts/ES/2026/backtest_results.parquet"
-        manifest_path = "artifacts/ES/2026/manifest.json"
+        results_path = Path("artifacts/ES/2026/backtest_results.parquet")
+    
+    manifest_path = results_path.parent / "manifest.json"
 
-    print_section(f"DIAGNOSTIC REPORT - {Path(results_path).parent.name}")
+    print_section(f"DIAGNOSTIC REPORT - {results_path.parent.name}")
 
     # 1. Check manifest
     if manifest_path.exists():
@@ -931,12 +994,16 @@ def main():
         print("\n1. Manifest not found – skipping feature list.")
 
     # 2. Load backtest results
-    if not Path(results_path).exists():
+    if not results_path.exists():
         print(f"\nERROR: {results_path} not found.")
         return
     df = pl.read_parquet(results_path)
     print(f"\n2. Data shape: {df.shape}")
     print(f"   Columns: {df.columns[:10]}...")
+
+    # Check for target_sign leakage in backtest results
+    if "target_sign" in df.columns:
+        print("   WARNING: target_sign present in backtest results (should be only in feature matrix)")
 
     # 3. Check predictions / probabilities
     if "prediction_prob" in df.columns:
@@ -991,13 +1058,41 @@ def main():
     else:
         print("\n5. No 'position' column found.")
 
-    # 6. Feature-target correlation (if we have access to the full feature matrix)
-    # We try to load the cached feature matrix from the same directory
-    feature_cache = Path(results_path).parent / "full_feature_matrix.parquet"
+    # --- FIRST 10 ROWS CHECK ---
+    print("\n--- FIRST 10 ROWS CHECK ---")
+    select_cols = ["ts_event"]
+    if "prediction_prob" in df.columns:
+        select_cols.append("prediction_prob")
+    if "target_sign" in df.columns:
+        select_cols.append("target_sign")
+    if "position" in df.columns:
+        select_cols.append("position")
+    if "pnl" in df.columns:
+        select_cols.append("pnl")
+    if "benchmark_pnl" in df.columns:
+        select_cols.append("benchmark_pnl")
+    small = df.head(10).select(select_cols)
+    print(small)
+
+    # Check correlation between prediction_prob and target_sign (lookahead detection)
+    if "prediction_prob" in df.columns and "target_sign" in df.columns:
+        pred_prob = df["prediction_prob"].to_numpy()
+        target_sign = df["target_sign"].to_numpy()
+        # Remove rows where either is NaN
+        mask = ~(np.isnan(pred_prob) | np.isnan(target_sign))
+        if mask.sum() > 1:
+            corr = np.corrcoef(pred_prob[mask], target_sign[mask])[0, 1]
+            print(f"\nCorrelation prediction_prob vs target_sign: {corr:.4f}")
+            if corr > 0.9:
+                print("WARNING: prediction_prob is almost identical to target_sign – lookahead detected!")
+        else:
+            print("\nNot enough valid rows to compute correlation.")
+
+    # 6. Feature-target correlation (if full feature matrix exists)
+    feature_cache = results_path.parent / "full_feature_matrix.parquet"
     if feature_cache.exists():
         print(f"\n6. Loading feature matrix from {feature_cache}...")
         df_features = pl.read_parquet(feature_cache)
-        # Determine target column (prefer target_sign, else target_5m)
         if "target_sign" in df_features.columns:
             target = df_features["target_sign"].to_numpy()
             target_name = "target_sign"
@@ -1007,33 +1102,37 @@ def main():
         else:
             target = None
             target_name = None
-        
+
         if target is not None:
-            # Identify feature columns (exclude metadata)
             exclude = {"ts_event", "open", "high", "low", "close", "volume", "session_id",
                        "date", "regime", "benchmark_pnl", "target_5m", "target_sign",
                        "prediction", "prediction_prob", "position", "trade_cost", "pnl"}
             feature_cols = [c for c in df_features.columns if c not in exclude and not c.startswith("_")]
             feature_cols = feature_cols[:50]  # limit to first 50 for speed
-            
+
             print(f"   Computing correlation with {target_name} for first {len(feature_cols)} features...")
             corrs = []
             for col in feature_cols:
                 feat = df_features[col].to_numpy()
-                # Remove rows where either is NaN
                 mask = ~(np.isnan(feat) | np.isnan(target))
                 if mask.sum() > 10:
-                    corr = np.corrcoef(feat[mask], target[mask])[0,1]
+                    corr = np.corrcoef(feat[mask], target[mask])[0, 1]
                 else:
                     corr = 0.0
                 corrs.append((col, corr))
             corrs.sort(key=lambda x: abs(x[1]), reverse=True)
             print("\n   Top 10 absolute correlations with target:")
             for col, c in corrs[:10]:
-                print(f"      {col}: {c:.4f}")
+                if not np.isnan(c):
+                    print(f"      {col}: {c:.4f}")
+                else:
+                    print(f"      {col}: nan")
             print("\n   Bottom 10 (most negative) correlations:")
             for col, c in corrs[-10:]:
-                print(f"      {col}: {c:.4f}")
+                if not np.isnan(c):
+                    print(f"      {col}: {c:.4f}")
+                else:
+                    print(f"      {col}: nan")
         else:
             print("\n6. No target column found in feature matrix.")
     else:
@@ -1054,11 +1153,14 @@ import os
 import datetime as dt
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from sys import audit
 
 import pandas as pd
 import numpy as np
 import databento as db
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (must exist in project root)
+load_dotenv()
 
 # =========================================
 # CONFIG
@@ -1137,7 +1239,7 @@ def load_symbol_history(symbol: str) -> pd.DataFrame:
 
 def get_client() -> db.Historical:
     if not API_KEY:
-        raise RuntimeError("DATABENTO_API_KEY is not set")
+        raise RuntimeError("DATABENTO_API_KEY is not set. Check your .env file.")
     return db.Historical(API_KEY)
 
 
@@ -1769,6 +1871,7 @@ Entrypoint for the Deterministic Quant Pipeline.
 Integrates resampling, discovery, walkforward, and execution.
 Now with market‑specific config loading, single feature generation pass,
 aligned data caching, and automatic performance metrics output.
+Ensures target column is never used as a feature.
 """
 import argparse
 import logging
@@ -1784,7 +1887,7 @@ from src.features.engine import generate_features
 from src.discovery import run_feature_discovery
 from src.walkforward import run_walkforward
 from src.io.canonical_parquet import write_canonical_parquet
-from src.analytics import calculate_metrics   # <-- import analytics function
+from src.analytics import calculate_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -1796,16 +1899,27 @@ def check_memory_safety():
     except ImportError:
         pass
 
-def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str) -> pl.DataFrame:
-    """Keep only features listed in manifest['feature_names']."""
+def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str, target_col: str) -> pl.DataFrame:
+    """
+    Keep only features listed in manifest['feature_names'] plus essential non‑feature columns.
+    The target column is explicitly excluded from the returned set (it will be added back later if needed).
+    """
     with open(manifest_path, 'r') as f:
         manifest = json.load(f)
     selected = manifest['feature_names']
-    non_feature = [c for c in df.columns if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))]
-    keep = non_feature + [c for c in selected if c in df.columns]
-    missing = set(selected) - set(df.columns)
-    if missing:
-        logger.warning(f"Missing features in manifest: {missing}")
+    # Essential non‑feature columns that must be kept (excluding target)
+    essential = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime", "benchmark_pnl"}
+    # Also keep any other columns that are not feature‑like
+    non_feature = [c for c in df.columns 
+                   if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))
+                   and c not in essential]
+    # Build list of columns to keep: essential + non_feature + selected features that exist
+    keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
+    # Remove duplicate target column if present (should not be in selected, but be safe)
+    if target_col in keep:
+        keep.remove(target_col)
+    # Remove any duplicates while preserving order
+    keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
 def main():
@@ -1849,6 +1963,9 @@ def main():
         run_feature_discovery(str(feature_cache), args.out)
 
     elif args.command == "run":
+        # Determine target column (classification)
+        target_col = "target_sign"
+        
         # Load aligned data (try cache first)
         cache_dir = Path(args.manifest).parent
         aligned_cache = cache_dir / "aligned_data.parquet"
@@ -1864,17 +1981,22 @@ def main():
             logger.info("No cached feature matrix found; generating features (this may be slower).")
             df_features = generate_features(df_aligned)
 
-        # Prune to only features selected in manifest
-        df_pruned = prune_features_by_manifest(df_features, args.manifest)
-        target_col = "target_sign"
+        # Prune to only features selected in manifest (and keep essential non‑feature columns)
+        df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+        
+        # Ensure target column exists
         if target_col not in df_pruned.columns:
-            raise KeyError(f"Target {target_col} missing.")
-
-        # All feature columns are those kept after pruning (excluding metadata)
-        feature_cols = [c for c in df_pruned.columns
-                        if c not in ("ts_event", "open", "high", "low", "close", "volume",
-                                     "session_id", "date", target_col, "regime", "benchmark_pnl")]
-
+            raise KeyError(f"Target column '{target_col}' missing after pruning.")
+        
+        # Define feature columns: everything except metadata, target, and obvious non‑feature columns
+        excluded = {"ts_event", "open", "high", "low", "close", "volume",
+                    "session_id", "date", target_col, "regime", "benchmark_pnl"}
+        feature_cols = [c for c in df_pruned.columns if c not in excluded]
+        
+        # Safety: ensure target is not accidentally included
+        if target_col in feature_cols:
+            raise RuntimeError(f"Target column '{target_col}' leaked into feature columns! Aborting.")
+        
         logger.info(f"Walkforward with {len(feature_cols)} features.")
         result_df = run_walkforward(df_pruned, feature_cols, target_col)
 
@@ -1887,7 +2009,6 @@ def main():
         print("\n" + "="*60)
         print("FINAL PERFORMANCE METRICS")
         print("="*60)
-        # Call the analytics function on the saved file
         calculate_metrics(out_path)
         print("="*60 + "\n")
 
@@ -3385,7 +3506,7 @@ if __name__ == "__main__":
 """
 src/walkforward.py
 Walkforward with LogisticRegression (classification) predicting sign of next 5-bar return.
-Includes constant feature removal, correlation pruning, and parallel folds.
+Includes constant feature removal, correlation pruning, and safety checks.
 """
 import logging
 import numpy as np
@@ -3404,8 +3525,12 @@ def train_and_predict(train_df: pl.DataFrame, test_df: pl.DataFrame,
                       feature_cols: list, target_col: str) -> np.ndarray:
     """
     Train LogisticRegression on train, predict probability of upward move on test.
-    First removes constant features.
+    First removes constant features and ensures target is not in features.
     """
+    # Safety: ensure target column is not in feature_cols
+    if target_col in feature_cols:
+        raise ValueError(f"Target column '{target_col}' is in feature_cols! Remove it first.")
+    
     # Remove constant features on train fold
     feature_cols = remove_constant_features(train_df, feature_cols, threshold=1e-9)
     if len(feature_cols) == 0:
@@ -3436,12 +3561,11 @@ def compute_benchmark(df: pl.DataFrame) -> pl.Series:
     """Naive benchmark: 20-period SMA crossover using lagged close to avoid lookahead."""
     close = df["close"].to_numpy()
     open_ = df["open"].to_numpy()
-    # Shift close by 1 to avoid using current bar's close (which is unknown at open)
     close_lagged = np.roll(close, 1)
     close_lagged[0] = close[0]
     sma20 = np.full(len(close), np.nan)
     for i in range(20, len(close)):
-        sma20[i] = np.mean(close_lagged[i-20+1:i+1])   # uses lagged close
+        sma20[i] = np.mean(close_lagged[i-20+1:i+1])
     signal = np.where(close_lagged > sma20, 1.0, 0.0)
     position = np.roll(signal, 1)
     position[0] = 0.0
@@ -3463,6 +3587,11 @@ def run_walkforward(df: pl.DataFrame, feature_cols: list,
     """
     Walkforward with 60-day train, 1-day test, rolling by 1 day.
     """
+    # Defensive: remove target column from feature_cols if present (should not happen)
+    if target_col in feature_cols:
+        logger.error(f"Target column '{target_col}' found in feature_cols! Removing it.")
+        feature_cols = [c for c in feature_cols if c != target_col]
+
     if "ts_event" not in df.columns:
         raise ValueError("DataFrame must have ts_event for temporal splits.")
     df = df.with_columns(pl.col("ts_event").dt.date().alias("date"))

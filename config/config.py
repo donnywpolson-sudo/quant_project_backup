@@ -102,11 +102,10 @@ REGIME_LOW_THRESH = 0.4
 REGIME_MISSING_DEFAULT = 0
 
 # --- Targets ---
-TARGET_5M_HORIZON = 5
-CLASSIFICATION_MODE = True
+TARGET_5M_HORIZON = 10          # increased from 1 to 10 bars (50 minutes)
 MAGNITUDE_THRESHOLD = 0.002
 PROB_TARGET_THRESHOLD = 0.005
-TARGET_SCALE_FACTOR = 1
+TARGET_SCALE_FACTOR = 1         # not used for classification
 
 # --- 1H mapping (optional, not active) ---
 DST_AWARE_1H_TESTS = True
@@ -120,10 +119,10 @@ CORR_ACCUMULATION_MODE = "compensated_float64_then_downcast"
 # --- Nonlinear discovery ExtraTrees (deterministic but parallel folds) ---
 DISCOVERY_METHOD = "ExtraTrees"
 DISCOVERY_WINDOW_DAYS = 60
-BOOTSTRAP_FOLDS = 10                     # keep 30 for stability
+BOOTSTRAP_FOLDS = 10
 EXTRA_TREES_PARAMS = {
     "random_state": 42,
-    "n_jobs": 1,                         # CRITICAL: 1 for deterministic tree building
+    "n_jobs": 1,
     "n_estimators": 30,
     "max_depth": 12,
     "max_features": 0.3,
@@ -158,7 +157,7 @@ WF_PRECOMPUTE_INDICES = True
 
 # --- Models Ridge ---
 SCALER_CLASS = "StandardScaler"
-RIDGE_PARAMS = {"alpha": 0.01, "solver": "cholesky", "fit_intercept": True, "random_state": 42}  # reduced alpha
+RIDGE_PARAMS = {"alpha": 0.01, "solver": "cholesky", "fit_intercept": True, "random_state": 42}
 RIDGE_N_JOBS = 1
 
 # --- Execution and risk (HTF‑aware) ---
@@ -173,6 +172,7 @@ FLAT_BEFORE_CLOSE_MINUTES = 5
 HTF_TREND_ALIGNMENT = True
 HTF_VOL_SCALING = True
 HTF_VOL_WINDOW = 10
+PROBABILITY_SMOOTHING_ALPHA = 0.1   # EMA smoothing for predictions (0 = no smoothing, 1 = instant)
 
 # --- Metrics and reporting ---
 METRICS_TO_COMPUTE = ["Sharpe", "MaxDrawdown", "Turnover", "HitRate", "AvgWin", "AvgLoss", "MAE"]
@@ -194,7 +194,7 @@ TARGET_COL = "target_5m"
 # ===================================================
 # PARALLELISM FLAGS (Optimised for Ryzen 5 2600 – 6 cores / 12 threads)
 # ===================================================
-DISCOVERY_PARALLEL_FOLDS = 6   # one per physical core (avoid oversubscription)
+DISCOVERY_PARALLEL_FOLDS = 6
 WF_PARALLEL_FOLDS = 6
 
 # --- Market-specific overrides (absolute paths) ---
