@@ -15,37 +15,41 @@ logger = logging.getLogger(__name__)
 
 def _generate_target(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Generates a 1-hour forward discrete target (Long: 1.0, Short: -1.0, Neutral: 0.0).
-    Assumes data is temporally sorted 1-minute bars.
+    Vol-normalized forward log return target (1H horizon).
     """
-    logger.info("Generating 1-hour forward classification target...")
-    
-    # 1-hour forward on 1-minute data = 60 rows
-    forward_window = 60
+    logger.info("Generating normalized 1H target...")
+
+    horizon = 60
+    vol_window = 20
+    eps = 1e-8
+
+    log_price = pl.col("close").log()
+
+    # forward log return (t → t+60)
+    fwd_ret = (log_price.shift(-horizon) - log_price)
+
+    # backward-only volatility (uses t-1 and earlier)
+    ret_1 = (log_price - log_price.shift(1))
+    vol = ret_1.shift(1).rolling_std(window_size=vol_window)
+
+    target = (fwd_ret / (vol + eps)).clip(config.CLIP_MIN, config.CLIP_MAX)
+
+    df = df.with_columns([
+        target.cast(pl.Float32).alias("target_raw")
+    ])
+
+    # Discretization (optional)
     threshold = getattr(config, "MAGNITUDE_THRESHOLD", 0.002)
 
-    # 1. Calculate the exact return 60 minutes into the future
-    # shift(-60) pulls future data backward to the current row
     df = df.with_columns(
-        ((pl.col("close").shift(-forward_window) / pl.col("close")) - 1.0)
-        .cast(pl.Float32)
-        .alias("future_1h_return")
-    )
-
-    # 2. Discretize into Long (1.0), Short (-1.0), Neutral (0.0)
-    df = df.with_columns(
-        pl.when(pl.col("future_1h_return") > threshold).then(1.0)
-        .when(pl.col("future_1h_return") < -threshold).then(-1.0)
+        pl.when(pl.col("target_raw") > threshold).then(1.0)
+        .when(pl.col("target_raw") < -threshold).then(-1.0)
         .otherwise(0.0)
         .cast(pl.Float32)
         .alias("target")
     )
 
-    # 3. Drop the very last 60 minutes of the dataset
-    # We cannot train on the final hour because the "future" hasn't happened yet
-    df = df.filter(pl.col("future_1h_return").is_not_null())
-
-    return df
+    return df.filter(pl.col("target_raw").is_not_null())
 
 def _get_base_feature_exprs() -> list[pl.Expr]:
     """
@@ -59,27 +63,24 @@ def _get_base_feature_exprs() -> list[pl.Expr]:
     low = pl.col("low").cast(pl.Float32)
     volume = pl.col("volume").cast(pl.Float32)
 
-    exprs = [
-        # Returns / Momentum
-        ((close / close.shift(1)) - 1.0).alias("feature_ret_1"),
-        ((close / close.shift(5)) - 1.0).alias("feature_ret_5"),
-        ((close / close.shift(10)) - 1.0).alias("feature_ret_10"),
-        ((close / close.shift(20)) - 1.0).alias("feature_ret_20"),
-        
-        # Volatility / Ranges
-        ((high - low) / close).alias("feature_high_low_range_norm"),
-        ((close - low) / (high - low + 1e-8)).alias("feature_signed_bar_strength"),
-        
-        # Moving Average Distances
-        (close / close.rolling_mean(window_size=5) - 1.0).alias("feature_ma_5"),
-        (close / close.rolling_mean(window_size=20) - 1.0).alias("feature_ma_20"),
-        (close / close.rolling_mean(window_size=50) - 1.0).alias("feature_ma_50"),
-        
-        # Volume Interaction
-        (volume / volume.rolling_mean(window_size=20) - 1.0).alias("feature_vol_shocks"),
-    ]
-    return exprs
+    close_lag = close.shift(1)
+    volume_lag = volume.shift(1)
 
+    exprs = [
+        # Returns (already safe)
+        ((close_lag / close.shift(2)) - 1.0).alias("feature_ret_1"),
+
+        # Rolling means (lagged)
+        (close_lag / close_lag.rolling_mean(5) - 1.0).alias("feature_ma_5"),
+        (close_lag / close_lag.rolling_mean(20) - 1.0).alias("feature_ma_20"),
+
+        # Volatility proxy
+        ((close_lag - close.shift(2)).abs()
+            .rolling_mean(20)).alias("feature_realized_vol_20"),
+
+        # Volume (lagged)
+        (volume_lag / volume_lag.rolling_mean(20) - 1.0).alias("feature_vol_shock"),
+]
 def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     """
     Constructs the complete pool of raw baseline features and expands them 

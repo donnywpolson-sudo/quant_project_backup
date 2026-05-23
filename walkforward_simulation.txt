@@ -1,1 +1,0 @@
-python -m src.cli run --data tests/fixtures/synthetic_1min_fixture.parquet --manifest artifacts/manifest.json --out artifacts/
