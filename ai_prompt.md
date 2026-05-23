@@ -1,14 +1,14 @@
-# ⚙️ Quant Flowchart — End-to-End Spec (Optimized, Stability-Enhanced)
+# ⚙️ Quant Flowchart — End-to-End Spec (Optimized)
 
 1‑min OHLCV parquet (partitioned by market/year)
    ↓
 Resample → 5‑min bars
    ↓
 
-Step 1 — Baseline Features  
+Step 1 — Baseline Features
 Small, human-designed (YAML)
 
-Step 2 — Feature Expansion (critical)  
+Step 2 — Feature Expansion (critical)
 Create large candidate space:
 - interactions
 - ratios
@@ -18,8 +18,8 @@ Create large candidate space:
 (ALL features must use past data only)
    ↓
 
-Step 3 — Target Construction  
-target_1h = forward 12-bar return normalized by volatility
+Step 3 — Target Construction
+target_1h = forward 12-bar return (5m → 1h)
 (optionally convert to long / neutral / short)
    ↓
 
@@ -27,13 +27,9 @@ Step 4 — ExtraTrees (discovery)
 - Train on target_1h
 - Rank feature importance
 - Select top features
-- Require stability across folds (≥70%)
+- Require stability across folds (e.g. ≥60%)
 
 (hundreds → few dozen)
-   ↓
-
-Step 4.5 — Correlation Pruning (NEW)
-- Remove redundant features (|corr| > 0.90)
    ↓
 
 Step 5 — Freeze Features
@@ -43,27 +39,24 @@ Step 5 — Freeze Features
 
 Step 6 — Walkforward Ridge Training
 - Train only on frozen features
-- Target = normalized target_1h
+- Target = target_1h
 - StandardScaler fit on train only
    ↓
 
 Step 7 — Prediction
 - Predict every 5 minutes
-- Apply rolling smoothing (3 bars)
    ↓
 
 Step 8 — Execution
 - Predictions recomputed every 5 minutes
-- Use smoothed volatility
 - Convert prediction → position
 - Trade on 5‑min bars
 
----
 
 > **Single Source of Truth**  
 > Deterministic CPU-only intraday futures ML pipeline  
 >  
-> data → features → ExtraTrees → correlation prune → frozen features → walkforward Ridge → smoothed prediction → execution → artifacts
+> data → features → ExtraTrees discovery → frozen features → walkforward Ridge → execution simulation → artifacts
 
 ---
 
@@ -113,6 +106,7 @@ Deterministic CPU-only intraday futures ML backtester.
 ---
 
 ### Memory Guarantee
+Must use streaming:
 scan_parquet → transform → sink_parquet
 
 If non-vectorizable:
@@ -222,9 +216,9 @@ scan_parquet → pushdown filters → light transforms
 ---
 
 ## Eager Stage
-- deduplicate
-- compute session boundaries
-- validate schema
+- deduplicate  
+- compute session boundaries  
+- validate schema  
 
 ---
 
@@ -236,15 +230,20 @@ scan_parquet → pushdown filters → light transforms
 # 6. POST-COLLECT VALIDATION
 
 ### Integrity Checks
-- ts_event strictly increasing
-- no nulls
-- high ≥ low
-- prices within [low, high]
-- volume ≥ 0
+- ts_event strictly increasing  
+- no nulls  
+- high ≥ low  
+- prices within [low, high]  
+- volume ≥ 0  
 
 ---
 
 ### Memory Estimation
+Compute:
+- total bytes  
+- avg row size  
+- rows_per_chunk  
+
 Abort if:
 estimated_memory > RAM_CAP_BYTES
 
@@ -252,112 +251,211 @@ estimated_memory > RAM_CAP_BYTES
 
 # 7. SESSION LOGIC (CRITICAL)
 
-(unchanged)
+## Globex Rollover
+If hour ≥ 18:00:
+session_date = ts_event + 6 hours
+
+Ensures:
+- continuous trading day  
+- no split sessions  
+
+---
+
+## Session Filtering
+Keep only 18:00 → 16:00
+
+---
+
+## Resampling
+5-minute bars
+
+Rules:
+O = first  
+H = max  
+L = min  
+C = last  
+V = sum  
 
 ---
 
 # 8. CLEANING RULES
 
-(unchanged)
+- No forward/back fill (except allowed cases)  
+- Drop volume == 0  
+- Drop incomplete rows  
+- Replace NaN / inf → 0.0  
 
 ---
 
 # 9. BASE FEATURES
 
-(unchanged)
+- log returns (t-1)  
+- rolling statistics per session  
+- float32 only  
+- clipped  
 
 ---
 
 # 10. FEATURE EXPANSION
 
-(unchanged)
+All features MUST be:
+- deterministic  
+- session-aware  
+- float32  
+- clipped  
 
 ---
 
-# 10A. FEATURE STABILITY HARDENING
+## Core Groups
 
-- Feature must appear in ≥70% of folds
-- Median importance preferred
+Range / Vol:
+- high_low_range_norm  
+- true_range  
+- atr_14  
+- price_z_20  
+
+Trend:
+- dist_ma_20 / 50  
+- pos_in_range_20  
+
+Volume / Microstructure:
+- log_volume  
+- volume_z_20  
+- signed volume imbalance  
+- spread proxy  
+
+Session:
+- session_pos  
+- session_len  
+- time_of_day_bucket  
+
+Momentum:
+- rolling returns  
+- rolling std  
+- EWMA volatility  
 
 ---
 
-# 10B. CORRELATION PRUNING
-
-- Happens AFTER discovery, BEFORE freeze
-- Use train split only
-- Use float64 correlation
-
-Rule:
-- If |corr| > 0.90:
-  - keep earlier feature (deterministic)
-  - drop later feature
+## Pairwise Interactions
+- max 500  
+- lexicographic order  
+- deterministic  
+- stop exactly at cap  
 
 ---
 
 # 11. NUMERIC GUARDS
 
-(unchanged)
+- no NaN / inf  
+- clip everything  
+- optional float64 debug pass  
 
 ---
 
 # 12. REGIME
 
-(unchanged)
+vol → median → smoothed  
+
+Assign:
+- 1 = high vol  
+- 0 = low vol  
+- else carry forward  
 
 ---
 
 # 13. TARGETS
 
-## 1H Target (UPDATED)
+## A. 5m Target
+target_5m[t] = sign(log(close[t+1] / open[t+1]))
 
-target_1h =
-forward log return / rolling volatility
+Set to 0 if crossing session boundary.
 
-Rules:
-- backward-looking volatility
-- window ≥ 20
-- no overlap with forecast horizon
-- session-aware
-- clipped
+---
+
+## B. 1H Target
+- session-aware  
+- forward shift after block closes  
+- DST-safe  
+
+---
+
+## C. Magnitude Target
+|log_return| > threshold  
+
+---
+
+## D. Probabilistic Target
+- used for calibration  
 
 ---
 
 # 14. 1H MAPPING RULES
 
-(unchanged)
+- start inclusive  
+- end exclusive  
+- drop partial blocks < 15 min  
+- forward fill only within block  
+- DST-safe  
 
 ---
 
 # 15. CORRELATION FILTER
 
-- Runs after discovery
-- before freeze
-- train-only data
-- deterministic output
+- train split only  
+- float64 compute → float32 store  
+- drop features > threshold  
+
+Exclude:
+- targets  
+- regime  
 
 ---
 
 # 16. FEATURE DISCOVERY
 
-(stability ≥70%)
+- joblib loky parallel  
+- bootstrap folds = 30  
+
+---
+
+## Deterministic Seeds
+seed = HMAC_SHA256(SEED:fold_index)
+
+---
+
+## Abort Protocol
+- monitor RSS  
+- terminate if exceeded  
+- persist partial manifest  
+
+---
+
+## Baseline Feature Pool
+- load YAML (40 features)  
+- cannot prune pre-discovery  
 
 ---
 
 # 17. PCA / ORTHOGONALIZATION
 
-(optional)
+Optional:
+top components = 5
 
 ---
 
-# 18. PARQUET WRITING
+# 18. PARQUET WRITING (STRICT)
 
-(unchanged)
+version = 2.0  
+compression = snappy  
+row_group_size = 65536  
+column_order = lexicographic  
 
 ---
 
 # 19. FEATURE FREEZE
 
-(unchanged)
+- identical schema everywhere  
+- assert hash equality  
 
 ---
 
@@ -370,88 +468,81 @@ step = 1 day
 ---
 
 ## Model
-
-Ridge
-
-alpha = 5.0
+Ridge + StandardScaler
 
 ---
 
-## 20A. REGULARIZATION
-
-- Higher alpha preferred
-- Default = 5.0
-
----
-
-## 20B. PREDICTION SMOOTHING
-
-- Rolling mean
-- window = 3
-- strictly backward-looking
-
----
-
-## 20C. VOLATILITY-STABILIZED EXECUTION
-
-Use smoothed volatility (≥5 bars)
-
-position =
-clip(prediction / smoothed_vol * TARGET_VOL, -MAX_LEVERAGE, MAX_LEVERAGE)
+## Execution
+position = clip(prediction / vol * TARGET_VOL, -MAX_LEVERAGE, MAX_LEVERAGE)
 
 ---
 
 ## Costs
-
-(unchanged)
+cost = commission + slippage_k * spread + vol_penalty * volatility
 
 ---
 
 # 21. DATA SCHEMA
 
-(unchanged)
+Required:
+- ts_event  
+- open  
+- high  
+- low  
+- close  
+- volume  
+- row_id  
+- session_id  
 
 ---
 
 # 22. CHUNK FORMULA
 
-(unchanged)
+rows_per_chunk =  
+min(ROWS_PER_CHUNK_MAX, floor(RAM * margin / avg_row_bytes))
 
 ---
 
 # 23. TESTS
 
-(unchanged)
+Must include:
+- DST test  
+- memory abort test  
+- serialization reproducibility test  
 
 ---
 
 # 24. REPOSITORY STRUCTURE
 
-(unchanged)
+Unchanged from original spec.
 
 ---
 
 # 25. BENCHMARK
 
-(unchanged)
+Must include:
+- naive baseline  
+- compare Sharpe, Drawdown, Turnover  
 
 ---
 
 # 26. ZERO TRUNCATION RULE
 
-(unchanged)
+- no pseudocode  
+- no placeholders  
+- full implementations only  
 
 ---
 
 # 27. FIXTURE
 
-(unchanged)
+Synthetic parquet with DST edge case required.
 
 ---
 
 # 28. MANIFEST SCHEMA
 
-(unchanged)
+Strict JSON format enforced exactly as specified.
 
 ---
 
@@ -463,16 +554,21 @@ def run_pipeline(data_glob, config_path, out_dir)
 
 # 30. DEV CHECKLIST
 
-(unchanged)
+- generate fixtures  
+- run pipeline  
+- verify hashes  
+- run pytest  
+- validate memory  
 
 ---
 
 # 31. FINAL DIRECTIVE
 
-Priority:
+Priority order:
 
 1. Determinism  
 2. No leakage  
 3. Memory safety  
-4. Stability across folds  
-5. Reproducibility  
+4. Reproducibility  
+
+All other considerations are secondary.
