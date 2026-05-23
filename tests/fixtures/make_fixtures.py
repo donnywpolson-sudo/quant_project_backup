@@ -1,52 +1,54 @@
 """
 tests/fixtures/make_fixtures.py
-Generates a valid, reproducible synthetic parquet fixture for pipeline testing.
-Ensures all required columns (ts_event, close, high, low, volume) are present.
+Generates a valid, reproducible synthetic 1‑min OHLCV parquet fixture.
+Uses real UTC timestamps (via pytz), includes open/high/low/close/volume.
 """
 import polars as pl
 import numpy as np
 from pathlib import Path
+from datetime import datetime, timedelta
+import pytz
 
 def create_synthetic_data():
     """
-    Generates a reproducible synthetic parquet fixture covering 60 days 
-    (assuming 1-minute intervals).
+    Creates 60 days of 1‑min data starting from 2020-01-01 00:00 UTC.
+    Includes realistic price action and volume.
     """
-    # 86400 rows = 60 days * 24 hours * 60 minutes
-    # (Though logic will handle any size)
+    # Use pytz for reliable UTC timezone
+    utc = pytz.UTC
+    start = datetime(2020, 1, 1, 0, 0, tzinfo=utc)
+    # 60 days * 24h * 60min = 86400 rows
     n_rows = 86400
+    timestamps = [start + timedelta(minutes=i) for i in range(n_rows)]
+
     base_price = 100.0
-    
-    # 1. Generate core price action
-    # Random walk: cumulative sum of normal distribution
-    price_movements = np.random.randn(n_rows)
-    close = base_price + np.cumsum(price_movements)
-    
-    # 2. Derive high/low to ensure high >= low and volatility is realistic
-    # Add random spread to create high/low around the close
-    spread = np.random.rand(n_rows) * 0.5
+    # Random walk
+    returns = np.random.normal(0, 0.0001, n_rows)
+    close = base_price * np.exp(np.cumsum(returns))
+    # Add spread
+    spread = np.random.uniform(0.001, 0.005, n_rows) * close
     high = close + spread
     low = close - spread
-    
-    # 3. Generate volume
+    # Open is previous close (except first bar)
+    open_price = np.roll(close, 1)
+    open_price[0] = close[0] - spread[0]
+    # Volume
     volume = np.random.randint(100, 5000, n_rows)
-    
-    # 4. Construct DataFrame
+
     df = pl.DataFrame({
-        "ts_event": np.arange(n_rows),
-        "close": close,
-        "high": high,
-        "low": low,
-        "volume": volume
+        "ts_event": timestamps,
+        "open": open_price.astype(np.float32),
+        "high": high.astype(np.float32),
+        "low": low.astype(np.float32),
+        "close": close.astype(np.float32),
+        "volume": volume.astype(np.int64),
     })
-    
-    # 5. Save to destination
+
     output_path = Path("tests/fixtures/synthetic_1min_fixture.parquet")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
-    
-    print(f"Fixture successfully created at {output_path}")
-    print(f"Columns generated: {df.columns}")
+    print(f"Fixture created at {output_path}")
+    print(f"Shape: {df.shape}")
 
 if __name__ == "__main__":
     create_synthetic_data()

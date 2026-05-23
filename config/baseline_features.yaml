@@ -1,9 +1,4 @@
 # config/baseline_features.yaml
-# Last Updated: 2026-05-21
-# Version: 1.0.0
-# Description: Frozen canonical baseline feature pool (40 features).
-# Usage: Loaded by discovery.py for ExtraTrees baseline discovery.
-
 baseline_features:
   - feature_ret_1
   - feature_ret_5

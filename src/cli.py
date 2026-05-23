@@ -1,112 +1,113 @@
 """
 src/cli.py
 Entrypoint for the Deterministic Quant Pipeline.
-Orchestrates Phase 1 (Feature Discovery via ExtraTrees) and 
-Phase 2 (Enforced Manifest Pruning and Walk-Forward Ridge Simulation).
+Integrates resampling, discovery, walkforward, and execution.
+Now with market‑specific config loading and single feature generation pass.
 """
 import argparse
 import logging
 import os
 import psutil
-import polars as pl
 from pathlib import Path
+import polars as pl
 
-# Import project modules
 from config import config
+from src.ingest import load_and_clean_data
+from src.features.engine import generate_features
 from src.discovery import run_feature_discovery
-from src.features.engine import generate_features, prune_features_by_manifest
 from src.walkforward import run_walkforward
 from src.io.canonical_parquet import write_canonical_parquet
+import json
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
-    """
-    Implements mandatory memory verification before loading matrices.
-    Aborts immediately if current RSS usage violates RAM boundaries.
-    """
     try:
-        process = psutil.Process(os.getpid())
-        mem_bytes = process.memory_info().rss
-        ram_cap = getattr(config, "RAM_CAP_BYTES", 13.5 * 1024 * 1024 * 1024)
-        if mem_bytes > ram_cap:
-            logger.error(f"Memory ceiling breached: {mem_bytes / (1024**3):.2f} GB RSS. Aborting.")
-            raise MemoryError("Pipeline execution terminated due to strict memory constraints.")
+        mem = psutil.Process().memory_info().rss
+        if mem > config.RAM_CAP_BYTES:
+            raise MemoryError(f"RSS {mem/(1024**3):.2f}GB > cap {config.RAM_CAP_BYTES/(1024**3):.2f}GB")
     except ImportError:
         pass
 
-def main():
-    parser = argparse.ArgumentParser(description="Deterministic Two-Phase Quant Pipeline CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Pipeline phase execution command")
-    
-    # -------------------------------------------------------------------------
-    # Subcommand: discover (Phase 1)
-    # -------------------------------------------------------------------------
-    discover_parser = subparsers.add_parser("discover", help="Phase 1: Isolated Feature Discovery")
-    discover_parser.add_argument("--data", required=True, help="Path to input parquet")
-    discover_parser.add_argument("--out", default="artifacts/manifest.json", help="Output manifest path")
+def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str) -> pl.DataFrame:
+    """Keep only features listed in manifest['feature_names']."""
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+    selected = manifest['feature_names']
+    non_feature = [c for c in df.columns if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))]
+    keep = non_feature + [c for c in selected if c in df.columns]
+    missing = set(selected) - set(df.columns)
+    if missing:
+        logger.warning(f"Missing features in manifest: {missing}")
+    return df.select(keep)
 
-    # -------------------------------------------------------------------------
-    # Subcommand: run (Phase 2)
-    # -------------------------------------------------------------------------
-    run_parser = subparsers.add_parser("run", help="Phase 2: Enforced Simulation")
-    run_parser.add_argument("--data", required=True, help="Path to input parquet")
-    run_parser.add_argument("--manifest", default="artifacts/manifest.json", help="Path to manifest")
-    run_parser.add_argument("--out", required=True, help="Output directory")
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    discover_parser = subparsers.add_parser("discover")
+    discover_parser.add_argument("--data", required=True)
+    discover_parser.add_argument("--out", default="artifacts/manifest.json")
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--data", required=True)
+    run_parser.add_argument("--manifest", default="artifacts/manifest.json")
+    run_parser.add_argument("--out", required=True)
 
     args = parser.parse_args()
     check_memory_safety()
 
+    # Load market‑specific configuration if the command uses data
+    if args.command in ("discover", "run"):
+        from src.market_config import detect_symbol_from_path, load_market_config
+        symbol = detect_symbol_from_path(args.data)
+        load_market_config(symbol)
+
     if args.command == "discover":
-        logger.info("Initializing Stage 1: Running Feature Importance Ranker...")
-        run_feature_discovery(args.data, args.out)
-        logger.info("Stage 1 execution completed successfully.")
+        # Load raw aligned data (5min + HTF)
+        df_aligned = load_and_clean_data(args.data)
+        # Generate full feature matrix (includes target, HTF, cross)
+        df_features = generate_features(df_aligned)
+        # Cache the full feature matrix for later reuse by "run"
+        cache_dir = Path(args.out).parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        feature_cache = cache_dir / "full_feature_matrix.parquet"
+        write_canonical_parquet(df_features, str(feature_cache))
+        logger.info(f"Full feature matrix cached to {feature_cache}")
+        # Run discovery on the cached matrix (so discovery uses all feature types)
+        run_feature_discovery(str(feature_cache), args.out)
 
     elif args.command == "run":
-        logger.info("Initializing Stage 2: Feature Generation and Backtesting...")
-        
-        if not os.path.exists(args.data):
-            raise FileNotFoundError(f"Source data file not found at: {args.data}")
-            
-        df_raw = pl.read_parquet(args.data)
+        # Load raw aligned data
+        df_aligned = load_and_clean_data(args.data)
         check_memory_safety()
 
-        # 1. Complete candidate pool expansion
-        df_all_features = generate_features(df_raw)
-        check_memory_safety()
+        # Try to load pre‑computed feature matrix from discovery phase
+        cache_dir = Path(args.manifest).parent
+        feature_cache = cache_dir / "full_feature_matrix.parquet"
+        if feature_cache.exists():
+            logger.info(f"Loading pre‑computed feature matrix from {feature_cache}")
+            df_features = pl.read_parquet(feature_cache)
+        else:
+            logger.info("No cached feature matrix found; generating features (this may be slower).")
+            df_features = generate_features(df_aligned)
 
-        # 2. Apply the frozen structural layout contract
-        df_pruned = prune_features_by_manifest(df_all_features, args.manifest)
-        check_memory_safety()
-
-        # 3. Extract explicit feature/target column signatures
-        # Strictly enforce target column existence
-        target_col = getattr(config, "TARGET_COL", "target")
+        # Prune to only features selected in manifest
+        df_pruned = prune_features_by_manifest(df_features, args.manifest)
+        target_col = "target_5m"
         if target_col not in df_pruned.columns:
-            raise KeyError(f"Target column '{target_col}' not found in engineered features. Pipeline stopped.")
-        
-        feature_cols = [c for c in df_pruned.columns if c.startswith("feature_")]
-        if target_col in feature_cols:
-            feature_cols.remove(target_col)
+            raise KeyError(f"Target {target_col} missing.")
 
-        logger.info(f"Using {len(feature_cols)} frozen features to predict target: {target_col}")
+        # All feature columns are those kept after pruning (excluding metadata)
+        feature_cols = [c for c in df_pruned.columns
+                        if c not in ("ts_event", "open", "high", "low", "close", "volume",
+                                     "session_id", "date", target_col, "regime", "benchmark_pnl")]
 
-        # 4. Deterministic Parquet Serialization
+        logger.info(f"Walkforward with {len(feature_cols)} features.")
+        result_df = run_walkforward(df_pruned, feature_cols, target_col)
+
         os.makedirs(args.out, exist_ok=True)
-        out_parquet_path = os.path.join(args.out, "final_features.parquet")
-        write_canonical_parquet(df_pruned.to_arrow(), out_parquet_path)
-        check_memory_safety()
-
-        # 5. Run Look-ahead safe Walk-Forward Validation
-        df_backtest_results = run_walkforward(df_pruned, feature_cols, target_col)
-        
-        # Save the backtest results so the analytics step can find the 'prediction' column
-        results_parquet_path = os.path.join(args.out, "backtest_results.parquet")
-        df_backtest_results.write_parquet(results_parquet_path)
-        
-        logger.info(f"Simulation completed. Results saved to {results_parquet_path}. Size: {df_backtest_results.height} rows.")
+        out_path = os.path.join(args.out, "backtest_results.parquet")
+        result_df.write_parquet(out_path)
+        logger.info(f"Results saved to {out_path}")
 
 if __name__ == "__main__":
     main()

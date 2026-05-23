@@ -1,17 +1,24 @@
-# --- Contract Specs ---
 contract_symbol: "ZB"
 exchange_timezone: "America/New_York"
 
-# --- Session Management ---
-SESSION_START_LOCAL: !!python/object/apply:datetime.time [8, 20, 0]
-SESSION_END_LOCAL: !!python/object/apply:datetime.time [15, 0, 0]
+session_start_local: "17:00"
+session_end_local: "16:00"
 
-# --- Feature Strategy ---
-ROLL_WINDOWS: [20, 50, 100]
-REGIME_HIGH_THRESH: 0.6
-TARGET_5M_HORIZON: 3
+roll_windows: [10, 20, 50]
+roll_windows_1h: [2, 4, 8]
+roll_windows_daily: [5, 10, 20]
 
-# --- Execution & Risk ---
-SLIPPAGE_K: 0.0002
-MAX_POSITION_SIZE: 20
-MAX_NOTIONAL_USD: 2000000
+regime_high_thresh: 0.5
+regime_low_thresh: 0.3
+
+htf_trend_windows: [10, 20, 30]
+htf_volatility_windows: [10, 20]
+
+slippage_k: 0.0002
+vol_penalty: 0.001
+commission_per_trade: 0.00001
+max_leverage: 2.5
+target_vol: 0.008
+
+max_position_size: 20
+max_notional_usd: 2_000_000

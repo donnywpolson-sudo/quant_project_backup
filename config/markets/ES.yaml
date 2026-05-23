@@ -1,17 +1,24 @@
-# --- Contract Specs ---
 contract_symbol: "ES"
 exchange_timezone: "America/New_York"
 
-# --- Session Management ---
-SESSION_START_LOCAL: !!python/object/apply:datetime.time [9, 30, 0]
-SESSION_END_LOCAL: !!python/object/apply:datetime.time [16, 0, 0]
+session_start_local: "17:00"
+session_end_local: "16:00"
 
-# --- Feature Strategy ---
-ROLL_WINDOWS: [5, 10, 20]
-REGIME_HIGH_THRESH: 0.6
-TARGET_5M_HORIZON: 1
+roll_windows: [5, 10, 20, 50]
+roll_windows_1h: [2, 4, 6, 12]
+roll_windows_daily: [5, 10, 20]
 
-# --- Execution & Risk ---
-SLIPPAGE_K: 0.0005
-MAX_POSITION_SIZE: 50
-MAX_NOTIONAL_USD: 1000000
+regime_high_thresh: 0.6
+regime_low_thresh: 0.4
+
+htf_trend_windows: [5, 10, 20]
+htf_volatility_windows: [5, 10, 20]
+
+slippage_k: 0.0005
+vol_penalty: 0.002
+commission_per_trade: 0.00001
+max_leverage: 3.0
+target_vol: 0.01
+
+max_position_size: 50
+max_notional_usd: 1_000_000

@@ -1,574 +1,206 @@
-# ⚙️ Quant Flowchart — End-to-End Spec (Optimized)
+⚙️ Quant Flowchart — Three‑Stream HTF‑Aware Pipeline (Consolidated)
+Deterministic CPU‑only intraday futures pipeline: 1‑min → three streams (5min, 1h, Daily) → mixed‑timeframe features → HTF context → ExtraTrees discovery → frozen features → walkforward Ridge → top‑down execution.
+Implementation status: Snapshot implements 5min stream fully; 1h/Daily streams, cross‑timeframe features, HTF context, HTF execution filters missing (flagged below). Config values below match config/config.py.
 
-1‑min OHLCV parquet (partitioned by market/year)
-   ↓
-Resample → 5‑min bars
-   ↓
+Hardware: RAM 14GB, storage 200GB, single‑threaded (OMP_NUM_THREADS=1), CPU only, Python 3.10+, pytz (not zoneinfo).
 
-Step 1 — Baseline Features
-Small, human-designed (YAML)
+Pipeline Flowchart (Three‑Stream HTF‑Aware)
+1‑min OHLCV parquet → Resample into 5min, 1h, Daily →
 
-Step 2 — Feature Expansion (critical)
-Create large candidate space:
-- interactions
-- ratios
-- normalized versions
-- regime-conditioned transforms
-
-(ALL features must use past data only)
-   ↓
-
-Step 3 — Target Construction
-target_1h = forward 12-bar return (5m → 1h)
-(optionally convert to long / neutral / short)
-   ↓
-
-Step 4 — ExtraTrees (discovery)
-- Train on target_1h
-- Rank feature importance
-- Select top features
-- Require stability across folds (e.g. ≥60%)
-
-(hundreds → few dozen)
-   ↓
-
-Step 5 — Freeze Features
-- Lock selected feature list
-- Persist schema + hash
-   ↓
-
-Step 6 — Walkforward Ridge Training
-- Train only on frozen features
-- Target = target_1h
-- StandardScaler fit on train only
-   ↓
-
-Step 7 — Prediction
-- Predict every 5 minutes
-   ↓
-
-Step 8 — Execution
-- Predictions recomputed every 5 minutes
-- Convert prediction → position
-- Trade on 5‑min bars
-
-
-> **Single Source of Truth**  
-> Deterministic CPU-only intraday futures ML pipeline  
->  
-> data → features → ExtraTrees discovery → frozen features → walkforward Ridge → execution simulation → artifacts
-
----
-
-# 0. PURPOSE
-
-This document defines the complete production architecture.
-
-The system MUST:
-- be deterministic
-- enforce zero lookahead leakage
-- stay under strict memory limits (<14GB)
-- produce reproducible artifacts
-
----
-
-# 1. OBJECTIVE
-
-Deterministic CPU-only intraday futures ML backtester.
-
-### Trading Constraints
-- Globex 23/5
-- Session window: 18:00 → 16:00 (America/New_York)
-- No overnight holdings
-
-### Core Requirements
-- Seed = 42
-- Float32 everywhere
-- No NaN / inf
-- Memory safe (<14GB)
-- Deterministic across runs
-
----
-
-## Critical Rules
-
-### No-Leak Rule
-- All features must be computed from t‑1 or earlier
-- No training data may contain information from the target bar
-
----
-
-### Implementation Style
-- Polars expression API ONLY
-- Lazy execution preferred
-- No Python loops unless strictly necessary
-
----
-
-### Memory Guarantee
-Must use streaming:
-scan_parquet → transform → sink_parquet
-
-If non-vectorizable:
-- MUST respect chunk size from Section 22
-
----
-
-# 2. GLOBAL ENVIRONMENT
-
-### Seeds
-SEED = 42
-
-Initialize:
-- numpy
-- random
-- sklearn
-
----
-
-### Thread Control
-OMP_NUM_THREADS=1  
-OPENBLAS_NUM_THREADS=1  
-MKL_NUM_THREADS=1  
-NUMEXPR_NUM_THREADS=1  
-
----
-
-### Libraries
-- polars >= 1.0
-- numpy
-- scikit-learn
-- pyarrow
-- joblib
-
-NO pandas
-
----
-
-### Numeric Rules
-- dtype = float32
-- clip to [CLIP_MIN, CLIP_MAX]
-- no NaN or inf allowed
-
----
-
-# 3. CONFIG (SOURCE OF TRUTH)
-
-## Paths
-DATA_GLOB = data/futures/*.parquet  
-FEATURES_OUT = artifacts/features.parquet  
-MANIFEST_PATH = artifacts/manifest.json  
-MODELS_DIR = models/  
-TRADES_OUT = artifacts/trades.csv  
-PNL_OUT = artifacts/pnl_series.csv  
-LOG_DIR = logs/  
-CACHE_DIR = cache/  
-MEMORY_TRACE_OUT = logs/memory_trace.csv  
-
----
-
-## Determinism
-SEED = 42  
-SKLEARN_N_JOBS = 1  
-
----
-
-## Numeric Guards
-EPS = 1e-9  
-CLIP_MIN = -10.0  
-CLIP_MAX = 10.0  
-DTYPE = float32  
-TIMEZONE = America/New_York  
-
-REPLACE_INF_NAN_WITH = 0.0  
-DEBUG_FLOAT64_MODE = False  
-
----
-
-## Memory Limits
-RAM_CAP_BYTES = 14GB  
-RSS_STOP_BYTES = 13.5GB  
-
-ROWS_PER_CHUNK_MAX = 5_000_000  
-MEMORY_SAFETY_MARGIN = 0.95  
-
----
-
-## Data Handling
-STABLE_SORT_KEYS = ["session_id", "ts_event", "row_id"]
-
----
-
-# 4. HARDWARE LIMITS
-
-- RAM strictly < 14GB  
-- Storage ≥ 200GB  
-
-Abort immediately on violation.
-
----
-
-# 5. DATA PIPELINE
-
-## Lazy Stage
-scan_parquet → pushdown filters → light transforms
-
----
-
-## Eager Stage
-- deduplicate  
-- compute session boundaries  
-- validate schema  
-
----
-
-## Sorting
-["session_id", "ts_event", "row_id"]
-
----
-
-# 6. POST-COLLECT VALIDATION
-
-### Integrity Checks
-- ts_event strictly increasing  
-- no nulls  
-- high ≥ low  
-- prices within [low, high]  
-- volume ≥ 0  
-
----
-
-### Memory Estimation
-Compute:
-- total bytes  
-- avg row size  
-- rows_per_chunk  
-
-Abort if:
-estimated_memory > RAM_CAP_BYTES
-
----
-
-# 7. SESSION LOGIC (CRITICAL)
-
-## Globex Rollover
-If hour ≥ 18:00:
-session_date = ts_event + 6 hours
-
-Ensures:
-- continuous trading day  
-- no split sessions  
-
----
-
-## Session Filtering
-Keep only 18:00 → 16:00
-
----
-
-## Resampling
-5-minute bars
-
-Rules:
-O = first  
-H = max  
-L = min  
-C = last  
-V = sum  
-
----
-
-# 8. CLEANING RULES
-
-- No forward/back fill (except allowed cases)  
-- Drop volume == 0  
-- Drop incomplete rows  
-- Replace NaN / inf → 0.0  
-
----
-
-# 9. BASE FEATURES
-
-- log returns (t-1)  
-- rolling statistics per session  
-- float32 only  
-- clipped  
-
----
-
-# 10. FEATURE EXPANSION
-
-All features MUST be:
-- deterministic  
-- session-aware  
-- float32  
-- clipped  
-
----
-
-## Core Groups
-
-Range / Vol:
-- high_low_range_norm  
-- true_range  
-- atr_14  
-- price_z_20  
-
-Trend:
-- dist_ma_20 / 50  
-- pos_in_range_20  
-
-Volume / Microstructure:
-- log_volume  
-- volume_z_20  
-- signed volume imbalance  
-- spread proxy  
-
-Session:
-- session_pos  
-- session_len  
-- time_of_day_bucket  
-
-Momentum:
-- rolling returns  
-- rolling std  
-- EWMA volatility  
-
----
-
-## Pairwise Interactions
-- max 500  
-- lexicographic order  
-- deterministic  
-- stop exactly at cap  
-
----
-
-# 11. NUMERIC GUARDS
-
-- no NaN / inf  
-- clip everything  
-- optional float64 debug pass  
-
----
-
-# 12. REGIME
-
-vol → median → smoothed  
-
-Assign:
-- 1 = high vol  
-- 0 = low vol  
-- else carry forward  
-
----
-
-# 13. TARGETS
-
-## A. 5m Target
-target_5m[t] = sign(log(close[t+1] / open[t+1]))
-
-Set to 0 if crossing session boundary.
-
----
-
-## B. 1H Target
-- session-aware  
-- forward shift after block closes  
-- DST-safe  
-
----
-
-## C. Magnitude Target
-|log_return| > threshold  
-
----
-
-## D. Probabilistic Target
-- used for calibration  
-
----
-
-# 14. 1H MAPPING RULES
-
-- start inclusive  
-- end exclusive  
-- drop partial blocks < 15 min  
-- forward fill only within block  
-- DST-safe  
-
----
-
-# 15. CORRELATION FILTER
-
-- train split only  
-- float64 compute → float32 store  
-- drop features > threshold  
-
-Exclude:
-- targets  
-- regime  
-
----
-
-# 16. FEATURE DISCOVERY
-
-- joblib loky parallel  
-- bootstrap folds = 30  
-
----
-
-## Deterministic Seeds
-seed = HMAC_SHA256(SEED:fold_index)
-
----
-
-## Abort Protocol
-- monitor RSS  
-- terminate if exceeded  
-- persist partial manifest  
-
----
-
-## Baseline Feature Pool
-- load YAML (40 features)  
-- cannot prune pre-discovery  
-
----
-
-# 17. PCA / ORTHOGONALIZATION
-
-Optional:
-top components = 5
-
----
-
-# 18. PARQUET WRITING (STRICT)
-
-version = 2.0  
-compression = snappy  
-row_group_size = 65536  
-column_order = lexicographic  
-
----
-
-# 19. FEATURE FREEZE
-
-- identical schema everywhere  
-- assert hash equality  
-
----
-
-# 20. WALKFORWARD
-
-train = 60 days  
-test = 1 day  
-step = 1 day  
-
----
-
-## Model
-Ridge + StandardScaler
-
----
-
-## Execution
-position = clip(prediction / vol * TARGET_VOL, -MAX_LEVERAGE, MAX_LEVERAGE)
-
----
-
-## Costs
-cost = commission + slippage_k * spread + vol_penalty * volatility
-
----
-
-# 21. DATA SCHEMA
-
-Required:
-- ts_event  
-- open  
-- high  
-- low  
-- close  
-- volume  
-- row_id  
-- session_id  
-
----
-
-# 22. CHUNK FORMULA
-
-rows_per_chunk =  
-min(ROWS_PER_CHUNK_MAX, floor(RAM * margin / avg_row_bytes))
-
----
-
-# 23. TESTS
-
-Must include:
-- DST test  
-- memory abort test  
-- serialization reproducibility test  
-
----
-
-# 24. REPOSITORY STRUCTURE
-
-Unchanged from original spec.
-
----
-
-# 25. BENCHMARK
-
-Must include:
-- naive baseline  
-- compare Sharpe, Drawdown, Turnover  
-
----
-
-# 26. ZERO TRUNCATION RULE
-
-- no pseudocode  
-- no placeholders  
-- full implementations only  
-
----
-
-# 27. FIXTURE
-
-Synthetic parquet with DST edge case required.
-
----
-
-# 28. MANIFEST SCHEMA
-
-Strict JSON format enforced exactly as specified.
-
----
-
-# 29. ENTRYPOINT
-
-def run_pipeline(data_glob, config_path, out_dir)
-
----
-
-# 30. DEV CHECKLIST
-
-- generate fixtures  
-- run pipeline  
-- verify hashes  
-- run pytest  
-- validate memory  
-
----
-
-# 31. FINAL DIRECTIVE
-
-Priority order:
-
-1. Determinism  
-2. No leakage  
-3. Memory safety  
-4. Reproducibility  
-
-All other considerations are secondary.
+Step 1 — Baseline & HTF context
+
+5min baseline features (YAML)
+
+HTF state: trend alignment, distance to Daily/1h levels, volatility ratios, regime labels
+
+Step 2 — Feature expansion
+
+Intra‑timeframe interactions (5min×5min, 1h×1h, Daily×Daily)
+
+Cross‑timeframe (5min×1h, 5min×Daily, 1h×Daily)
+
+Ratios, z‑scores, regime‑conditioned transforms (past data only)
+
+Step 3 — Target
+target_5m = log(close_5min[t+1]/close_5min[t])
+
+Step 4 — ExtraTrees discovery
+
+Train on combined 5min/1h/Daily feature pool (HTF as regime filters)
+
+Stability selection: frequency ≥75%, sign consistency ≥80%
+
+Step 5 — Freeze features → manifest + SHA256
+
+Step 6 — Walkforward Ridge (frozen mixed‑timeframe features, StandardScaler per fold)
+
+Step 7 — Prediction (every 5min using latest 5min/1h/Daily aligned without lookahead)
+
+Step 8 — Top‑down execution
+
+Scale position by HTF volatility (e.g., daily ATR)
+
+Trend alignment filter: only signals agreeing with HTF trend
+
+Flatten before close
+
+1. OBJECTIVE
+Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <14GB, seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
+
+2. GLOBAL ENV
+SEED=42 for numpy/random/sklearn
+
+OMP_NUM_THREADS=OPENBLAS_NUM_THREADS=MKL_NUM_THREADS=1
+
+Libs: polars, numpy, sklearn, pyarrow, joblib, pytz
+
+CLIP_MIN=-10.0, CLIP_MAX=10.0, EPS=1e-9
+
+No NaN/inf → replace with 0.0
+
+3. CONFIG (actual values from snapshot)
+Paths
+text
+DATA_GLOB = "data/futures/*.parquet"
+MANIFEST_PATH = "artifacts/manifest.json"
+BASELINE_FEATURES_FILE = "config/baseline_features.yaml"
+BASELINE_FEATURES_PERSIST_PATH = "artifacts/baseline_feature_matrix.parquet"
+TRADES_OUT = "artifacts/trades.csv"
+LOG_DIR = "logs/"
+Memory & determinism
+text
+RAM_CAP_BYTES = 14 * 1024**3
+RSS_STOP_BYTES = 13.5 * 1024**3
+ROWS_PER_CHUNK_MAX = 5_000_000
+MEMORY_SAFETY_MARGIN = 0.95
+Resampling (three streams – 1h/Daily not yet implemented)
+text
+SESSION_START_LOCAL = time(18,0)
+SESSION_END_LOCAL = time(16,0)
+RESAMPLE_FREQUENCIES = ["5m", "1h", "1d"]
+DROP_INCOMPLETE_ROWS = True
+Baseline windows (5min only – HTF windows exist but unused)
+text
+ROLL_WINDOWS = [5,10,20,50]
+ROLL_WINDOWS_1H = [2,4,6,12]       # not implemented
+ROLL_WINDOWS_DAILY = [5,10,20]     # not implemented
+Feature expansion (cross‑timeframe not implemented)
+text
+FEATURE_TRANSFORMS = ["lags","ratios","z_scores","pairwise_products_limited","cross_timeframe_ratios"]
+MAX_PAIRWISE_INTERACTIONS = 500
+MAX_CROSS_TIMEFRAME_INTERACTIONS = 200   # not implemented
+HTF Context (not implemented)
+text
+HTF_TREND_WINDOWS = [5,10,20]
+HTF_VOLATILITY_WINDOWS = [5,10,20]
+HTF_ALIGNMENT_FILTER = True
+HTF_TREND_THRESHOLD = 0.1
+Regime (implemented)
+text
+VOL_MEDIAN_WINDOW = 20
+VOL_SMOOTH_WINDOW = 5
+REGIME_HIGH_THRESH = 0.6
+REGIME_LOW_THRESH = 0.4
+Target & discovery
+text
+TARGET_5M_HORIZON = 1
+DISCOVERY_WINDOW_DAYS = 60
+BOOTSTRAP_FOLDS = 30
+EXTRA_TREES_PARAMS = {"random_state":42,"n_jobs":1,"n_estimators":100,"max_depth":12,"max_features":0.3,"bootstrap":False}
+SELECTION_FREQ_THRESHOLD = 0.75
+SIGN_CONSISTENCY_THRESHOLD = 0.8
+CUMULATIVE_IMPORTANCE_THRESHOLD = 0.95
+MIN_SELECTED_FEATURES = 10
+MAX_SELECTED_FEATURES = 1000
+Walkforward & Ridge
+text
+WF_TRAIN_DAYS = 60
+WF_TEST_DAYS = 1
+WF_STEP_DAYS = 1
+RIDGE_PARAMS = {"alpha":1.0,"solver":"cholesky","fit_intercept":True,"random_state":42}
+Execution (HTF scaling/alignment not implemented)
+text
+EXECUTE_AT = "open[t+1]"
+SLIPPAGE_K = 0.001
+VOL_PENALTY = 0.005
+COMMISSION_PER_TRADE = 0.00002
+TARGET_VOL = 0.01
+MAX_LEVERAGE = 3.0
+MAX_POS_CHANGE_PER_MIN = 0.1
+FLAT_BEFORE_CLOSE_MINUTES = 5
+HTF_TREND_ALIGNMENT = True      # missing in simulator
+HTF_VOL_SCALING = True          # missing
+HTF_VOL_WINDOW = 10
+Metrics & constants
+text
+METRICS_TO_COMPUTE = ["Sharpe","MaxDrawdown","Turnover","HitRate","AvgWin","AvgLoss","MAE"]
+ANNUALIZATION_FACTOR = 66528   # 5‑min bars/year
+ROW_GROUP_SIZE = 65536
+4. HARDWARE LIMITS
+RSS stop at 13.5GB, hard cap 14GB.
+
+Check memory before each chunk.
+
+5. DATA LOAD – THREE‑STREAM RESAMPLING (MEMORY SAFE)
+Lazy scan_parquet → session filter → resample to 5min, 1h, Daily simultaneously.
+
+Store each stream to temp files.
+
+For each 5‑min bar, align most recent 1h bar (closed ≤ 5min timestamp) and most recent Daily bar (closed before session).
+
+Status: Only 5min implemented in src/session.py.
+
+6. POST‑RESAMPLE VALIDATION
+OHLC integrity (high≥low, open/close within range).
+
+Estimate combined feature matrix memory; abort if > RAM_CAP_BYTES.
+
+7. SESSION DEFINITION & FILTERING (as in snapshot)
+Add session_id by shifting timestamps +6h → date.
+
+Keep rows where local time in [18:00, 16:00).
+
+8. CLEANING RULES
+Drop zero‑volume rows (optional).
+
+Drop incomplete bars (config).
+
+Replace inf/nan with 0.0.
+
+9. BASE FEATURES & HTF CONTEXT
+5min baseline: 40 features from YAML – implemented (src/features/baseline.py).
+
+HTF state features (daily_return_1, distance_to_daily_high, hourly_trend_alignment, etc.) – not implemented.
+
+10. FEATURE EXPANSION
+Intra‑timeframe: pairwise products (capped 500), ratios, z‑scores, regime‑conditioned – implemented.
+
+Cross‑timeframe (5min×1h, etc.) – not implemented.
+
+11. NUMERIC GUARDS – fully implemented (clipping, float32, NaN→0).
+12. REGIME – implemented (volatility‑based high/medium/low).
+13. TARGET CONSTRUCTION – implemented (target_5m).
+14. CORRELATION FILTER – implemented on first train fold (threshold 0.95).
+15. NONLINEAR DISCOVERY (ExtraTrees) – implemented, but only 5min features (no HTF).
+16. MANIFEST & CANONICAL PARQUET – implemented (src/io/canonical_parquet.py).
+17. FEATURE FREEZE – implemented (manifest stores selected names).
+18. WALKFORWARD RIDGE – implemented (60/1 day rolling), but only frozen 5min features.
+19. TOP‑DOWN EXECUTION – partially implemented (position sizing, costs, max change, flatten). Missing: HTF vol scaling, trend alignment filter.
+20. NAIVE BENCHMARK – implemented (20‑period SMA crossover, long only).
+21. TESTS – memory abort, serialisation reproducibility, walkforward, dtypes, manifest format.
+22. ENTRYPOINT – src/cli.py discover and src/cli.py run.
+23. MISSING IMPLEMENTATIONS CHECKLIST (to complete three‑stream HTF)
+Resample 1h and Daily streams in src/session.py
+
+Create HTF context features (src/features/htf_context.py)
+
+Extend expand_features with cross‑timeframe interactions
+
+Modify discovery to use all three streams
+
+Update walkforward to align HTF features without lookahead
+
+Add HTF volatility scaling and trend alignment to simulate_execution
+
+24. FINAL DIRECTIVE
+Generate a complete, runnable package that implements the three‑stream HTF‑aware pipeline as described above. Use the config values and file structure from the snapshot as the baseline. Implement all missing pieces flagged “not implemented”. Ensure determinism, memory safety, and zero leakage.

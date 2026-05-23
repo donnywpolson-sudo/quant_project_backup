@@ -1,1072 +1,0 @@
-# Project Snapshot
-
---- 
-### File: .gitignore
-```
-# Python environment and caches
-__pycache__/
-.venv/
-*.pyc
-
-# Project Data (Do not sync these)
-artifacts/
-futures/
-
-# Secrets and Settings
-.env
-.DS_Store
-*.log
-```
-
---- 
-### File: ai_prompt.md
-```
-# ⚙️ Quant Flowchart — End‑to‑End Updated Objective and Spec (Gemini Pro Extended Optimized)
-
-> **One file. One source of truth.** > Deterministic, CPU‑only intraday futures pipeline: data → features → one‑time ExtraTrees discovery → frozen features → walkforward Ridge models → execution simulation → artifacts & tests.
-
-> **From the attached spec:** > “Deterministic CPU-only intraday futures ML backtester. Strict intraday only Globex 23/5 18:00 America_New_York → 16:00 America_New_York no overni
-... [Truncated]
-```
-
---- 
-### File: databento_new_historical_data_fetch.py
-```
-from __future__ import annotations
-import os
-import datetime as dt
-from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from sys import audit
-
-import pandas as pd
-import numpy as np
-import databento as db
-
-# =========================================
-# CONFIG
-# =========================================
-API_KEY = os.getenv("DATABENTO_API_KEY", "")
-DATASET = "GLBX.MDP3"
-SCHEMA = "ohlcv-1m"
-STYPE_IN = "continuous"
-STYPE_OUT = "instrument_id"
-
-SYMBOLS = [
-    "NQ.
-... [Truncated]
-```
-
---- 
-### File: run_full_pipeline.py
-```
-"""
-run_full_pipeline.py
-Automated Orchestrator: Scans 'futures/' and processes all found parquet files.
-Includes: Retry logic, File-based logging, and robust temporal splitting.
-"""
-import subprocess
-import sys
-import logging
-import time
-import polars as pl
-from pathlib import Path
-
-# Setup global logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("PipelineOrchestrator")
-
-def run_step(cmd_list, retries=2, delay=5):
-    """Executes a command with a retry mechanism for robustness."""
-    for attempt in range(retries + 1):
-        logger.info(f"Executing: {' '.join(cmd_list)}")
-        try:
-            result = subprocess.run(cmd_list, capture_output=True, text=True)
-            if result.returncode == 0:
-                logger.info("Step completed successfully.")
-                return True
-            else:
-                logger.error(f"Attempt {attempt + 1} failed: {result.stderr}")
-        except Exception as e:
-            logger.error(f"Exception during execution: {e}")
-        
-        if attempt < retries:
-            time.sleep(delay)
-            logger.info(f"Retrying step... (Attempt {attempt + 2})")
-            
-    return False
-
-def process_file(data_path: Path):
-    """Orchestrates the pipeline with localized logging per run."""
-    market = data_path.parent.name
-    year = data_path.stem
-    artifacts_dir = Path("artifacts") / market / year
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    
-    # --- Localized Logging ---
-    log_file = artifacts_dir / "pipeline.log"
-    file_handler = logging.FileHandler(log_file)
-    logger.addHandler(file_handler)
-    
-    logger.info(f"--- Starting Pipeline for {market} {year} ---")
-    
-    # --- Robust Temporal Partitioning ---
-    train_subset_path = artifacts_dir / "discovery_subset.parquet"
-    df = pl.read_parquet(data_path)
-    # Split index (50%) - ensures discovery only sees first half
-    split_idx = int(len(df) * 0.5)
-    df.slice(0, split_idx).write_parquet(train_subset_path)
-    logger.info(f"Discovery subset created: {len(df.slice(0, split_idx))} rows.")
-
-    # --- Pipeline Stages ---
-    stages = [
-        [sys.executable, "-m", "src.cli", "discover", "--data", str(train_subset_path), "--out", str(artifacts_dir / "manifest.json")],
-        [sys.executable, "-m", "src.cli", "run", "--data", str(data_path), "--manifest", str(artifacts_dir / "manifest.json"), "--out", str(artifacts_dir)],
-        [sys.executable, "-m", "src.analytics", str(artifacts_dir / "final_features.parquet")]
-    ]
-
-    for stage_cmd in stages:
-        if not run_step(stage_cmd):
-            logger.error(f"Pipeline failed at stage: {stage_cmd[2]}")
-            break
-    else:
-        logger.info(f"--- Pipeline Completed Successfully for {market} {year} ---")
-
-    # Cleanup log handler to prevent leaking handles
-    file_handler.close()
-    logger.removeHandler(file_handler)
-
-if __name__ == "__main__":
-    futures_dir = Path("futures")
-    if not futures_dir.exists():
-        logger.error("Directory 'futures' not found.")
-        sys.exit(1)
-
-    files = list(futures_dir.rglob("*.parquet"))
-    for file_path in files:
-        process_file(file_path)
-```
-
---- 
-### File: .pytest_cache\.gitignore
-```
-# Created by pytest automatically.
-*
-
-```
-
---- 
-### File: .pytest_cache\CACHEDIR.TAG
-```
-Signature: 8a477f597d28d172789f06886806bc55
-# This file is a cache directory tag created by pytest.
-# For information about cache directory tags, see:
-#	https://bford.info/cachedir/spec.html
-
-```
-
---- 
-### File: .pytest_cache\README.md
-```
-# pytest cache directory #
-
-This directory contains data from the pytest's cache plugin,
-which provides the `--lf` and `--ff` options, as well as the `cache` fixture.
-
-**Do not** commit this to version control.
-
-See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more information.
-
-```
-
---- 
-### File: .pytest_cache\v\cache\lastfailed
-```
-{}
-```
-
---- 
-### File: .pytest_cache\v\cache\nodeids
-```
-[
-  "tests/test_dtypes.py::test_column_types",
-  "tests/test_manifest.py::test_manifest_format",
-  "tests/test_memory_abort.py::test_oom_interception",
-  "tests/test_serialization_repro.py::test_byte_level_reproducibility",
-  "tests/test_serialization_repro.py::test_canonical_parquet_metadata"
-]
-```
-
---- 
-### File: .pytest_cache\v\cache\stepwise
-```
-[]
-```
-
---- 
-### File: .vscode\launch.json
-```
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Run Pipeline (Full)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "src.cli",
-            "args": [
-                "run",
-                "--data", "tests/fixtures/synthetic_1min_fixture.parquet",
-                "--config", "config/config.py",
-                "--out", "artifacts/"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "
-... [Truncated]
-```
-
---- 
-### File: ci\ci_stub.yaml
-```
-# ci/ci_stub.yml
-name: Quant Pipeline CI
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  test-and-verify:
-    runs-on: ubuntu-latest
-    env:
-      # Section 2: Determinism requires single-threaded math libraries
-      OMP_NUM_THREADS: 1
-      OPENBLAS_NUM_THREADS: 1
-      MKL_NUM_THREADS: 1
-      PYTHONPATH: .
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 
-... [Truncated]
-```
-
---- 
-### File: config\baseline_features.yaml
-```
-# config/baseline_features.yaml
-# Last Updated: 2026-05-21
-# Version: 1.0.0
-# Description: Frozen canonical baseline feature pool (40 features).
-# Usage: Loaded by discovery.py for ExtraTrees baseline discovery.
-
-baseline_features:
-  - feature_ret_1
-  - feature_ret_5
-  - feature_ret_10
-  - feature_ret_20
-  - feature_ma_5
-  - feature_ma_20
-  - feature_ma_50
-  - feature_dist_ma_20
-  - feature_dist_ma_50
-  - feature_ma_slope_20
-  - feature_price_z_20
-  - feature_price_z_50
-  - feature_high_low_rang
-... [Truncated]
-```
-
---- 
-### File: config\config.py
-```
-"""
-config/config.py
-Single Source of Truth for the Quant Pipeline.
-Professional Implementation: Includes Schema Validation and Circuit Breakers.
-"""
-import os
-import sys
-import yaml
-import logging
-from datetime import time
-
-# --- 0. Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- 1. Environment and Threading Configuration ---
-def set_threading_env():
-    envs = {
-        "OMP_NUM_THREADS": "1",
-        "OPENBLAS_NUM_THREADS": "1",
-        "MKL_NUM_THREADS": "1",
-        "VECLIB_MAXIMUM_THREADS": "1",
-        "NUMEXPR_NUM_THREADS": "1"
-    }
-    for key, value in envs.items():
-        os.environ[key] = value
-
-set_threading_env()
-
-# --- 2. Dynamic Configuration Loading & Validation ---
-# Schema enforcement ensures all markets provide necessary risk/specs
-REQUIRED_KEYS = [
-    "contract_symbol", "exchange_timezone", "SESSION_START_LOCAL", 
-    "SESSION_END_LOCAL", "ROLL_WINDOWS", "REGIME_HIGH_THRESH", 
-    "TARGET_5M_HORIZON", "SLIPPAGE_K", "MAX_POSITION_SIZE", "MAX_NOTIONAL_USD"
-]
-
-def load_market_config(market_name: str):
-    """
-    Applies and validates market-specific YAML overrides.
-    """
-    market_path = f"config/markets/{market_name}.yaml"
-    
-    if not os.path.exists(market_path):
-        logging.error(f"Market config file not found: {market_path}")
-        raise FileNotFoundError(f"Config for {market_name} missing.")
-        
-    with open(market_path, 'r') as f:
-        overrides = yaml.safe_load(f)
-        
-    # Schema Validation
-    missing_keys = [k for k in REQUIRED_KEYS if k not in overrides]
-    if missing_keys:
-        error_msg = f"Market config {market_path} is missing required keys: {missing_keys}"
-        logging.error(error_msg)
-        raise ValueError(error_msg)
-            
-    current_module = sys.modules[__name__]
-    for key, value in overrides.items():
-        if hasattr(current_module, key) or key not in REQUIRED_KEYS:
-            setattr(current_module, key, value)
-            logging.info(f"Overridden {key} with {value}")
-        else:
-            logging.warning(f"Config key '{key}' from {market_path} is being set for the first time.")
-    
-    logging.info(f"Successfully validated and applied overrides for {market_name}")
-
-# --- 3. Environment & Infrastructure ---
-ENV = os.getenv("QUANT_ENV", "DEVELOPMENT") 
-DEBUG_MODE = (ENV == "DEVELOPMENT")
-
-DATA_ROOT = "/mnt/data/prod" if not DEBUG_MODE else "./data/test"
-ARTIFACTS_ROOT = "/mnt/artifacts/prod" if not DEBUG_MODE else "./artifacts"
-
-# --- 4. Global Risk & Circuit Breakers ---
-GLOBAL_STOP_LOSS_PCT = 0.05
-MAX_DAILY_DRAWDOWN_USD = 10000.0
-CIRCUIT_BREAKER_RESET_TIME = time(17, 0, 0) 
-
-# --- 5. Execution & Microstructure ---
-MIN_ORDER_INTERVAL_MS = 50
-SLIPPAGE_BPS_DEFAULT = 0.5
-MAX_NOTIONAL_EXPOSURE = 5000000
-
-# --- 6. Paths and IO ---
-DATA_GLOB = os.path.join(DATA_ROOT, "futures/*.parquet")
-FEATURES_OUT = os.path.join(ARTIFACTS_ROOT, "features.parquet")
-MANIFEST_PATH = os.path.join(ARTIFACTS_ROOT, "manifest.json")
-MODELS_DIR = "models/"
-TRADES_OUT = os.path.join(ARTIFACTS_ROOT, "trades.csv")
-PNL_OUT = os.path.join(ARTIFACTS_ROOT, "pnl_series.csv")
-LOG_DIR = "logs/"
-CACHE_DIR = "cache/"
-SYNTHETIC_FIXTURE_PATH = "tests/fixtures/synthetic_1min_fixture.parquet"
-MAPPING_FILE_PATH = "config/term_to_canonical_mapping.yaml"
-BASELINE_FEATURES_FILE = "config/baseline_features.yaml"
-
-# --- 7. Schema Definitions ---
-ALL_COLUMNS = ['session_id', 'ts_event', 'row_id', 'close', 'volume', 'ask_price', 'bid_price', 'target']
-BASELINE_FEATURES = ["close", "volume", "ask_price", "bid_price"]
-TARGET_COL = "target"
-ID_COLS = ["session_id", "ts_event", "row_id"]
-BASELINE_FEATURES_PERSIST_PATH = os.path.join(ARTIFACTS_ROOT, "baseline_feature_matrix.parquet")
-MEMORY_LOG_ENABLED = True
-
-# --- 8. Determinism ---
-SEED = 42
-SKLEARN_N_JOBS = 1
-
-# --- 9. Numeric Guards ---
-EPS = 1e-9
-CLIP_MIN = -10.0
-CLIP_MAX = 10.0
-DTYPE = "float32"
-TIMEZONE = "America/New_York"
-PRE_POST_CLIP_LOGGING = True
-DEBUG_FLOAT64_MODE = False
-REPLACE_INF_NAN_WITH = 0.0
-
-# --- 10. Memory and Hardware ---
-RAM_CAP_BYTES = 14 * 1024**3
-RSS_STOP_BYTES = 13.5 * 1024**3
-STORAGE_MIN_GB = 200
-ROWS_PER_CHUNK_MAX = 5_000_000
-MEMORY_SAFETY_MARGIN = 0.95
-MEMORY_RSS_CHECKPOINT_INTERVAL_SEC = 10
-MEMORY_RSS_CHECKPOINTS_BEFORE_STOP = 3
-
-# --- 11. Data Load & Session ---
-DATA_SCAN_GLOB = DATA_GLOB
-LAZY_PUSHDOWN_FILTERS = True
-COLLECT_PARTITION_ROWS = True
-STABLE_SORT_KEYS = ["session_id", "ts_event", "row_id"]
-ROW_GROUP_SIZE = 65536
-SESSION_START_LOCAL = time(18, 0, 0)
-SESSION_END_LOCAL = time(16, 0, 0)
-SESSION_TZ = TIMEZONE
-RESAMPLE_RULES = {"O": "first", "H": "max", "L": "min", "C": "last", "V": "sum"}
-
-# --- 12. Cleaning & Features ---
-DROP_VOLUME_ZERO = True
-ALLOW_FFILL_4H_MAPPING_ONLY = True
-DROP_INCOMPLETE_ROWS = True
-ROLL_WINDOWS = [5, 10, 20, 50]
-ROLL_WINDOW_MIN_ROWS = max(ROLL_WINDOWS)
-FEATURE_TRANSFORMS = ["lags", "ratios", "z_scores", "pairwise_products_limited"]
-MAX_PAIRWISE_INTERACTIONS = 500
-TEMPORAL_BUCKETS = ["early", "mid", "late"]
-
-# --- 13. Regime and Targets ---
-VOL_MEDIAN_WINDOW = 20
-VOL_SMOOTH_WINDOW = 5
-REGIME_HIGH_THRESH = 0.6
-REGIME_LOW_THRESH = 0.4
-REGIME_MISSING_DEFAULT = 0
-TARGET_5M_HORIZON = 1
-TARGET_1H_RESAMPLE_RULE = "1H"
-MAGNITUDE_THRESHOLD = 0.002
-PROB_TARGET_THRESHOLD = 0.005
-
-# --- 14. Discovery & Modeling ---
-DISCOVERY_METHOD = "ExtraTrees"
-DISCOVERY_WINDOW_DAYS = 60
-BOOTSTRAP_FOLDS = 30
-EXTRA_TREES_PARAMS = {
-    "random_state": 42,
-    "n_jobs": 1,
-    "n_estimators": 100,
-    "max_depth": 12,
-    "max_features": 0.3,
-    "bootstrap": False
-}
-RIDGE_PARAMS = {"alpha": 1.0, "solver": "cholesky", "fit_intercept": True, "random_state": 42}
-
-# --- 15. Execution and Risk ---
-EXECUTE_AT = "open[t+1]"
-SLIPPAGE_K = 0.001
-VOL_PENALTY = 0.005
-COMMISSION_PER_TRADE = 0.00002
-TARGET_VOL = 0.01
-MAX_LEVERAGE = 3.0
-MAX_POS_CHANGE_PER_MIN = 0.1
-FLAT_BEFORE_CLOSE_MINUTES = 5
-
-# --- 16. Metrics ---
-METRICS_TO_COMPUTE = ["Sharpe", "MaxDrawdown", "Turnover", "HitRate", "AvgWin", "AvgLoss", "MAE"]
-ANNUALIZATION_FACTOR = 66528
-
-# --- 17. Entrypoint ---
-ENTRYPOINT_FN = "run_pipeline"
-```
-
---- 
-### File: config\markets\CL.yaml
-```
-# --- Contract Specs ---
-contract_symbol: "CL"
-exchange_timezone: "America/New_York"
-
-# --- Session Management ---
-SESSION_START_LOCAL: !!python/object/apply:datetime.time [9, 0, 0]
-SESSION_END_LOCAL: !!python/object/apply:datetime.time [14, 30, 0]
-
-# --- Feature Strategy ---
-ROLL_WINDOWS: [10, 20, 50]
-REGIME_HIGH_THRESH: 0.7
-TARGET_5M_HORIZON: 1
-
-# --- Execution & Risk ---
-SLIPPAGE_K: 0.002
-MAX_POSITION_SIZE: 30
-MAX_NOTIONAL_USD: 750000
-```
-
---- 
-### File: config\markets\ES.yaml
-```
-# --- Contract Specs ---
-contract_symbol: "ES"
-exchange_timezone: "America/New_York"
-
-# --- Session Management ---
-SESSION_START_LOCAL: !!python/object/apply:datetime.time [9, 30, 0]
-SESSION_END_LOCAL: !!python/object/apply:datetime.time [16, 0, 0]
-
-# --- Feature Strategy ---
-ROLL_WINDOWS: [5, 10, 20]
-REGIME_HIGH_THRESH: 0.6
-TARGET_5M_HORIZON: 1
-
-# --- Execution & Risk ---
-SLIPPAGE_K: 0.0005
-MAX_POSITION_SIZE: 50
-MAX_NOTIONAL_USD: 1000000
-```
-
---- 
-### File: config\markets\ZB.yaml
-```
-# --- Contract Specs ---
-contract_symbol: "ZB"
-exchange_timezone: "America/New_York"
-
-# --- Session Management ---
-SESSION_START_LOCAL: !!python/object/apply:datetime.time [8, 20, 0]
-SESSION_END_LOCAL: !!python/object/apply:datetime.time [15, 0, 0]
-
-# --- Feature Strategy ---
-ROLL_WINDOWS: [20, 50, 100]
-REGIME_HIGH_THRESH: 0.6
-TARGET_5M_HORIZON: 3
-
-# --- Execution & Risk ---
-SLIPPAGE_K: 0.0002
-MAX_POSITION_SIZE: 20
-MAX_NOTIONAL_USD: 2000000
-```
-
---- 
-### File: futures\CL\2024.parquet
-```
-PAR1�����pL��   ��@0 `�ae[� �BZs�R�h�J��C�`;�p�3���+� 6$�x}����(
-�,�S
-\� ؚ�0��(�)�6�p�D8��R���`�F�n@��|�տ����Hd���������P:������ ɉ�X��,�Wz]� �r`�j$�-c2u[@h�SN�L\KDjp�<x��4� !-�xh%�Я�(���>�0������,�[�^� 8������1�-@y�;���I��WHO�e���s�ݩ�P%���l�� ���X����B���{�`�s��l�`d�,h�\
-_� ��
-... [Truncated]
-```
-
---- 
-### File: futures\CL\2025.parquet
-```
-PAR1�����pL��   ��@0 `� ͳ �4�|�h�	�,�
-� R�p�� ���. (�<xo�Jж�X(��f�E�t،��0Դ�����b��8�������8��@�����~�,�w � HVo��g��_*P,X8�sPF �HTXAb�I9p�1~`�)��"�g�h����
-�=�p������� ��,xZ�	� С�(��%�0�3�w�A0��O��]�M�k8��y�ܞ��#��@k���������HAx���p���h�Pa�,�^Y�  �QX�I!�4B/|:=`�2K�
-+YR#gh�
-... [Truncated]
-```
-
---- 
-### File: futures\CL\2026.parquet
-```
-PAR1��}��nL��   ��>0 `�N��� ��F�?�hf7���/��'�p< �,ȃ��  �x	�Y,(��9���G�/�U0w�c����Û�ۻ�@#���j����H����@������,Pυ�� �~ ^v'X�n5��fC4_Q`{W_��OmhQ@���8��0�p')��n!� ��x���D
-�(��,����� ��0b�"���088�L��Z@�v𜭒H䥠�+��P������ I�X�w�,��o�� h`f`��X,�P:h<IH��AV�9dp2r �"��/�(w����0
-... [Truncated]
-```
-
---- 
-### File: futures\ES\2024.parquet
-```
-PAR1���޽pL��   ��@0 `�ae[� �BZs�R�h�J��C�`;�p�3���+� 6$�x}����(
-�,�S
-\� ؚ�0��(�)�6�p�D8��R���`�F�n@��|�տ����Hd���������P:������ ɉ�X��,�Wz]� �r`�j$�-c2u[@h�SN�L\KDjp�<x��4� !-�xh%�Я�(���>�؅�0������,�[�^� 8������1�-@y�;���I��WHO�e���s�ݩ�P%���l�� ���X����B���{�`�s��l�`d�,h�\
-_
-... [Truncated]
-```
-
---- 
-### File: futures\ES\2025.parquet
-```
-PAR1�����pL��   ��@0 `� ͳ �4�|�h�	�,�
-� R�p�� ���. (�<xo�Jж�X(��f�E�t،��0Դ�����b��8�������8��@�����~�,�w � HVo��g��_*P,X8�sPF �HTXAb�I9p�1~`�)��"�g�h����
-�=�p������� ��,xZ�	� С�(��%�0�3�w�A0��O��]�M�k8��y�ܞ��#��@k���������HAx���p���h�Pa�,�^Y�  �QX�I!�4B/|:=`�2K�
-+YR#gh�
-... [Truncated]
-```
-
---- 
-### File: futures\ES\2026.parquet
-```
-PAR1����oL��   ��?0 `�N��� ��F�?�hf7���/��'�p< �,ȃ��  �x	�Y,(��9���G�/�U0w�c���q��8Mˍ��Û�ۻ�@#���j����H����@������,Pυ�� �~ ^v'X�n5��fC4_Q`{W_��Om
-H{hQ@���8��0�p')��n!� ��x���D
-�(��,����� ��0b�"���0���>88�L��Z���h@�v�U��𜭒H䥠�+���r��P������ I�X�w�,��o�� h`f`��X,�P:h<IH��
-... [Truncated]
-```
-
---- 
-### File: futures\ZB\2024.parquet
-```
-PAR1�����pL��   ��@0 `�ae[� �BZs�R�h�J��C�`;�p�3���+� 6$�x}����(
-�,�S
-\� ؚ�0��(�)�6�p�D8��R���`�F�n@��|�տ����Hd���������P:������ ɉ�X��,�Wz]� �r`�j$�-c2u[@h�SN�L\KDjp�<x��4�xh%�Я�(���>�؅�0������,�[�^� 8������1�-@y�;���I��WHO�e���s�ݩ�P%���l�� ���X����B���{�`�s��l�`d�,h�\
-_� ��T
-... [Truncated]
-```
-
---- 
-### File: futures\ZB\2025.parquet
-```
-PAR1�����pL��   ��@0 `� ͳ �4�|�h�	�,�
-� R�p�� ���. (�<xo�Jж�X(��f�E�t،��0Դ����8�������8��@�����~�,HVo� ��g��_*P,X8XAb�I9p�1~`�)��"�g�h��=�p������� ��,xZ�	� С�(��%�0�3�w�A0��O��]�M�k8��y�ܞ��#���������HAx���p���h�Pa�,�^Y�  �QX�I!�4B/|:=`�2K�
-+YR#gh�upo� ���xE��Ќ��(������
-... [Truncated]
-```
-
---- 
-### File: futures\ZB\2026.parquet
-```
-PAR1��j��]L¤
-   ��50 `�N��� ��F�?�hf7���/��'�p< �,ȃ��  ��Y,(��9���G�/�U0w�c���q��8Mˍ��Û�ۻ�@#���j����H����@��, ^v'�� ��fC��Om
-H{��8��0�p')��n!��D
-�,���� ���>88�L@�v�U��𜭒H䥠��� I�X�w�,��o�� `f`�P:h<IH��AVp2r�Y*� �"�(w����,��' @��5�@�C�]�{P��� 4���Y�,h'RÆ �D3? �+Mx�#[(bw�������8���U�
-... [Truncated]
-```
-
---- 
-### File: src\analytics.py
-```
-"""
-src/analytics.py
-Calculates performance metrics from walk-forward simulation output.
-"""
-import sys
-import polars as pl
-import numpy as np
-
-def calculate_metrics(file_path: str):
-    """
-    Computes Hit Rate, Sharpe Ratio, and Drawdown.
-    
-    Expects a parquet file with the following columns:
-    - 'prediction': The model's binary/class prediction
-    - 'target': The actual ground truth
-    - 'close': Price data (used to derive returns if 'returns' is missing)
-    """
-    try:
-        df
-... [Truncated]
-```
-
---- 
-### File: src\cli.py
-```
-"""
-src/cli.py
-Entrypoint for the Deterministic Quant Pipeline.
-Orchestrates Phase 1 (Feature Discovery via ExtraTrees) and 
-Phase 2 (Enforced Manifest Pruning and Walk-Forward Ridge Simulation).
-"""
-import argparse
-import logging
-import os
-import psutil
-import polars as pl
-from pathlib import Path
-
-# Import project modules
-from config import config
-from src.discovery import run_feature_discovery
-from src.features.engine import generate_features, prune_features_by_manifest
-from src.walkforward i
-... [Truncated]
-```
-
---- 
-### File: src\discovery.py
-```
-"""
-src/discovery.py
-Phase 1: Feature Discovery using ExtraTreesClassifier.
-Orchestrates the identification of the most predictive feature subset.
-"""
-import os
-import json
-import logging
-import numpy as np
-import polars as pl
-from sklearn.ensemble import ExtraTreesClassifier
-from config import config
-from src.features.engine import generate_features
-
-# Setup logging
-logger = logging.getLogger(__name__)
-
-def check_memory_safety():
-    """
-    Check RSS usage against config limits to prevent Out-
-... [Truncated]
-```
-
---- 
-### File: src\ingest.py
-```
-"""
-src/ingest.py
-Handles lazy ingestion, session filtering, and mandatory memory/integrity validation.
-"""
-import polars as pl
-import logging
-import psutil
-from config import config
-
-logger = logging.getLogger(__name__)
-
-def validate_memory_and_integrity(df: pl.DataFrame):
-    """
-    Implements Section 6: Memory Pre-check and Data Integrity Hook.
-    Validates data quality, aborts if memory exceeds RAM_CAP_BYTES,
-    and calculates downstream chunking requirements.
-    """
-    logger.info("Run
-... [Truncated]
-```
-
---- 
-### File: src\walkforward.py
-```
-"""
-src/walkforward.py
-Deterministic, no-lookahead walk-forward validation for RidgeClassifier models.
-Strictly enforced: Float32 precision, CPU-only, deterministic seeds, and NaN handling.
-"""
-import logging
-import hashlib
-import polars as pl
-import numpy as np
-from sklearn.linear_model import RidgeClassifier
-from config import config
-
-logger = logging.getLogger(__name__)
-
-def get_fold_seed(fold_index: int) -> int:
-    """
-    Generates a cryptographically stable seed for a specific fold.
-    "
-... [Truncated]
-```
-
---- 
-### File: src\__init__.py
-```
-
-```
-
---- 
-### File: src\features\engine.py
-```
-"""
-src/features/engine.py
-Dynamic feature engineering engine.
-Implements memory-safe, deterministic pairwise feature interaction
-and baseline structural mapping per the specification.
-"""
-import json
-import os
-import logging
-from itertools import combinations
-import polars as pl
-from config import config
-
-logger = logging.getLogger(__name__)
-
-def _generate_target(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Generates a 1-hour forward discrete target (Long: 1.0, Short: -1.0, Neutral: 0.0).
-   
-... [Truncated]
-```
-
---- 
-### File: src\features\__init__.py
-```
-
-```
-
---- 
-### File: src\io\canonical_parquet.py
-```
-"""
-src/io/canonical_parquet.py
-Deterministic serialization for canonical feature matrices.
-Ensures byte-level reproducibility as per Section 18 of ai_prompt.md.
-"""
-import pyarrow as pa
-import pyarrow.parquet as pq
-import polars as pl
-from config import config
-import logging
-
-logger = logging.getLogger(__name__)
-
-def write_canonical_parquet(data: pl.DataFrame | pa.Table, path: str):
-    """
-    Writes a Polars DataFrame or PyArrow Table to a Parquet file with deterministic settings.
-    
-    Co
-... [Truncated]
-```
-
---- 
-### File: src\io\__init__.py
-```
-
-```
-
---- 
-### File: src\utils\check_types.py
-```
-# src/utils/check_types.py
-import polars as pl
-import sys
-import argparse
-from config import config
-
-def validate_dtypes(parquet_path: str):
-    """
-    Validates that all feature columns are pl.Float32.
-    Ignores non-feature columns like ts_event, session_id, etc.
-    """
-    try:
-        # Scan lazily to avoid loading data into memory
-        lf = pl.scan_parquet(parquet_path)
-        schema = lf.collect_schema()
-        
-        # Define columns that MUST be Float32
-        # Based on featu
-... [Truncated]
-```
-
---- 
-### File: src\utils\validate_manifest.py
-```
-# src/utils/validate_manifest.py
-import json
-import sys
-import argparse
-from pathlib import Path
-
-def validate(manifest_path: str):
-    path = Path(manifest_path)
-    if not path.exists():
-        print(f"Error: Manifest not found at {manifest_path}")
-        sys.exit(1)
-        
-    with open(path, 'r') as f:
-        data = json.load(f)
-    
-    # Required top-level keys based on Section 28
-    required_keys = {
-        "feature_names", "dtypes", "scaler_mean", "scaler_scale",
-        "selectio
-... [Truncated]
-```
-
---- 
-### File: tests\manifest_schema.py
-```
-# tests/test_manifest.py
-import json
-import pytest
-from pathlib import Path
-
-def test_manifest_exists_and_is_valid():
-    manifest_path = Path("artifacts/manifest.json")
-    
-    # Assert file exists
-    assert manifest_path.exists(), "manifest.json not found in artifacts/"
-    
-    # Assert it is valid JSON
-    with open(manifest_path, "r") as f:
-        data = json.load(f)
-        
-    # Check for required keys (update these to match your actual manifest spec)
-    required_keys = ["version", "
-... [Truncated]
-```
-
---- 
-### File: tests\tests_1h_dst.py
-```
-"""
-src/features/engine.py
-Dynamic feature engineering engine.
-Implements memory-safe, deterministic pairwise feature interaction
-and baseline structural mapping per the specification.
-"""
-import logging
-import polars as pl
-from itertools import combinations
-from config import config
-
-logger = logging.getLogger(__name__)
-
-def _get_base_feature_exprs() -> list[pl.Expr]:
-    """
-    Generates the core baseline features per Section 10.
-    All features strictly past-only, deterministic, and float32
-... [Truncated]
-```
-
---- 
-### File: tests\test_dtypes.py
-```
-import pytest
-import polars as pl
-from pathlib import Path
-
-def test_column_types():
-    # Update the path to match the filename used in src/cli.py
-    path = Path("artifacts/baseline_feature_matrix.parquet")
-    
-    if not path.exists():
-        pytest.skip(f"Artifacts not found at {path}")
-        
-    df = pl.read_parquet(path)
-    # Ensure all features are float32 as per spec
-    feature_cols = [c for c in df.columns if c.startswith("feature_")]
-    for col in feature_cols:
-        assert d
-... [Truncated]
-```
-
---- 
-### File: tests\test_manifest.py
-```
-import pytest
-import json
-from pathlib import Path
-
-def test_manifest_format():
-    path = Path("artifacts/manifest.json")
-    assert path.exists(), "Manifest file not found."
-    with open(path, "r") as f:
-        data = json.load(f)
-    assert "version" in data, "Manifest missing version."
-    # Add your specific schema assertions here
-```
-
---- 
-### File: tests\test_memory_abort.py
-```
-"""
-tests/test_memory_abort.py
-Spikes subprocess worker RSS targets to confirm safe parent tracking 
-and partial manifest persistence state transitions.
-"""
-import pytest
-import json
-import psutil
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-# Assuming config structure based on the pipeline specification
-# from config import config
-
-def test_oom_interception(tmp_path):
-    """
-    Validates RSS limit breach drops gracefully into aborted manifest state.
-    
-    Instead of
-... [Truncated]
-```
-
---- 
-### File: tests\test_serialization_repro.py
-```
-"""
-tests/test_serialization_repro.py
-Performs double write operations on identical feature footprints 
-to assert matching cryptographic SHA256 string returns, 
-guaranteeing byte-level reproducibility (Section 18).
-"""
-import pytest
-import hashlib
-import pyarrow as pa
-import pyarrow.parquet as pq
-from pathlib import Path
-
-# Import the canonical writer to test its determinism
-from src.io.canonical_parquet import write_canonical_parquet
-
-
-def generate_dummy_table() -> pa.Table:
-    """Generates a 
-... [Truncated]
-```
-
---- 
-### File: tests\test_walkforward.py
-```
-"""
-tests/test_walkforward.py
-Validates the walk-forward simulation engine:
-1. Determinism: Identical inputs yield identical predictions.
-2. Lookahead: No leakage from future folds into training.
-3. Type Safety: All outputs remain Float32.
-"""
-import pytest
-import polars as pl
-import numpy as np
-from src.walkforward import run_walkforward
-
-@pytest.fixture
-def sample_data():
-    """Generates a small deterministic dataset with temporal fold_ids."""
-    return pl.DataFrame({
-        "fold_id": [0, 
-... [Truncated]
-```
-
---- 
-### File: tests\__init__.py
-```
-
-```
-
---- 
-### File: tests\fixtures\make_fixtures.py
-```
-"""
-tests/fixtures/make_fixtures.py
-Generates a valid, reproducible synthetic parquet fixture for pipeline testing.
-Ensures all required columns (ts_event, close, high, low, volume) are present.
-"""
-import polars as pl
-import numpy as np
-from pathlib import Path
-
-def create_synthetic_data():
-    """
-    Generates a reproducible synthetic parquet fixture covering 60 days 
-    (assuming 1-minute intervals).
-    """
-    # 86400 rows = 60 days * 24 hours * 60 minutes
-    # (Though logic will handle 
-... [Truncated]
-```
-
---- 
-### File: tests\fixtures\synthetic_1min_fixture.parquet
-```
-PAR1 ��*ȶ,��
- 6 (Q        (�/��F d�	�ퟆN8���                H����JUUUUUUUUUUUU�(��C�(���JzO�N�L�h�K��`�˕�X�K��P�˔�H�K��@�˓�8�K��0�˒�(�K�� �ˑ��K���ː��K�� ���o��-}������=ޒ�[�x�o��-u������9��[�x�oq�-m������5ޒ�[�x�o1�-e������1��[�x�o��-]����l�-ޒ�[�x�o��-U����L�)��[�x�oq�-M����,�%ޒ�[�x�o1�-E�����!��[�x�o��-=������ޒ�[px�
-o��-5��������[`x�oq�--������ޒ�[Px�	o1�-%��������[@x�o��-����l�
-ޒ�[0x�o��-����L�	��[ x�oq�-
-����,�ޒ�[x�o1�-���
-... [Truncated]
-```
-
---- 
-### File: tests\fixtures\__init__.py
-```
-
-```
-

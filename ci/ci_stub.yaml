@@ -11,7 +11,6 @@ jobs:
   test-and-verify:
     runs-on: ubuntu-latest
     env:
-      # Section 2: Determinism requires single-threaded math libraries
       OMP_NUM_THREADS: 1
       OPENBLAS_NUM_THREADS: 1
       MKL_NUM_THREADS: 1
@@ -32,7 +31,6 @@ jobs:
         
     - name: Run mandatory verification suite
       run: |
-        # Section 23: Execute mandatory tests
         python -m pytest tests/test_1h_dst.py
         python -m pytest tests/test_memory_abort.py
         python -m pytest tests/test_serialization_repro.py
@@ -53,15 +51,10 @@ jobs:
 
     - name: Verify artifacts
       run: |
-        # Section 30: Verify artifact existence and integrity
         test -f artifacts/trades.csv
         test -f artifacts/manifest.json
         test -f artifacts/baseline_feature_matrix.parquet
-        
-        # Verify SHA256 consistency (reproducibility check)
-        python -c "import hashlib; \
-          h = hashlib.sha256(open('artifacts/baseline_feature_matrix.parquet','rb').read()).hexdigest(); \
-          print(f'Feature Matrix Hash: {h}')"
+        python -c "import hashlib; h = hashlib.sha256(open('artifacts/baseline_feature_matrix.parquet','rb').read()).hexdigest(); print(f'Feature Matrix Hash: {h}')"
           
     - name: Validate Feature DTypes
       run: |

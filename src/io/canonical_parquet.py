@@ -18,37 +18,33 @@ def write_canonical_parquet(data: pl.DataFrame | pa.Table, path: str):
     Compliance with Section 18:
     - Format Version: 2.0
     - Compression: snappy
-    - Row Group Size: 65536
-    - Column Ordering: Lexicographic
+    - Row Group Size: 65536 (from config.ROW_GROUP_SIZE)
+    - Column Ordering: Lexicographic (sorted)
     """
-    # 1. Convert to PyArrow Table if input is a Polars DataFrame
-    # This prevents the AttributeError: 'DataFrame' object has no attribute 'column_names'
+    # Convert Polars DataFrame to PyArrow Table if needed
     if isinstance(data, pl.DataFrame):
         table = data.to_arrow()
     else:
         table = data
 
-    # 2. Enforce Lexicographic Column Ordering
-    # Sorting columns ensures that the file structure is identical 
-    # regardless of how the DataFrame was constructed.
+    # Enforce lexicographic column ordering for determinism
     sorted_column_names = sorted(table.column_names)
     table = table.select(sorted_column_names)
-    
-    # 3. Write with Deterministic Parameters
+
+    # Write with fixed parameters
     try:
         pq.write_table(
             table,
             path,
-            version="2.6",  # Changed from "2.0" to "2.6"
+            version="2.0",
             compression="snappy",
-            row_group_size=config.ROW_GROUP_SIZE,
+            row_group_size=getattr(config, "ROW_GROUP_SIZE", 65536),
             data_page_version="2.0",
             use_deprecated_int96_timestamps=False,
             coerce_timestamps="us"
         )
         logger.info(f"Successfully wrote canonical parquet to {path} "
                     f"with {len(sorted_column_names)} columns.")
-                    
     except Exception as e:
         logger.error(f"Failed to write canonical parquet: {e}")
         raise

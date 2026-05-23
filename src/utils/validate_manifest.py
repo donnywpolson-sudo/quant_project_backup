@@ -13,14 +13,14 @@ def validate(manifest_path: str):
     with open(path, 'r') as f:
         data = json.load(f)
     
-    # Required top-level keys based on Section 28
+    # Required top-level keys (updated: removed scaler_mean/scaler_scale)
     required_keys = {
-        "feature_names", "dtypes", "scaler_mean", "scaler_scale",
+        "feature_names", "dtypes",
         "selection_seed", "selection_date", "selection_model",
         "selection_params", "selected_K", "cumulative_importance",
         "stability_stats", "baseline_feature_list", "baseline_features_hash",
         "baseline_feature_matrix_path", "serialization_params",
-        "discovery_status", "folds"
+        "discovery_status", "folds", "htf_features_included"
     }
     
     missing = required_keys - set(data.keys())

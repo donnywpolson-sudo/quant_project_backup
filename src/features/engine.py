@@ -1,170 +1,52 @@
 """
 src/features/engine.py
-Dynamic feature engineering engine.
-Implements memory-safe, deterministic pairwise feature interaction
-and baseline structural mapping per the specification.
+Orchestrates generation of baseline features, HTF context, expansion, and target.
 """
-import json
-import os
-import logging
-from itertools import combinations
 import polars as pl
+import logging
 from config import config
+from src.features.baseline import compute_baseline_features, load_baseline_feature_names
+from src.features.expansion import expand_features, add_cross_timeframe_interactions
+from src.features.htf_context import add_htf_context_features
+from src.features.target import add_target_5m, drop_incomplete_target
 
 logger = logging.getLogger(__name__)
 
-def _generate_target(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Vol-normalized forward log return target (1H horizon).
-    """
-    logger.info("Generating normalized 1H target...")
-
-    horizon = 60
-    vol_window = 20
-    eps = 1e-8
-
-    log_price = pl.col("close").log()
-
-    # forward log return (t → t+60)
-    fwd_ret = (log_price.shift(-horizon) - log_price)
-
-    # backward-only volatility (uses t-1 and earlier)
-    ret_1 = (log_price - log_price.shift(1))
-    vol = ret_1.shift(1).rolling_std(window_size=vol_window)
-
-    target = (fwd_ret / (vol + eps)).clip(config.CLIP_MIN, config.CLIP_MAX)
-
-    df = df.with_columns([
-        target.cast(pl.Float32).alias("target_raw")
-    ])
-
-    # Discretization (optional)
-    threshold = getattr(config, "MAGNITUDE_THRESHOLD", 0.002)
-
-    df = df.with_columns(
-        pl.when(pl.col("target_raw") > threshold).then(1.0)
-        .when(pl.col("target_raw") < -threshold).then(-1.0)
-        .otherwise(0.0)
-        .cast(pl.Float32)
-        .alias("target")
-    )
-
-    return df.filter(pl.col("target_raw").is_not_null())
-
-def _get_base_feature_exprs() -> list[pl.Expr]:
-    """
-    Generates the core baseline features.
-    Maps existing columns (close, high, low, volume) to technical feature layouts.
-    All expressions strictly return past-only pl.Float32 to protect against leakages.
-    """
-    # Defensive programming: ensure source columns are cast safely
-    close = pl.col("close").cast(pl.Float32)
-    high = pl.col("high").cast(pl.Float32)
-    low = pl.col("low").cast(pl.Float32)
-    volume = pl.col("volume").cast(pl.Float32)
-
-    close_lag = close.shift(1)
-    volume_lag = volume.shift(1)
-
-    exprs = [
-        # Returns (already safe)
-        ((close_lag / close.shift(2)) - 1.0).alias("feature_ret_1"),
-
-        # Rolling means (lagged)
-        (close_lag / close_lag.rolling_mean(5) - 1.0).alias("feature_ma_5"),
-        (close_lag / close_lag.rolling_mean(20) - 1.0).alias("feature_ma_20"),
-
-        # Volatility proxy
-        ((close_lag - close.shift(2)).abs()
-            .rolling_mean(20)).alias("feature_realized_vol_20"),
-
-        # Volume (lagged)
-        (volume_lag / volume_lag.rolling_mean(20) - 1.0).alias("feature_vol_shock"),
-]
 def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Constructs the complete pool of raw baseline features and expands them 
-    via memory-safe, deterministic pairwise interactions.
+    Full feature engineering pipeline for three-stream HTF data.
+    Assumes df already contains aligned 1h and daily columns (prefixed 1h_, daily_).
     """
-    logger.info("Initializing raw candidate feature generation...")
-    
-    # 0. Fast assertion to ensure required base columns exist before processing
-    required_cols = {"close", "high", "low", "volume"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        raise KeyError(f"Cannot generate features. Missing required columns: {missing}")
+    print("DEBUG: generate_features - computing baseline...", flush=True)
+    df = compute_baseline_features(df)
+    baseline_names = load_baseline_feature_names()
+    baseline_cols = [c for c in baseline_names if c in df.columns]
+    print("DEBUG: baseline done", flush=True)
 
-    # NEW: Generate the target FIRST
-    df = _generate_target(df)
-    
-    # 1. Evaluate baseline features expressions
-    base_exprs = _get_base_feature_exprs()
-    df_with_base = df.with_columns(base_exprs)
-    
-    # 2. Extract columns matching the feature pattern
-    base_feature_cols = [c for c in df_with_base.columns if c.startswith("feature_")]
-    
-    # 3. Generate combinatorial pairwise interactions (products/ratios)
-    interaction_exprs = []
-    for col_a, col_b in combinations(base_feature_cols, 2):
-        name_prod = f"{col_a}_x_{col_b}"
-        interaction_exprs.append((pl.col(col_a) * pl.col(col_b)).alias(name_prod))
-        
-    # Apply expansions lazily/efficiently
-    df_expanded = df_with_base.with_columns(interaction_exprs)
-    
-    # 4. Strict Type enforcement: Force all feature columns to Float32
-    final_feature_cols = [c for c in df_expanded.columns if c.startswith("feature_")]
-    df_expanded = df_expanded.with_columns([
-        pl.col(c).cast(pl.Float32) for c in final_feature_cols
-    ])
-    
-    logger.info(f"Generated complete feature matrix containing {len(final_feature_cols)} total columns.")
-    return df_expanded
+    print("DEBUG: adding HTF context features...", flush=True)
+    df = add_htf_context_features(df)
+    print("DEBUG: HTF context done", flush=True)
 
-def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str) -> pl.DataFrame:
-    """
-    Implements Phase 2 feature filtering protocol.
-    Loads the frozen manifest generated by Phase 1 (ExtraTrees) and drops 
-    all unselected combinations to enforce a static signature layout.
-    
-    Prevents look-ahead bias by limiting training features to a historical selection.
-    """
-    if not manifest_path or not os.path.exists(manifest_path):
-        logger.warning(f"Manifest path '{manifest_path}' not found or unspecified. "
-                       "Proceeding with complete candidate pool.")
-        return df
+    print("DEBUG: expanding features (ratios, z-scores, regime, pairwise)...", flush=True)
+    df = expand_features(df, baseline_cols)
+    print("DEBUG: expansion done", flush=True)
 
-    try:
-        with open(manifest_path, "r") as f:
-            manifest = json.load(f)
-            
-        # Extract features array from either 'feature_names' or 'selected_features'
-        selected_features = manifest.get("feature_names", manifest.get("selected_features", []))
-        
-        if not selected_features:
-            logger.warning("Manifest file parsed but contained no features. Bypassing pruning.")
-            return df
-            
-        logger.info(f"Applying Manifest Contract: Masking dataframe down to {len(selected_features)} selected features.")
-        
-        # Accumulate mandatory administration/structural tracking columns (e.g., timestamps, fold markers)
-        non_feature_cols = [c for c in df.columns if not c.startswith("feature_")]
-        
-        # Intersect keys to verify they match up with what was engineered
-        valid_selected_features = [c for c in selected_features if c in df.columns]
-        missing_features = set(selected_features) - set(valid_selected_features)
-        
-        if missing_features:
-            logger.error(f"Critical: Manifest requests columns missing from generation: {missing_features}")
-            raise KeyError(f"Feature schema mismatch. Missing: {missing_features}")
-            
-        # Re-assemble final dataframe with ordered layout
-        columns_to_keep = non_feature_cols + valid_selected_features
-        pruned_df = df.select(columns_to_keep)
-        
-        return pruned_df
-        
-    except Exception as e:
-        logger.error(f"Failed to apply feature pruning using manifest at {manifest_path}: {e}")
-        raise
+    # After expand_features, add cross-timeframe interactions explicitly
+    htf_cols = [c for c in df.columns if c.startswith(("1h_", "daily_", "htf_"))]
+    ltf_cols = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore")) and c not in htf_cols]
+    if htf_cols and ltf_cols:
+        print("DEBUG: adding cross-timeframe interactions...", flush=True)
+        df = add_cross_timeframe_interactions(df, ltf_cols, htf_cols)
+        print("DEBUG: cross-timeframe done", flush=True)
+
+    print("DEBUG: adding target_5m...", flush=True)
+    df = add_target_5m(df)
+    df = drop_incomplete_target(df)
+    print("DEBUG: target done", flush=True)
+
+    # Ensure all feature columns are float32
+    feature_cols = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))]
+    df = df.with_columns([pl.col(c).cast(pl.Float32) for c in feature_cols])
+    logger.info(f"Final feature matrix has {len(feature_cols)} features.")
+    print(f"DEBUG: generate_features finished with {len(feature_cols)} features", flush=True)
+    return df
