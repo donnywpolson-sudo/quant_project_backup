@@ -1,6 +1,9 @@
 """
 src/cli.py
 Entrypoint for the Deterministic Quant Pipeline.
+Integrates resampling, discovery, walkforward, and execution.
+Now with market‑specific config loading, single feature generation pass,
+aligned data caching, and automatic performance metrics output.
 Ensures target column is never used as a feature.
 """
 import argparse
@@ -30,17 +33,22 @@ def check_memory_safety():
         pass
 
 def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str, target_col: str) -> pl.DataFrame:
-    """Keep only features listed in manifest + essential columns. Target is kept but will be separated."""
+    """
+    Keep only features listed in manifest['feature_names'] plus essential non‑feature columns.
+    The target column is preserved in the output but will be excluded from features later.
+    """
     with open(manifest_path, 'r') as f:
         manifest = json.load(f)
     selected = manifest['feature_names']
+    # Essential columns (excluding target)
     essential = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
-    # Keep the target column explicitly
-    keep = list(essential) + [target_col]
-    # Add selected features that exist
-    for feat in selected:
-        if feat in df.columns and feat not in keep:
-            keep.append(feat)
+    # Also keep any other columns that are not feature‑like (including the target)
+    non_feature = [c for c in df.columns 
+                   if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))
+                   and c not in essential]
+    # Build list of columns to keep: essential + non_feature + selected features that exist
+    keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
+    # Remove any duplicates while preserving order
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
@@ -58,29 +66,47 @@ def main():
     args = parser.parse_args()
     check_memory_safety()
 
+    # Load market‑specific configuration if the command uses data
     if args.command in ("discover", "run"):
         from src.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
 
     if args.command == "discover":
+        # Determine cache path for aligned data (store alongside manifest)
         cache_dir = Path(args.out).parent
         cache_dir.mkdir(parents=True, exist_ok=True)
         aligned_cache = cache_dir / "aligned_data.parquet"
+        
+        # Load aligned data (will use cache if exists) – no cross‑asset during discovery
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
+        
+        # Generate full feature matrix (includes target, HTF, cross)
         df_features = generate_features(df_aligned)
+        
+        # Cache the full feature matrix for later reuse by "run"
         feature_cache = cache_dir / "full_feature_matrix.parquet"
         write_canonical_parquet(df_features, str(feature_cache))
         logger.info(f"Full feature matrix cached to {feature_cache}")
+        
+        # Run discovery on the cached matrix
         run_feature_discovery(str(feature_cache), args.out)
 
     elif args.command == "run":
+        # Determine target column (classification)
         target_col = "target_sign"
+        
+        # Load aligned data (try cache first) – now with cross‑asset features
         cache_dir = Path(args.manifest).parent
         aligned_cache = cache_dir / "aligned_data.parquet"
-        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        # Use cross‑asset symbols from config
+        cross_assets = getattr(config, 'CROSS_ASSET_SYMBOLS', [])
+        df_aligned = load_and_clean_data(args.data, 
+                                         cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+                                         cross_asset_symbols=cross_assets)
         check_memory_safety()
 
+        # Try to load pre‑computed feature matrix from discovery phase
         feature_cache = cache_dir / "full_feature_matrix.parquet"
         if feature_cache.exists():
             logger.info(f"Loading pre‑computed feature matrix from {feature_cache}")
@@ -89,23 +115,25 @@ def main():
             logger.info("No cached feature matrix found; generating features (this may be slower).")
             df_features = generate_features(df_aligned)
 
-        # Prune to selected features + essentials, including the target column
+        # Prune to only features selected in manifest (keep essential columns and target)
         df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
-
-        # Separate target from features
+        
+        # Ensure target column exists
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing after pruning.")
+        
+        # Separate target from features
         y = df_pruned.select(target_col)
         X = df_pruned.drop(target_col)
-
+        
         # Define feature columns: all columns except metadata
         excluded_meta = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
         feature_cols = [c for c in X.columns if c not in excluded_meta]
-
-        # Final safety check
+        
+        # Safety check
         if target_col in feature_cols:
             raise RuntimeError(f"Target column '{target_col}' still in feature columns! Aborting.")
-
+        
         logger.info(f"Walkforward with {len(feature_cols)} features.")
         result_df = run_walkforward(X, y, feature_cols, target_col)
 
@@ -114,6 +142,7 @@ def main():
         result_df.write_parquet(out_path)
         logger.info(f"Results saved to {out_path}")
 
+        # --- AUTOMATIC METRICS OUTPUT ---
         print("\n" + "="*60)
         print("FINAL PERFORMANCE METRICS")
         print("="*60)

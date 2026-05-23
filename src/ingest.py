@@ -1,7 +1,7 @@
 """
 src/ingest.py
-Handles ingestion of all three streams (5m, 1h, 1d) and alignment.
-Now caches aligned DataFrame to disk for reuse.
+Handles ingestion of three streams (5m, 1h, 1d) for a primary symbol,
+and optionally loads other symbols’ 5‑min data as cross‑asset features.
 """
 import polars as pl
 import logging
@@ -14,9 +14,8 @@ from src.io.canonical_parquet import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
 
-
 def validate_memory_and_integrity(df: pl.DataFrame):
-    """Same as before, but now df includes HTF columns; we still check OHLC."""
+    """Memory and OHLC integrity checks (unchanged)."""
     logger.info("Running memory and integrity validation...")
     if not df["ts_event"].is_sorted():
         raise ValueError("ts_event not strictly increasing.")
@@ -43,12 +42,34 @@ def validate_memory_and_integrity(df: pl.DataFrame):
     logger.info(f"Safe rows_per_chunk: {rows_per_chunk}")
     return rows_per_chunk
 
-
-def load_and_clean_data(data_glob: str, cache_path: str = None) -> pl.DataFrame:
+def load_cross_asset_features(data_glob: str, secondary_symbol: str) -> pl.DataFrame:
     """
-    Load all three streams (5m, 1h, 1d) from the given glob pattern,
-    align them without lookahead, and validate.
-    If cache_path is provided and exists, load from cache instead of recomputing.
+    Load 5‑min resampled data for a secondary symbol and return a DataFrame
+    with columns: ts_event, {symbol}_ret_1 (lagged log return).
+    """
+    # Build glob for the secondary symbol's files (same directory structure)
+    # data_glob example: "futures/ES/2026.parquet" -> we need "futures/CL/2026.parquet"
+    primary_path = Path(data_glob)
+    secondary_glob = str(primary_path.parent.parent / secondary_symbol / primary_path.name)
+    try:
+        streams = load_all_streams_chunked(secondary_glob)
+        df_5min = streams["5m"]
+        # Compute lagged log return (1 period)
+        df_5min = df_5min.with_columns(
+            (pl.col("close") / pl.col("close").shift(1)).log().alias(f"{secondary_symbol}_ret_1")
+        )
+        # Keep only ts_event and the return
+        df_5min = df_5min.select(["ts_event", f"{secondary_symbol}_ret_1"])
+        logger.info(f"Loaded cross‑asset features for {secondary_symbol}, {df_5min.height} rows")
+        return df_5min
+    except Exception as e:
+        logger.warning(f"Could not load cross‑asset features for {secondary_symbol}: {e}")
+        return pl.DataFrame()
+
+def load_and_clean_data(data_glob: str, cache_path: str = None, cross_asset_symbols: list = None) -> pl.DataFrame:
+    """
+    Load three streams for the primary symbol, align them, then optionally join
+    cross‑asset features from other symbols (aligned on ts_event).
     """
     if cache_path and Path(cache_path).exists():
         logger.info(f"Loading aligned data from cache: {cache_path}")
@@ -57,21 +78,28 @@ def load_and_clean_data(data_glob: str, cache_path: str = None) -> pl.DataFrame:
         return df_aligned
 
     logger.info(f"Loading three streams from: {data_glob}")
-    print("DEBUG: Starting load_all_streams_chunked...", flush=True)
     streams = load_all_streams_chunked(data_glob)
-    print(f"DEBUG: Streams loaded. 5min rows: {streams['5m'].height}", flush=True)
     df_5min = streams["5m"]
     df_1h = streams["1h"]
     df_daily = streams["1d"]
-    print("DEBUG: Aligning streams...", flush=True)
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
-    print(f"DEBUG: Alignment done. Aligned rows: {df_aligned.height}", flush=True)
     validate_memory_and_integrity(df_aligned)
-    
+
+    # Add cross‑asset features if requested
+    if cross_asset_symbols:
+        for sym in cross_asset_symbols:
+            df_cross = load_cross_asset_features(data_glob, sym)
+            if not df_cross.is_empty():
+                df_aligned = df_aligned.join(df_cross, on="ts_event", how="left")
+                # Forward fill missing cross‑asset values (e.g., first bars of session)
+                for col in df_cross.columns:
+                    if col != "ts_event":
+                        df_aligned = df_aligned.with_columns(pl.col(col).fill_null(strategy="forward"))
+
     if cache_path:
         logger.info(f"Caching aligned data to {cache_path}")
         write_canonical_parquet(df_aligned, cache_path)
-    
+
     if config.MEMORY_LOG_ENABLED:
         logger.info(f"RSS after load: {psutil.Process().memory_info().rss / 1024**3:.2f} GB")
     return df_aligned

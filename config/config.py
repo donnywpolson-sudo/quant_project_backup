@@ -102,7 +102,7 @@ REGIME_LOW_THRESH = 0.4
 REGIME_MISSING_DEFAULT = 0
 
 # --- Targets ---
-TARGET_5M_HORIZON = 10          # increased from 1 to 10 bars (50 minutes)
+TARGET_5M_HORIZON = 30          # increased to 30 bars (150 minutes)
 MAGNITUDE_THRESHOLD = 0.002
 PROB_TARGET_THRESHOLD = 0.005
 TARGET_SCALE_FACTOR = 1         # not used for classification
@@ -155,7 +155,7 @@ WF_TEST_DAYS = 1
 WF_STEP_DAYS = 1
 WF_PRECOMPUTE_INDICES = True
 
-# --- Models Ridge ---
+# --- Models Ridge (no longer used, kept for compatibility) ---
 SCALER_CLASS = "StandardScaler"
 RIDGE_PARAMS = {"alpha": 0.01, "solver": "cholesky", "fit_intercept": True, "random_state": 42}
 RIDGE_N_JOBS = 1
@@ -172,7 +172,7 @@ FLAT_BEFORE_CLOSE_MINUTES = 5
 HTF_TREND_ALIGNMENT = True
 HTF_VOL_SCALING = True
 HTF_VOL_WINDOW = 10
-PROBABILITY_SMOOTHING_ALPHA = 0.1   # EMA smoothing for predictions (0 = no smoothing, 1 = instant)
+PROBABILITY_SMOOTHING_ALPHA = 0.1   # EMA smoothing for predictions
 
 # --- Metrics and reporting ---
 METRICS_TO_COMPUTE = ["Sharpe", "MaxDrawdown", "Turnover", "HitRate", "AvgWin", "AvgLoss", "MAE"]
@@ -204,3 +204,10 @@ MARKET_CONFIGS = {
     "ZB": str(BASE_DIR / "config/markets/ZB.yaml"),
     "CL": str(BASE_DIR / "config/markets/CL.yaml"),
 }
+
+# --- Cross‑asset features ---
+CROSS_ASSET_SYMBOLS = ["CL"]   # symbols to load as features for the primary instrument
+
+# --- Execution and risk (HTF‑aware) ---
+# ... existing ...
+REMOVE_PREDICTION_BIAS = True   # subtract mean(prediction_prob) to eliminate long bias

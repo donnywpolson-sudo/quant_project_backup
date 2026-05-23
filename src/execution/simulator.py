@@ -2,16 +2,19 @@
 src/execution/simulator.py
 Execution simulation: stateful position tracking, volatility scaling,
 transaction costs, leverage limits, and flatten before session close.
-Now supports both regression (prediction) and classification (probability) modes.
+Now includes per‑session bias removal to eliminate spurious drift profits.
 """
 import polars as pl
 import numpy as np
 from config import config
 
+
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     """
     Classification version: uses column 'prediction_prob' (probability of up move).
     Raw signal = 2*prob - 1 (range -1 to 1). Then scaled by TARGET_VOL / vol.
+    Bias removal: centres probabilities per session (mean becomes 0.5) to remove
+    any systematic long/short bias that could profit from a trending market.
     Adds columns: 'position', 'trade_cost', 'pnl'.
     """
     # ---- 1. Volatility column ----
@@ -24,9 +27,25 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
         vol.fill_null(strategy="forward").fill_null(1e-6).alias("vol")
     )
 
-    # ---- 2. Raw signal from probability ----
-    prob = pl.col("prediction_prob").fill_null(0.5).clip(0.0, 1.0)
-    raw_signal = (prob - 0.5) * 2.0   # maps [0,1] -> [-1,1]
+    # ---- 2. Bias removal (per session) ----
+    prob_series = df["prediction_prob"].fill_null(0.5).clip(0.0, 1.0)
+    if getattr(config, 'REMOVE_PREDICTION_BIAS', False):
+        # Convert to writable numpy array
+        probs = prob_series.to_numpy().copy()   # .copy() makes it writable
+        sess_ids = df["session_id"].to_numpy()
+        unique_sessions = np.unique(sess_ids)
+        for sess in unique_sessions:
+            mask = (sess_ids == sess)
+            sess_mean = probs[mask].mean()
+            # Center around 0.5, keeping the same range
+            probs[mask] = probs[mask] - sess_mean + 0.5
+        # Clip again to [0,1] after adjustment
+        probs = np.clip(probs, 0.0, 1.0)
+        prob_series = pl.Series(probs)
+        print(f"Per‑session bias removed: each session's mean probability → 0.5")
+
+    # ---- 3. Raw signal from probability ----
+    raw_signal = (prob_series - 0.5) * 2.0   # maps [0,1] -> [-1,1]
 
     target_raw_expr = (raw_signal / pl.col("vol")) * config.TARGET_VOL
     target_raw_expr = target_raw_expr.clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
@@ -44,27 +63,9 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
             (daily_trend == 0) | (target_raw_expr.sign() == daily_trend)
         ).then(target_raw_expr).otherwise(0)
 
-    # ---- 3. Prepare for execution loop ----
+    # ---- 4. Rate limit (loop) ----
     target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
     target_array = target_series.to_numpy()
-
-    # DEBUG: Check if we are using the correct signal
-    if "prediction_prob" in df.columns:
-        prob_mean = df["prediction_prob"].mean()
-        if prob_mean != 0.5:
-            print(f"DEBUG: prediction_prob mean = {prob_mean:.4f}")
-    # Compare with target_sign if present (only for debugging)
-    if "target_sign" in df.columns:
-        target_sign_arr = df["target_sign"].to_numpy()
-        target_sign_mean = target_sign_arr.mean()
-        print(f"DEBUG: target_sign mean = {target_sign_mean:.4f}")
-        # Compute correlation (only if enough data)
-        if len(target_sign_arr) > 1:
-            prob_arr = df["prediction_prob"].to_numpy()
-            corr = np.corrcoef(prob_arr, target_sign_arr)[0, 1]
-            print(f"DEBUG: correlation prediction_prob vs target_sign = {corr:.4f}")
-            if corr > 0.9:
-                print("WARNING: High correlation – target leakage detected!")
 
     # Spread proxy
     if "feature_spread_proxy" in df.columns:
@@ -81,9 +82,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     )
     last_bars_mask = (df["_session_rank"] > (df["_session_len"] - config.FLAT_BEFORE_CLOSE_MINUTES // 5)).to_numpy()
 
-    # Pre‑compute returns (open to next open? Actually using open[t+1] - open[t]? Wait: use close[t+1] - open[t+1]? 
-    # The original: ret_exec = (close_next - open_next) / open_next, which is the return from open to close of the same bar.
-    # But position is set at open[t+1] (because we trade at open of next bar). The execution return is from that open to its close.
+    # Pre‑compute returns
     open_next = np.roll(df["open"].to_numpy(), -1)
     close_next = np.roll(df["close"].to_numpy(), -1)
     open_next[-1] = np.nan
@@ -91,7 +90,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)
     ret_exec = np.nan_to_num(ret_exec, nan=0.0)
 
-    # ---- 4. Loop ----
+    # ---- 5. Loop ----
     n = len(df)
     positions = np.zeros(n, dtype=np.float32)
     trade_costs = np.zeros(n, dtype=np.float32)
@@ -118,7 +117,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ]).drop(["_session_rank", "_session_len"])
     return df
 
-# Keep original for backward compatibility (if needed)
+
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
     """Legacy regression version (uses 'prediction' column)."""
     raise NotImplementedError("Use simulate_execution_classification for new pipeline.")
