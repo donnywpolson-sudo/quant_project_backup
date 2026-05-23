@@ -1,0 +1,17 @@
+# --- Contract Specs ---
+contract_symbol: "CL"
+exchange_timezone: "America/New_York"
+
+# --- Session Management ---
+SESSION_START_LOCAL: !!python/object/apply:datetime.time [9, 0, 0]
+SESSION_END_LOCAL: !!python/object/apply:datetime.time [14, 30, 0]
+
+# --- Feature Strategy ---
+ROLL_WINDOWS: [10, 20, 50]
+REGIME_HIGH_THRESH: 0.7
+TARGET_5M_HORIZON: 1
+
+# --- Execution & Risk ---
+SLIPPAGE_K: 0.002
+MAX_POSITION_SIZE: 30
+MAX_NOTIONAL_USD: 750000

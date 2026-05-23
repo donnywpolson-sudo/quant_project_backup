@@ -1,0 +1,17 @@
+# --- Contract Specs ---
+contract_symbol: "ZB"
+exchange_timezone: "America/New_York"
+
+# --- Session Management ---
+SESSION_START_LOCAL: !!python/object/apply:datetime.time [8, 20, 0]
+SESSION_END_LOCAL: !!python/object/apply:datetime.time [15, 0, 0]
+
+# --- Feature Strategy ---
+ROLL_WINDOWS: [20, 50, 100]
+REGIME_HIGH_THRESH: 0.6
+TARGET_5M_HORIZON: 3
+
+# --- Execution & Risk ---
+SLIPPAGE_K: 0.0002
+MAX_POSITION_SIZE: 20
+MAX_NOTIONAL_USD: 2000000

@@ -102,7 +102,11 @@ def main():
         # 5. Run Look-ahead safe Walk-Forward Validation
         df_backtest_results = run_walkforward(df_pruned, feature_cols, target_col)
         
-        logger.info(f"Simulation completed. Evaluated backtest series size: {df_backtest_results.height} rows.")
+        # Save the backtest results so the analytics step can find the 'prediction' column
+        results_parquet_path = os.path.join(args.out, "backtest_results.parquet")
+        df_backtest_results.write_parquet(results_parquet_path)
+        
+        logger.info(f"Simulation completed. Results saved to {results_parquet_path}. Size: {df_backtest_results.height} rows.")
 
 if __name__ == "__main__":
     main()

@@ -22,7 +22,7 @@ def get_fold_seed(fold_index: int) -> int:
 def assign_temporal_folds(df: pl.DataFrame) -> pl.DataFrame:
     """
     Dynamically assigns fold_id based on ts_event.
-    Uses WF_BUCKET_SIZE to create temporal chunks.
+    Uses dt.truncate and removes timezone to ensure compatibility with list conversion.
     """
     if "fold_id" in df.columns:
         return df
@@ -32,13 +32,15 @@ def assign_temporal_folds(df: pl.DataFrame) -> pl.DataFrame:
 
     logger.info("Auto-assigning fold_id based on ts_event...")
     
-    # Bucket size controls how many rows per fold. 
-    # 10000 is a safe default for the synthetic fixture scale.
-    bucket_size = getattr(config, "WF_BUCKET_SIZE", 10000)
-    
+    # Truncate to '1mo' (monthly) and strip timezone to naive to prevent 
+    # serialization issues when converting to list for unique sorting.
     df = df.with_columns(
-        (pl.col("ts_event") // bucket_size).alias("fold_id")
+        pl.col("ts_event")
+        .dt.truncate("1mo")
+        .dt.replace_time_zone(None)
+        .alias("fold_id")
     )
+    
     return df
 
 def train_and_predict(train_df: pl.DataFrame, test_df: pl.DataFrame, 
@@ -47,8 +49,7 @@ def train_and_predict(train_df: pl.DataFrame, test_df: pl.DataFrame,
     Trains a RidgeClassifier and predicts on the fold test set.
     Includes fill_null(0.0) to handle rolling window NaN artifacts.
     """
-    # 1. Select data, fill NaNs to satisfy scikit-learn constraints
-    # 2. Cast to Float32 to ensure compatibility with model requirements
+    # Cast features and target to Float32 for compatibility
     X_train = train_df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y_train = train_df.select(target_col).fill_null(0.0).to_numpy().astype(np.float32).ravel()
     X_test = test_df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
@@ -98,6 +99,6 @@ def run_walkforward(df: pl.DataFrame, feature_cols: list, target_col: str) -> pl
             
     # 4. Final safety check before concat
     if not all_results:
-        raise ValueError("Walk-forward failed: No folds could be processed. Check bucket size settings.")
+        raise ValueError("Walk-forward failed: No folds could be processed.")
         
     return pl.concat(all_results)
