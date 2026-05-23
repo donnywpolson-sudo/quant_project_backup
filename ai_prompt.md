@@ -4,45 +4,29 @@ Implementation status: Snapshot implements 5min stream fully; 1h/Daily streams, 
 
 Hardware: RAM 14GB, storage 200GB, single‑threaded (OMP_NUM_THREADS=1), CPU only, Python 3.10+, pytz (not zoneinfo).
 
-Pipeline Flowchart (Three‑Stream HTF‑Aware)
-1‑min OHLCV parquet → Resample into 5min, 1h, Daily →
+Pipeline Flowchart: 
 
-Step 1 — Baseline & HTF context
+Data Collection & Engineering:
+Step 1 = data sourcing, timezone normalization, sessionization, raw manifest.
+Step 2 = resampling and explicit ts_close.
+Step 3 = HTF alignment enforcing causality.
+Step 4 = HTF feature engineering (indicators, ATR, slopes).
 
-5min baseline features (YAML)
+Alpha Research & Modeling:
+Step 5 = HTF discovery and feature selection.
+Step 6 = 5m baseline features.
+Step 7 = joining frozen HTF to 5m (conditioning).
+Step 8 = feature expansion and pruning.
+Step 9 = 5m discovery conditioned on HTF.
 
-HTF state: trend alignment, distance to Daily/1h levels, volatility ratios, regime labels
+Backtesting & Validation:
+Step 10 = walkforward Ridge training, per‑fold scalers, OOS metrics.
+Step 11 = execution simulation produces trades and PnL for validation.
+Step 12 = CI tests, reproducibility, no‑leakage checks.
 
-Step 2 — Feature expansion
-
-Intra‑timeframe interactions (5min×5min, 1h×1h, Daily×Daily)
-
-Cross‑timeframe (5min×1h, 5min×Daily, 1h×Daily)
-
-Ratios, z‑scores, regime‑conditioned transforms (past data only)
-
-Step 3 — Target
-target_5m = log(close_5min[t+1]/close_5min[t])
-
-Step 4 — ExtraTrees discovery
-
-Train on combined 5min/1h/Daily feature pool (HTF as regime filters)
-
-Stability selection: frequency ≥75%, sign consistency ≥80%
-
-Step 5 — Freeze features → manifest + SHA256
-
-Step 6 — Walkforward Ridge (frozen mixed‑timeframe features, StandardScaler per fold)
-
-Step 7 — Prediction (every 5min using latest 5min/1h/Daily aligned without lookahead)
-
-Step 8 — Top‑down execution
-
-Scale position by HTF volatility (e.g., daily ATR)
-
-Trend alignment filter: only signals agreeing with HTF trend
-
-Flatten before close
+Portfolio Optimization & Execution:
+Step 11 = execution simulation, HTF volatility sizing, slippage/latency modeling.
+Step 12 = monitoring and CI gating for deploy.
 
 1. OBJECTIVE
 Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <14GB, seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
