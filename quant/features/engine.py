@@ -5,10 +5,10 @@ Orchestrates feature generation. Excludes raw 1h_ and daily_ columns from featur
 import polars as pl
 import logging
 from config import config
-from src.features.baseline import compute_baseline_features, load_baseline_feature_names
-from src.features.expansion import expand_features, add_cross_timeframe_interactions
-from src.features.htf_context import add_htf_context_features
-from src.features.target import add_target_5m, drop_incomplete_target
+from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
+from quant.features.expansion import expand_features, add_cross_timeframe_interactions
+from quant.features.htf_context import add_htf_context_features
+from quant.features.target import add_target_5m, drop_incomplete_target
 
 logger = logging.getLogger(__name__)
 

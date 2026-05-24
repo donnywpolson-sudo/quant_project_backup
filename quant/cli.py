@@ -14,12 +14,12 @@ import polars as pl
 import json
 
 from config import config
-from src.ingest import load_and_clean_data
-from src.features.engine import generate_features
-from src.discovery import run_feature_discovery
-from src.walkforward import run_walkforward
-from src.io.canonical_parquet import write_canonical_parquet
-from src.analytics import calculate_metrics
+from quant.ingest import load_and_clean_data
+from quant.features.engine import generate_features
+from quant.discovery import run_feature_discovery
+from quant.walkforward import run_walkforward
+from quant.io.canonical_parquet import write_canonical_parquet
+from quant.analytics import calculate_metrics
 
 # Set deterministic seeds
 random.seed(config.SEED)
@@ -62,7 +62,7 @@ def main():
     check_memory_safety()
 
     if args.command in ("discover", "run"):
-        from src.market_config import detect_symbol_from_path, load_market_config
+        from quant.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
 

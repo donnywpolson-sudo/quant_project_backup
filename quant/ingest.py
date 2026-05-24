@@ -9,9 +9,9 @@ import logging
 import psutil
 from pathlib import Path
 from config import config
-from src.session import load_all_streams_chunked
-from src.align import align_htf_streams
-from src.io.canonical_parquet import write_canonical_parquet
+from quant.session import load_all_streams_chunked
+from quant.align import align_htf_streams
+from quant.io.canonical_parquet import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
 

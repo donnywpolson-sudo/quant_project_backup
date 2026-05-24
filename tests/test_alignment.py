@@ -5,8 +5,8 @@ from pathlib import Path
 import pytz
 from datetime import datetime, timedelta
 
-from src.session import add_session_id, filter_session_hours, resample_to_frequency
-from src.align import align_htf_streams
+from quant.session import add_session_id, filter_session_hours, resample_to_frequency
+from quant.align import align_htf_streams
 
 TZ = pytz.timezone("America/New_York")
 

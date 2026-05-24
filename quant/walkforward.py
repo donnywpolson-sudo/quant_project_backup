@@ -13,9 +13,9 @@ from sklearn.preprocessing import StandardScaler
 from scipy.special import expit
 from joblib import Parallel, delayed
 from config import config
-from src.execution.simulator import simulate_execution_classification
-from src.features.corr_prune import correlation_prune
-from src.features.variance_filter import remove_constant_features
+from quant.execution.simulator import simulate_execution_classification
+from quant.features.corr_prune import correlation_prune
+from quant.features.variance_filter import remove_constant_features
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)

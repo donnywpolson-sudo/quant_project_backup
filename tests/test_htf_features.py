@@ -2,9 +2,9 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from config import config
-from src.ingest import load_and_clean_data
-from src.features.engine import generate_features
-from src.features.htf_context import add_htf_context_features
+from quant.ingest import load_and_clean_data
+from quant.features.engine import generate_features
+from quant.features.htf_context import add_htf_context_features
 
 def make_synthetic_with_trend():
     """Create 10 days of 1-min data with a clear upward trend."""
