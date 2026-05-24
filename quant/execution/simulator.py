@@ -9,8 +9,31 @@ import numpy as np
 from config import config
 
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
-    """Classification version: uses 'prediction_prob'. Includes HTF scaling/alignment if columns exist."""
-    # Volatility column
+    """Classification version: uses 'prediction_prob'. Uses fixed unit sizing and HTF trend bias."""
+    # Always use fixed contract sizing: signal direction is binary, size is constant.
+    signal_expr = pl.when((pl.col("prediction_prob").fill_null(0.5) - 0.5) > 0).then(1.0)
+    signal_expr = signal_expr.when((pl.col("prediction_prob").fill_null(0.5) - 0.5) < 0).then(-1.0).otherwise(0.0)
+
+    # HTF directional bias: daily trend gives a long/short/neutral bias, hourly alignment sharpens it.
+    if config.HTF_TREND_ALIGNMENT and "htf_daily_trend_slope_10" in df.columns:
+        daily_bias = pl.when(
+            pl.col("htf_daily_trend_slope_10").abs() >= config.HTF_TREND_THRESHOLD
+        ).then(pl.col("htf_daily_trend_slope_10").sign()).otherwise(0.0)
+        if "htf_hourly_trend_alignment" in df.columns:
+            hourly_align = pl.col("htf_hourly_trend_alignment").sign()
+            daily_bias = pl.when(
+                (daily_bias != 0.0) & (hourly_align == daily_bias)
+            ).then(daily_bias).otherwise(0.0)
+        target_raw_expr = pl.when(
+            (signal_expr == daily_bias) & (daily_bias != 0.0)
+        ).then(daily_bias).otherwise(0.0)
+    else:
+        target_raw_expr = signal_expr
+
+    target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
+    target_array = target_series.to_numpy()
+
+    # Volatility column for cost estimation only.
     if "feature_ewma_vol_20" not in df.columns:
         ret = (pl.col("close") / pl.col("close").shift(1)).log()
         vol = ret.rolling_std(window_size=20)
@@ -19,38 +42,6 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         vol.fill_null(strategy="forward").fill_null(1e-6).alias("vol")
     )
-
-    # Bias removal (optional)
-    prob_series = df["prediction_prob"].fill_null(0.5).clip(0.0, 1.0)
-    if getattr(config, 'REMOVE_PREDICTION_BIAS', False):
-        probs = prob_series.to_numpy().copy()
-        sess_ids = df["session_id"].to_numpy()
-        for sess in np.unique(sess_ids):
-            mask = (sess_ids == sess)
-            sess_mean = probs[mask].mean()
-            probs[mask] = probs[mask] - sess_mean + 0.5
-        probs = np.clip(probs, 0.0, 1.0)
-        prob_series = pl.Series(probs)
-
-    raw_signal = (prob_series - 0.5) * 2.0
-    target_raw_expr = (raw_signal / pl.col("vol")) * config.TARGET_VOL
-    target_raw_expr = target_raw_expr.clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
-
-    # HTF volatility scaling – only if column exists
-    if config.HTF_VOL_SCALING and "htf_daily_vol_5" in df.columns:
-        daily_atr = pl.col("htf_daily_vol_5").fill_null(strategy="forward").fill_null(1e-6)
-        scaling = (config.TARGET_VOL / daily_atr).clip(0.25, 2.0)
-        target_raw_expr = (target_raw_expr * scaling).clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
-
-    # HTF trend alignment – only if column exists
-    if config.HTF_TREND_ALIGNMENT and "htf_daily_trend_slope_10" in df.columns:
-        daily_trend = pl.col("htf_daily_trend_slope_10").sign()
-        target_raw_expr = pl.when(
-            (daily_trend == 0) | (target_raw_expr.sign() == daily_trend)
-        ).then(target_raw_expr).otherwise(0)
-
-    target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
-    target_array = target_series.to_numpy()
 
     # Spread proxy
     if "feature_spread_proxy" in df.columns:
@@ -68,8 +59,8 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     last_bars_mask = (df["_session_rank"] > (df["_session_len"] - config.FLAT_BEFORE_CLOSE_MINUTES // 5)).to_numpy()
 
     # Pre‑compute returns
-    open_next = np.roll(df["open"].to_numpy(), -1)
-    close_next = np.roll(df["close"].to_numpy(), -1)
+    open_next = np.roll(df["open"].to_numpy().astype(np.float64), -1)
+    close_next = np.roll(df["close"].to_numpy().astype(np.float64), -1)
     open_next[-1] = np.nan
     close_next[-1] = np.nan
     ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)

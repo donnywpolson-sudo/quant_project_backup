@@ -83,5 +83,26 @@ def test_daily_alignment_first_bar():
     daily_vol = first_bar_second_session["daily_vol_5"][0]
     assert daily_vol is not None
 
+
+def test_filter_session_hours_excludes_cme_settlement_gap():
+    ts = [
+        datetime(2026, 1, 7, 16, 30),
+        datetime(2026, 1, 7, 17, 30),
+        datetime(2026, 1, 7, 18, 30),
+    ]
+    df = pl.DataFrame({
+        "ts_event": ts,
+        "open": [100.0, 100.0, 100.0],
+        "high": [101.0, 101.0, 101.0],
+        "low": [99.0, 99.0, 99.0],
+        "close": [100.0, 100.0, 100.0],
+        "volume": [1000, 1000, 1000],
+    })
+    df = df.with_columns(pl.col("ts_event").dt.replace_time_zone("America/New_York").dt.convert_time_zone("UTC"))
+    df = filter_session_hours(df)
+    local_hours = df["ts_event"].dt.convert_time_zone("America/New_York").dt.hour().to_list()
+    assert 17 not in local_hours
+    assert 18 in local_hours
+
 if __name__ == "__main__":
     pytest.main([__file__])

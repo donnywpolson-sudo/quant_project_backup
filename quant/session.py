@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TIMEZONE)
 SESSION_START = config.SESSION_START_LOCAL
 SESSION_END = config.SESSION_END_LOCAL
+SESSION_BREAK_START = config.SESSION_BREAK_START_LOCAL
+SESSION_BREAK_END = config.SESSION_BREAK_END_LOCAL
 
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
@@ -32,9 +34,12 @@ def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.time().alias("time_local")
     )
-    df = df.filter(
-        (pl.col("time_local") >= SESSION_START) | (pl.col("time_local") < SESSION_END)
-    )
+    time_local = pl.col("time_local")
+    in_session = (time_local >= SESSION_START) | (time_local < SESSION_END)
+    if SESSION_BREAK_START is not None and SESSION_BREAK_END is not None:
+        in_break = (time_local >= SESSION_BREAK_START) & (time_local < SESSION_BREAK_END)
+        in_session = in_session & ~in_break
+    df = df.filter(in_session)
     return df.drop("time_local")
 
 def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:

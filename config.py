@@ -22,6 +22,8 @@ config.MEMORY_SAFETY_MARGIN = 0.95
 config.TIMEZONE = "America/New_York"
 config.SESSION_START_LOCAL = time(18, 0)
 config.SESSION_END_LOCAL = time(16, 0)
+config.SESSION_BREAK_START_LOCAL = time(17, 0)
+config.SESSION_BREAK_END_LOCAL = time(18, 0)
 config.RESAMPLE_FREQUENCIES = ["5m", "1h", "1d"]
 config.DROP_INCOMPLETE_ROWS = True
 

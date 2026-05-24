@@ -29,7 +29,7 @@ Step 11 = execution simulation, HTF volatility sizing, slippage/latency modeling
 Step 12 = monitoring and CI gating for deploy.
 
 1. OBJECTIVE
-Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <16GB (safe cap 14GB), seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
+Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, with the CME settlement gap excluded from 17:00–18:00 ET, no overnight holds. Zero leakage, memory <16GB (safe cap 14GB), seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
 
 2. GLOBAL ENV
 SEED=42 for numpy/random/sklearn
@@ -61,6 +61,8 @@ Resampling (three streams – 1h/Daily not yet implemented)
 text
 SESSION_START_LOCAL = time(18,0)
 SESSION_END_LOCAL = time(16,0)
+SESSION_BREAK_START_LOCAL = time(17,0)
+SESSION_BREAK_END_LOCAL = time(18,0)
 RESAMPLE_FREQUENCIES = ["5m", "1h", "1d"]
 DROP_INCOMPLETE_ROWS = True
 Baseline windows (5min only – HTF windows exist but unused)
@@ -102,7 +104,7 @@ WF_TRAIN_DAYS = 60
 WF_TEST_DAYS = 1
 WF_STEP_DAYS = 1
 RIDGE_PARAMS = {"alpha":1.0,"solver":"cholesky","fit_intercept":True,"random_state":42}
-Execution (HTF scaling/alignment not implemented)
+Execution (HTF bias and fixed sizing not implemented)
 text
 EXECUTE_AT = "open[t+1]"
 SLIPPAGE_K = 0.001
@@ -115,6 +117,8 @@ FLAT_BEFORE_CLOSE_MINUTES = 5
 HTF_TREND_ALIGNMENT = True      # missing in simulator
 HTF_VOL_SCALING = True          # missing
 HTF_VOL_WINDOW = 10
+FIXED_CONTRACT_SIZE = True       # execution should always use the same contract size
+HTF_DIRECTIONAL_BIAS = True      # HTF should bias 5m execution to long/short/no trade
 Metrics & constants
 text
 METRICS_TO_COMPUTE = ["Sharpe","MaxDrawdown","Turnover","HitRate","AvgWin","AvgLoss","MAE"]
@@ -169,7 +173,7 @@ Cross‑timeframe (5min×1h, etc.) – not implemented.
 16. MANIFEST & CANONICAL PARQUET – implemented (src/io/canonical_parquet.py).
 17. FEATURE FREEZE – implemented (manifest stores selected names).
 18. WALKFORWARD RIDGE – implemented (60/1 day rolling), but only frozen 5min features.
-19. TOP‑DOWN EXECUTION – partially implemented (position sizing, costs, max change, flatten). Missing: HTF vol scaling, trend alignment filter.
+19. TOP‑DOWN EXECUTION – partially implemented (position sizing, costs, max change, flatten). Missing: fixed contract sizing, HTF directional bias gating, HTF vol scaling, trend alignment filter.
 20. NAIVE BENCHMARK – implemented (20‑period SMA crossover, long only).
 21. TESTS – memory abort, serialisation reproducibility, walkforward, dtypes, manifest format.
 22. ENTRYPOINT – src/cli.py discover and src/cli.py run.
