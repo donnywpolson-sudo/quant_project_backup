@@ -1,7 +1,7 @@
 # Project Snapshot for Audit
 
 # Root: C:\Users\donny\Desktop\quant_project
-# Created: 2026-05-23T22:24:13.329540
+# Created: 2026-05-23T22:26:05.379352
 
 --- 
 ### File: .gitignore
@@ -3588,18 +3588,16 @@ def run_step(cmd_list, retries=2, delay=5):
     for attempt in range(retries + 1):
         logger.info(f"Executing: {' '.join(cmd_list)}")
         try:
-            # Start the subprocess, piping stdout and stderr to parent
             proc = subprocess.Popen(
                 cmd_list,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # merge stderr into stdout for simpler handling
+                stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,                 # line buffered
+                bufsize=1,
                 universal_newlines=True
             )
-            # Stream output line by line
             for line in proc.stdout:
-                print(line, end='', flush=True)   # print immediately
+                print(line, end='', flush=True)
             proc.wait()
             if proc.returncode == 0:
                 logger.info("Step completed successfully.")
@@ -3629,21 +3627,22 @@ def process_file(data_path: Path):
 
     manifest_path = artifacts_dir / "manifest.json"
 
+    # CHANGED: src.cli -> quant.cli, src.analytics -> quant.analytics
     stage_discover = [
-        sys.executable, "-m", "src.cli", "discover",
+        sys.executable, "-m", "quant.cli", "discover",
         "--data", str(data_path),
         "--out", str(manifest_path)
     ]
 
     stage_run = [
-        sys.executable, "-m", "src.cli", "run",
+        sys.executable, "-m", "quant.cli", "run",
         "--data", str(data_path),
         "--manifest", str(manifest_path),
         "--out", str(artifacts_dir)
     ]
 
     stage_analytics = [
-        sys.executable, "-m", "src.analytics",
+        sys.executable, "-m", "quant.analytics",
         str(artifacts_dir / "backtest_results.parquet")
     ]
 
@@ -3674,7 +3673,6 @@ if __name__ == "__main__":
     for file_path in files:
         process_file(file_path)
 
-    # --- POST-PROCESSING: Run aggregator to consolidate all results ---
     logger.info("All files processed. Running aggregate_metrics.py to generate consolidated reports...")
     agg_result = subprocess.run([sys.executable, "aggregate_metrics.py"], capture_output=True, text=True)
     if agg_result.returncode == 0:
