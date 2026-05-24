@@ -6,11 +6,14 @@ and runs the two‑phase pipeline (discovery → walkforward) per file.
 
 After all files are processed, it runs aggregate_metrics.py to produce
 consolidated performance reports per market and across all markets.
+
+NOW WITH REAL‑TIME OUTPUT STREAMING – NO MORE HIDDEN PROGRESS BARS.
 """
 import subprocess
 import sys
 import logging
 import time
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -22,6 +25,8 @@ def create_audit_snapshot(root_dir: str = "."):
     """
     Creates a full project snapshot (all text files) for audit purposes.
     Saves as full_code.md in the project root.
+    Excludes directories and files that may contain secrets,
+    and redacts any remaining API keys or credentials.
     """
     project_root = Path(root_dir).resolve()
     snapshot_filename = "full_code.md"
@@ -31,7 +36,16 @@ def create_audit_snapshot(root_dir: str = "."):
         ".venv", "venv", "env", ".git", "__pycache__",
         "artifacts", "logs", "models", "node_modules",
         ".pytest_cache", ".mypy_cache", ".ipynb_checkpoints",
-        "dist", "build", "htmlcov", ".tox"
+        "dist", "build", "htmlcov", ".tox",
+        ".config", "secrets", "credentials",
+    }
+
+    # Explicitly skip files that often hold secrets
+    exclude_files = {
+        ".env", ".env.local", ".env.production", ".env.secret",
+        "config.py", "secrets.py", "credentials.py",
+        "databento_key.txt", "api_key.txt",
+        ".netrc", ".aws/credentials", ".gcloud/credentials.json",
     }
 
     # Binary extensions to skip entirely (cannot be read as text)
@@ -57,11 +71,39 @@ def create_audit_snapshot(root_dir: str = "."):
                 rel_path = file_path.relative_to(project_root)
                 if any(part in exclude_dirs for part in rel_path.parts):
                     continue
+                if file_path.name in exclude_files:
+                    continue
+                if any(keyword in file_path.name.lower() for keyword in ("key", "secret", "token", "credential", "password")):
+                    continue
                 if file_path.suffix.lower() in binary_extensions:
                     continue
+
                 f.write(f"--- \n### File: {rel_path}\n")
                 try:
                     content = file_path.read_text(encoding="utf-8", errors="replace")
+                    # Redact Databento API keys and other common credential patterns
+                    content = re.sub(
+                        r'(DATABENTO_API_KEY\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content,
+                        flags=re.IGNORECASE
+                    )
+                    content = re.sub(
+                        r'(api_key\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content,
+                        flags=re.IGNORECASE
+                    )
+                    content = re.sub(
+                        r'(API_KEY\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content
+                    )
+                    content = re.sub(
+                        r'(DATABENTO_API_KEY\s*=\s*)([^\s]+)',
+                        r'\1[REDACTED]',
+                        content
+                    )
                     f.write("```\n" + content + "\n```\n\n")
                 except Exception as e:
                     f.write(f"Error reading file: {e}\n\n")
@@ -70,16 +112,31 @@ def create_audit_snapshot(root_dir: str = "."):
         logger.error(f"Failed to create audit snapshot: {e}")
 
 def run_step(cmd_list, retries=2, delay=5):
-    """Executes a command with retry mechanism."""
+    """
+    Executes a command with real‑time output streaming.
+    Uses subprocess.Popen to show stdout/stderr immediately.
+    """
     for attempt in range(retries + 1):
         logger.info(f"Executing: {' '.join(cmd_list)}")
         try:
-            result = subprocess.run(cmd_list, capture_output=True, text=True)
-            if result.returncode == 0:
+            # Start the subprocess, piping stdout and stderr to parent
+            proc = subprocess.Popen(
+                cmd_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr into stdout for simpler handling
+                text=True,
+                bufsize=1,                 # line buffered
+                universal_newlines=True
+            )
+            # Stream output line by line
+            for line in proc.stdout:
+                print(line, end='', flush=True)   # print immediately
+            proc.wait()
+            if proc.returncode == 0:
                 logger.info("Step completed successfully.")
                 return True
             else:
-                logger.error(f"Attempt {attempt + 1} failed (rc={result.returncode}): {result.stderr[-500:]}")
+                logger.error(f"Attempt {attempt + 1} failed with return code {proc.returncode}")
         except Exception as e:
             logger.error(f"Exception during execution: {e}")
         if attempt < retries:
@@ -153,7 +210,6 @@ if __name__ == "__main__":
     agg_result = subprocess.run([sys.executable, "aggregate_metrics.py"], capture_output=True, text=True)
     if agg_result.returncode == 0:
         logger.info("✅ Aggregated metrics saved to artifacts/aggregated/")
-        # Print the output for visibility
         print("\n" + agg_result.stdout)
     else:
         logger.error(f"Aggregation failed: {agg_result.stderr}")

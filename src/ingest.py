@@ -2,6 +2,7 @@
 src/ingest.py
 Handles ingestion of three streams (5m, 1h, 1d) for a primary symbol,
 and optionally loads other symbols’ 5‑min data as cross‑asset features.
+Now with verbose prints and cache detection.
 """
 import polars as pl
 import logging
@@ -47,18 +48,15 @@ def load_cross_asset_features(data_glob: str, secondary_symbol: str) -> pl.DataF
     Load 5‑min resampled data for a secondary symbol and return a DataFrame
     with columns: ts_event, {symbol}_ret_1 (lagged log return).
     """
-    # Build glob for the secondary symbol's files (same directory structure)
-    # data_glob example: "futures/ES/2026.parquet" -> we need "futures/CL/2026.parquet"
     primary_path = Path(data_glob)
     secondary_glob = str(primary_path.parent.parent / secondary_symbol / primary_path.name)
+    print(f"[INGEST] Loading cross‑asset features for {secondary_symbol} from {secondary_glob}", flush=True)
     try:
         streams = load_all_streams_chunked(secondary_glob)
         df_5min = streams["5m"]
-        # Compute lagged log return (1 period)
         df_5min = df_5min.with_columns(
             (pl.col("close") / pl.col("close").shift(1)).log().alias(f"{secondary_symbol}_ret_1")
         )
-        # Keep only ts_event and the return
         df_5min = df_5min.select(["ts_event", f"{secondary_symbol}_ret_1"])
         logger.info(f"Loaded cross‑asset features for {secondary_symbol}, {df_5min.height} rows")
         return df_5min
@@ -72,31 +70,35 @@ def load_and_clean_data(data_glob: str, cache_path: str = None, cross_asset_symb
     cross‑asset features from other symbols (aligned on ts_event).
     """
     if cache_path and Path(cache_path).exists():
+        print(f"[INGEST] Loading aligned data from cache: {cache_path}", flush=True)
         logger.info(f"Loading aligned data from cache: {cache_path}")
         df_aligned = pl.read_parquet(cache_path)
         validate_memory_and_integrity(df_aligned)
         return df_aligned
 
+    print(f"[INGEST] No cache found. Loading three streams from: {data_glob}", flush=True)
     logger.info(f"Loading three streams from: {data_glob}")
     streams = load_all_streams_chunked(data_glob)
     df_5min = streams["5m"]
     df_1h = streams["1h"]
     df_daily = streams["1d"]
+    print("[INGEST] Aligning HTF streams...", flush=True)
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
     validate_memory_and_integrity(df_aligned)
 
     # Add cross‑asset features if requested
     if cross_asset_symbols:
         for sym in cross_asset_symbols:
+            print(f"[INGEST] Adding cross‑asset features for {sym}...", flush=True)
             df_cross = load_cross_asset_features(data_glob, sym)
             if not df_cross.is_empty():
                 df_aligned = df_aligned.join(df_cross, on="ts_event", how="left")
-                # Forward fill missing cross‑asset values (e.g., first bars of session)
                 for col in df_cross.columns:
                     if col != "ts_event":
                         df_aligned = df_aligned.with_columns(pl.col(col).fill_null(strategy="forward"))
 
     if cache_path:
+        print(f"[INGEST] Caching aligned data to {cache_path}", flush=True)
         logger.info(f"Caching aligned data to {cache_path}")
         write_canonical_parquet(df_aligned, cache_path)
 

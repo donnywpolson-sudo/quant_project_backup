@@ -1,11 +1,8 @@
 """
 src/discovery.py
 Phase 1: Feature discovery using ExtraTrees with bootstrap folds, stability selection,
-memory isolation via joblib loky, RSS monitoring, and sign consistency filtering.
-Now includes all feature types: baseline, ratios, pairwise, cross-timeframe, and HTF context.
-
-Folds can be run in parallel (config.DISCOVERY_PARALLEL_FOLDS) without affecting determinism
-because each fold has its own independent random seed derived from global seed and fold index.
+memory isolation, and sign consistency filtering.
+Now respects DISCOVERY_WINDOW_DAYS and includes all feature types.
 """
 import sys
 print("Discovery started. Waiting for folds...", flush=True)
@@ -18,8 +15,8 @@ import psutil
 import hashlib
 from datetime import datetime
 from sklearn.ensemble import ExtraTreesRegressor
-from joblib import Parallel, delayed
 from config import config
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -30,79 +27,69 @@ def get_fold_seed(fold_idx: int) -> int:
 def check_rss(limit_bytes):
     return psutil.Process().memory_info().rss > limit_bytes
 
-def fit_etree_fold(X, y, fold_idx, feature_names, rss_stop_bytes):
-    """Fit ExtraTrees on one bootstrap sample. Returns importances dict and sign of correlation."""
-    print(f"Fold {fold_idx+1} started at {datetime.now().strftime('%H:%M:%S')}")
-    if check_rss(rss_stop_bytes):
-        raise MemoryError(f"RSS stop limit exceeded in fold {fold_idx}")
-    n_samples = X.shape[0]
-    rng = np.random.RandomState(get_fold_seed(fold_idx))
-    indices = rng.choice(n_samples, size=n_samples, replace=True)
-    X_boot = X[indices]
-    y_boot = y[indices]
-    et_params = config.EXTRA_TREES_PARAMS.copy()
-    et_params['random_state'] = get_fold_seed(fold_idx)
-    et = ExtraTreesRegressor(**et_params)
-    et.fit(X_boot, y_boot)
-    importances = dict(zip(feature_names, et.feature_importances_))
-
-    # Compute sign consistency: correlation between feature and target (simple proxy)
-    signs = {}
-    for i, f in enumerate(feature_names):
-        with np.errstate(invalid='ignore'):
-            corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
-        if np.isnan(corr):
-            corr = 0.0
-        signs[f] = np.sign(corr)
-    return importances, signs
-
 def run_feature_discovery(data_path: str, manifest_out: str):
     logger.info("Phase 1: Feature Discovery")
-    # Directly load the pre‑computed feature matrix (already contains all features + target)
     df_features = pl.read_parquet(data_path)
 
     target_col = "target_5m"
     if target_col not in df_features.columns:
         raise ValueError(f"Target column {target_col} not found.")
-    
-    # --- Include ALL feature columns (HTF, cross, etc.) ---
+
+    # --- Limit to last DISCOVERY_WINDOW_DAYS trading days ---
+    df_features = df_features.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.date().alias("date")
+    )
+    unique_dates = sorted(df_features["date"].unique().to_list())
+    if len(unique_dates) > config.DISCOVERY_WINDOW_DAYS:
+        cutoff_date = unique_dates[-config.DISCOVERY_WINDOW_DAYS]
+        df_features = df_features.filter(pl.col("date") >= cutoff_date)
+        logger.info(f"Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days ({cutoff_date} onwards)")
+    df_features = df_features.drop("date")
+
+    # --- Feature columns (all except metadata and target) ---
     exclude_cols = {
-        "ts_event", "open", "high", "low", "close", "volume", 
-        "session_id", "date", target_col, "regime", "benchmark_pnl"
+        "ts_event", "open", "high", "low", "close", "volume",
+        "session_id", target_col, "regime", "benchmark_pnl"
     }
     feature_cols = [c for c in df_features.columns if c not in exclude_cols and not c.startswith("_")]
     feature_cols = [c for c in feature_cols if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)]
-    
-    htf_features = [c for c in feature_cols if c.startswith(("htf_", "cross_", "1h_", "daily_"))]
-    if not htf_features:
-        logger.warning("No HTF or cross-timeframe features found in feature set. Check generate_features.")
-    else:
-        logger.info(f"Discovery includes {len(htf_features)} HTF/cross features.")
 
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
 
-    n_bars = min(15840, X.shape[0])
-    X = X[:n_bars]
-    y = y[:n_bars]
     logger.info(f"Discovery using {X.shape[0]} rows, {X.shape[1]} features.")
 
     rss_stop = config.RSS_STOP_BYTES
     n_folds = config.BOOTSTRAP_FOLDS
 
-    # --- Parallel folds (deterministic, zero loss of accuracy) ---
-    n_parallel = min(getattr(config, 'DISCOVERY_PARALLEL_FOLDS', 1), n_folds)
-    logger.info(f"Running {n_folds} bootstrap folds in parallel with {n_parallel} workers...")
+    importances_list = []
+    signs_list = []
 
-    results = Parallel(n_jobs=n_parallel, backend='loky', verbose=10)(
-        delayed(fit_etree_fold)(X, y, i, feature_cols, rss_stop)
-        for i in range(n_folds)
-    )
+    for fold_idx in tqdm(range(n_folds), desc="Bootstrap folds", unit="fold"):
+        print(f"Fold {fold_idx+1} started at {datetime.now().strftime('%H:%M:%S')}", flush=True)
+        if check_rss(rss_stop):
+            raise MemoryError(f"RSS stop limit exceeded in fold {fold_idx}")
+        n_samples = X.shape[0]
+        rng = np.random.RandomState(get_fold_seed(fold_idx))
+        indices = rng.choice(n_samples, size=n_samples, replace=True)
+        X_boot = X[indices]
+        y_boot = y[indices]
+        et_params = config.EXTRA_TREES_PARAMS.copy()
+        et_params['random_state'] = get_fold_seed(fold_idx)
+        et = ExtraTreesRegressor(**et_params)
+        et.fit(X_boot, y_boot)
+        importances = dict(zip(feature_cols, et.feature_importances_))
+        signs = {}
+        for i, f in enumerate(feature_cols):
+            with np.errstate(invalid='ignore'):
+                corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
+            if np.isnan(corr):
+                corr = 0.0
+            signs[f] = np.sign(corr)
+        importances_list.append(importances)
+        signs_list.append(signs)
 
-    importances_list = [r[0] for r in results]
-    signs_list = [r[1] for r in results]
-
-    # Compute selection frequencies and mean importance
+    # Aggregate
     importances_sum = {f: 0.0 for f in feature_cols}
     selection_count = {f: 0 for f in feature_cols}
     n_folds = len(importances_list)
@@ -113,7 +100,6 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             if imp > 0:
                 selection_count[f] += 1
 
-    # Determine majority sign per feature across folds
     majority_sign = {}
     for f in feature_cols:
         pos = sum(1 for sd in signs_list if sd.get(f, 0) > 0)
@@ -127,13 +113,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     freq = {f: selection_count[f] / n_folds for f in feature_cols}
     mean_imp = {f: importances_sum[f] / n_folds for f in feature_cols}
 
-    # Apply frequency threshold AND sign consistency threshold
     selected = [f for f in feature_cols
                 if freq[f] >= config.SELECTION_FREQ_THRESHOLD
                 and sign_consistency_frac[f] >= config.SIGN_CONSISTENCY_THRESHOLD]
     selected_sorted = sorted(selected, key=lambda x: mean_imp[x], reverse=True)
 
-    # Cumulative importance selection
     cumsum = 0.0
     final_selected = []
     total_imp = sum(mean_imp[f] for f in selected_sorted) if selected_sorted else 1.0
@@ -142,15 +126,31 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         final_selected.append(f)
         if cumsum >= config.CUMULATIVE_IMPORTANCE_THRESHOLD:
             break
+
+    # Fallback to ensure MIN_SELECTED_FEATURES
     if len(final_selected) < config.MIN_SELECTED_FEATURES:
-        final_selected = selected_sorted[:config.MIN_SELECTED_FEATURES]
+        if len(selected_sorted) == 0:
+            all_sorted = sorted(mean_imp.items(), key=lambda x: x[1], reverse=True)
+            fallback_features = [f for f, _ in all_sorted[:config.MIN_SELECTED_FEATURES]]
+            final_selected = fallback_features
+        else:
+            needed = config.MIN_SELECTED_FEATURES - len(final_selected)
+            for f in selected_sorted:
+                if f not in final_selected:
+                    final_selected.append(f)
+                    needed -= 1
+                    if needed == 0:
+                        break
+            if needed > 0:
+                for f, _ in sorted(mean_imp.items(), key=lambda x: x[1], reverse=True):
+                    if f not in final_selected:
+                        final_selected.append(f)
+                        needed -= 1
+                        if needed == 0:
+                            break
 
-    logger.info(f"Selected {len(final_selected)} features (sign consistency threshold={config.SIGN_CONSISTENCY_THRESHOLD}).")
-    if htf_features:
-        selected_htf = [f for f in final_selected if f.startswith(("htf_", "cross_", "1h_", "daily_"))]
-        logger.info(f"Selected HTF/cross features: {len(selected_htf)} / {len(htf_features)}")
+    logger.info(f"Selected {len(final_selected)} features (min required: {config.MIN_SELECTED_FEATURES}).")
 
-    # Compute hash of frozen feature list
     feature_list_str = json.dumps(sorted(final_selected), sort_keys=True).encode()
     features_hash = hashlib.sha256(feature_list_str).hexdigest()
 
@@ -167,7 +167,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         "stability_stats": {
             "min_selection_freq": config.SELECTION_FREQ_THRESHOLD,
             "sign_consistency": config.SIGN_CONSISTENCY_THRESHOLD,
-            "sign_consistency_observed": {f: round(sign_consistency_frac[f], 3) for f in final_selected[:10]}
+            "sign_consistency_observed": {f: round(sign_consistency_frac.get(f, 0), 3) for f in final_selected[:10]}
         },
         "baseline_feature_list": [c for c in feature_cols if c.startswith("feature_")][:40],
         "baseline_features_hash": f"sha256:{features_hash}",
@@ -180,7 +180,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         },
         "discovery_status": "completed",
         "folds": [],
-        "htf_features_included": len(htf_features) > 0
+        "htf_features_included": any(c.startswith(("htf_", "cross_", "1h_", "daily_")) for c in feature_cols)
     }
     os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
     with open(manifest_out, "w") as f:

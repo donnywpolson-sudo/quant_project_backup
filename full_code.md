@@ -1,13 +1,7 @@
 # Project Snapshot for Audit
 
 # Root: C:\Users\donny\Desktop\quant_project
-# Created: 2026-05-23T00:22:39.438516
-
---- 
-### File: .env
-```
-DATABENTO_API_KEY=db-rVH6VfvxcrSLfdPL5bQxDTPhQ9sPy
-```
+# Created: 2026-05-23T22:06:29.280617
 
 --- 
 ### File: .gitignore
@@ -354,45 +348,29 @@ Implementation status: Snapshot implements 5min stream fully; 1h/Daily streams, 
 
 Hardware: RAM 14GB, storage 200GB, single‑threaded (OMP_NUM_THREADS=1), CPU only, Python 3.10+, pytz (not zoneinfo).
 
-Pipeline Flowchart (Three‑Stream HTF‑Aware)
-1‑min OHLCV parquet → Resample into 5min, 1h, Daily →
+Pipeline Flowchart: 
 
-Step 1 — Baseline & HTF context
+Data Collection & Engineering:
+Step 1 = data sourcing, timezone normalization, sessionization, raw manifest.
+Step 2 = resampling and explicit ts_close.
+Step 3 = HTF alignment enforcing causality.
+Step 4 = HTF feature engineering (indicators, ATR, slopes).
 
-5min baseline features (YAML)
+Alpha Research & Modeling:
+Step 5 = HTF discovery and feature selection.
+Step 6 = 5m baseline features.
+Step 7 = joining frozen HTF to 5m (conditioning).
+Step 8 = feature expansion and pruning.
+Step 9 = 5m discovery conditioned on HTF.
 
-HTF state: trend alignment, distance to Daily/1h levels, volatility ratios, regime labels
+Backtesting & Validation:
+Step 10 = walkforward Ridge training, per‑fold scalers, OOS metrics.
+Step 11 = execution simulation produces trades and PnL for validation.
+Step 12 = CI tests, reproducibility, no‑leakage checks.
 
-Step 2 — Feature expansion
-
-Intra‑timeframe interactions (5min×5min, 1h×1h, Daily×Daily)
-
-Cross‑timeframe (5min×1h, 5min×Daily, 1h×Daily)
-
-Ratios, z‑scores, regime‑conditioned transforms (past data only)
-
-Step 3 — Target
-target_5m = log(close_5min[t+1]/close_5min[t])
-
-Step 4 — ExtraTrees discovery
-
-Train on combined 5min/1h/Daily feature pool (HTF as regime filters)
-
-Stability selection: frequency ≥75%, sign consistency ≥80%
-
-Step 5 — Freeze features → manifest + SHA256
-
-Step 6 — Walkforward Ridge (frozen mixed‑timeframe features, StandardScaler per fold)
-
-Step 7 — Prediction (every 5min using latest 5min/1h/Daily aligned without lookahead)
-
-Step 8 — Top‑down execution
-
-Scale position by HTF volatility (e.g., daily ATR)
-
-Trend alignment filter: only signals agreeing with HTF trend
-
-Flatten before close
+Portfolio Optimization & Execution:
+Step 11 = execution simulation, HTF volatility sizing, slippage/latency modeling.
+Step 12 = monitoring and CI gating for deploy.
 
 1. OBJECTIVE
 Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <14GB, seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
@@ -655,217 +633,6 @@ baseline_features:
   - feature_ratio_template
   - feature_pca_comp_1
   - feature_pca_comp_2
-```
-
---- 
-### File: config\config.py
-```
-"""
-config/config.py
-Single Source of Truth for the Quant Pipeline.
-Optimised for Ryzen 5 2600 (6 cores / 12 threads) – high performance, deterministic.
-"""
-import os
-import logging
-from datetime import time
-from pathlib import Path
-
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- Environment (let BLAS/NumPy use all cores, still deterministic) ---
-# Uncomment to explicitly set thread count for BLAS (optional)
-# os.environ["OMP_NUM_THREADS"] = "6"
-# os.environ["OPENBLAS_NUM_THREADS"] = "6"
-# os.environ["MKL_NUM_THREADS"] = "6"
-
-# --- Paths and IO ---
-DATA_ROOT = "./data/test"
-ARTIFACTS_ROOT = "./artifacts"
-DATA_GLOB = "data/futures/*.parquet"
-FEATURES_OUT = os.path.join(ARTIFACTS_ROOT, "features.parquet")
-MANIFEST_PATH = os.path.join(ARTIFACTS_ROOT, "manifest.json")
-MODELS_DIR = "models/"
-TRADES_OUT = os.path.join(ARTIFACTS_ROOT, "trades.csv")
-PNL_OUT = os.path.join(ARTIFACTS_ROOT, "pnl_series.csv")
-LOG_DIR = "logs/"
-CACHE_DIR = "cache/"
-MEMORY_TRACE_OUT = os.path.join(LOG_DIR, "memory_trace.csv")
-SYNTHETIC_FIXTURE_PATH = "tests/fixtures/synthetic_1min_fixture.parquet"
-MAPPING_FILE_PATH = "config/term_to_canonical_mapping.yaml"
-BASELINE_FEATURES_FILE = "config/baseline_features.yaml"
-BASELINE_FEATURES_PERSIST_PATH = os.path.join(ARTIFACTS_ROOT, "baseline_feature_matrix.parquet")
-
-# --- Determinism seed ---
-SEED = 42
-
-# --- Numeric guards ---
-EPS = 1e-9
-CLIP_MIN = -10.0
-CLIP_MAX = 10.0
-DTYPE = "float32"
-TIMEZONE = "America/New_York"
-PRE_POST_CLIP_LOGGING = True
-DEBUG_FLOAT64_MODE = False
-REPLACE_INF_NAN_WITH = 0.0
-
-# --- Memory and hardware limits ---
-RAM_CAP_BYTES = 14 * 1024**3  # 14GB
-RSS_STOP_BYTES = 13.5 * 1024**3
-STORAGE_MIN_GB = 200
-ROWS_PER_CHUNK_MAX = 5_000_000
-MEMORY_SAFETY_MARGIN = 0.95
-MEMORY_RSS_CHECKPOINT_INTERVAL_SEC = 10
-MEMORY_RSS_CHECKPOINTS_BEFORE_STOP = 3
-MEMORY_LOG_ENABLED = True
-
-# --- Data load and collect ---
-DATA_SCAN_GLOB = DATA_GLOB
-LAZY_PUSHDOWN_FILTERS = True
-COLLECT_PARTITION_ROWS = True
-STABLE_SORT_KEYS = ["session_id", "ts_event", "row_id"]
-
-# --- Session and resampling ---
-SESSION_START_LOCAL = time(18, 0, 0)
-SESSION_END_LOCAL = time(16, 0, 0)
-SESSION_TZ = TIMEZONE
-RESAMPLE_RULES = {"O": "first", "H": "max", "L": "min", "C": "last", "V": "sum"}
-RESAMPLE_FREQUENCIES = ["5m", "1h", "1d"]
-
-# --- Cleaning rules ---
-DROP_VOLUME_ZERO = True
-ALLOW_FFILL_4H_MAPPING_ONLY = True
-DROP_INCOMPLETE_ROWS = True
-REPLACE_INF_NAN_WITH = 0.0
-
-# --- Base feature windows ---
-ROLL_WINDOWS = [5, 10, 20, 50]
-ROLL_WINDOWS_1H = [2, 4, 6, 12]
-ROLL_WINDOWS_DAILY = [5, 10, 20]
-ROLL_WINDOW_MIN_ROWS = max(ROLL_WINDOWS)
-
-# --- Feature expansion (moderate – still fast, prop‑firm quality) ---
-FEATURE_TRANSFORMS = ["lags", "ratios", "z_scores", "pairwise_products_limited", "cross_timeframe_ratios"]
-MAX_PAIRWISE_INTERACTIONS = 200      # reduced from 500 – still powerful, much faster
-MAX_CROSS_TIMEFRAME_INTERACTIONS = 100  # reduced from 200
-TEMPORAL_BUCKETS = ["early", "mid", "late"]
-
-# --- HTF Context ---
-HTF_TREND_WINDOWS = [5, 10, 20]
-HTF_VOLATILITY_WINDOWS = [5, 10, 20]
-HTF_ALIGNMENT_FILTER = True
-HTF_TREND_THRESHOLD = 0.1
-
-# --- Regime and HTF ---
-VOL_MEDIAN_WINDOW = 20
-VOL_SMOOTH_WINDOW = 5
-REGIME_HIGH_THRESH = 0.6
-REGIME_LOW_THRESH = 0.4
-REGIME_MISSING_DEFAULT = 0
-
-# --- Targets ---
-TARGET_5M_HORIZON = 5
-CLASSIFICATION_MODE = True
-MAGNITUDE_THRESHOLD = 0.002
-PROB_TARGET_THRESHOLD = 0.005
-TARGET_SCALE_FACTOR = 1
-
-# --- 1H mapping (optional, not active) ---
-DST_AWARE_1H_TESTS = True
-PARTIAL_BLOCK_MIN_MINUTES = 15
-
-# --- Correlation filter ---
-CORR_THRESHOLD = 0.95
-CORR_TIE_BREAKER = ["variance_desc", "name_lexicographic"]
-CORR_ACCUMULATION_MODE = "compensated_float64_then_downcast"
-
-# --- Nonlinear discovery ExtraTrees (deterministic but parallel folds) ---
-DISCOVERY_METHOD = "ExtraTrees"
-DISCOVERY_WINDOW_DAYS = 60
-BOOTSTRAP_FOLDS = 10                     # keep 30 for stability
-EXTRA_TREES_PARAMS = {
-    "random_state": 42,
-    "n_jobs": 1,                         # CRITICAL: 1 for deterministic tree building
-    "n_estimators": 30,
-    "max_depth": 12,
-    "max_features": 0.3,
-    "bootstrap": False
-}
-SELECTION_FREQ_THRESHOLD = 0.75
-CUMULATIVE_IMPORTANCE_THRESHOLD = 0.95
-SIGN_CONSISTENCY_THRESHOLD = 0.8
-MIN_SELECTED_FEATURES = 10
-MAX_SELECTED_FEATURES = 1000
-
-# --- Orthogonalization (disabled) ---
-ORTHOGONALIZE = False
-PCA_TOP_COMPONENTS = 5
-
-# --- Manifest and cache ---
-MANIFEST_FIELDS = [
-    "feature_names", "dtypes",
-    "selection_seed", "selection_date", "selection_model", "selection_params",
-    "selected_K", "cumulative_importance", "stability_stats", "htf_features_included"
-]
-CACHE_KEY_COMPONENTS = [
-    "row_count", "ts_min", "ts_max", "dtypes", "file_size", "mtime",
-    "config_hash", "seed", "manifest_hash"
-]
-
-# --- Walkforward ---
-WF_TRAIN_DAYS = 60
-WF_TEST_DAYS = 1
-WF_STEP_DAYS = 1
-WF_PRECOMPUTE_INDICES = True
-
-# --- Models Ridge ---
-SCALER_CLASS = "StandardScaler"
-RIDGE_PARAMS = {"alpha": 0.01, "solver": "cholesky", "fit_intercept": True, "random_state": 42}  # reduced alpha
-RIDGE_N_JOBS = 1
-
-# --- Execution and risk (HTF‑aware) ---
-EXECUTE_AT = "open[t+1]"
-SLIPPAGE_K = 0.001
-VOL_PENALTY = 0.005
-COMMISSION_PER_TRADE = 0.00002
-TARGET_VOL = 0.01
-MAX_LEVERAGE = 3.0
-MAX_POS_CHANGE_PER_MIN = 0.1
-FLAT_BEFORE_CLOSE_MINUTES = 5
-HTF_TREND_ALIGNMENT = True
-HTF_VOL_SCALING = True
-HTF_VOL_WINDOW = 10
-
-# --- Metrics and reporting ---
-METRICS_TO_COMPUTE = ["Sharpe", "MaxDrawdown", "Turnover", "HitRate", "AvgWin", "AvgLoss", "MAE"]
-DEFAULT_METRICS_IF_NO_TRADES = {"Sharpe": 0, "MaxDrawdown": 0, "Turnover": 0, "HitRate": 0}
-ANNUALIZATION_FACTOR = 66528
-
-# --- Tests and thresholds ---
-REPRO_HASH_ALGORITHM = "sha256"
-DISCOVERY_REPRO_TEST = True
-MIN_STABILITY_FEATURES = 5
-
-# --- I/O schema ---
-ROW_GROUP_SIZE = 65536
-ENTRYPOINT_FN = "run_pipeline"
-
-# --- Pipeline flags ---
-TARGET_COL = "target_5m"
-
-# ===================================================
-# PARALLELISM FLAGS (Optimised for Ryzen 5 2600 – 6 cores / 12 threads)
-# ===================================================
-DISCOVERY_PARALLEL_FOLDS = 6   # one per physical core (avoid oversubscription)
-WF_PARALLEL_FOLDS = 6
-
-# --- Market-specific overrides (absolute paths) ---
-BASE_DIR = Path(__file__).parent.parent
-MARKET_CONFIGS = {
-    "ES": str(BASE_DIR / "config/markets/ES.yaml"),
-    "ZB": str(BASE_DIR / "config/markets/ZB.yaml"),
-    "CL": str(BASE_DIR / "config/markets/CL.yaml"),
-}
 ```
 
 --- 
@@ -1510,6 +1277,7 @@ psutil>=5.9.0
 pyyaml>=6.0
 pytest>=7.4.0
 pytz>=2024.1
+tqdm>=4.66.0 
 ```
 
 --- 
@@ -1523,11 +1291,14 @@ and runs the two‑phase pipeline (discovery → walkforward) per file.
 
 After all files are processed, it runs aggregate_metrics.py to produce
 consolidated performance reports per market and across all markets.
+
+NOW WITH REAL‑TIME OUTPUT STREAMING – NO MORE HIDDEN PROGRESS BARS.
 """
 import subprocess
 import sys
 import logging
 import time
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -1539,6 +1310,8 @@ def create_audit_snapshot(root_dir: str = "."):
     """
     Creates a full project snapshot (all text files) for audit purposes.
     Saves as full_code.md in the project root.
+    Excludes directories and files that may contain secrets,
+    and redacts any remaining API keys or credentials.
     """
     project_root = Path(root_dir).resolve()
     snapshot_filename = "full_code.md"
@@ -1548,7 +1321,16 @@ def create_audit_snapshot(root_dir: str = "."):
         ".venv", "venv", "env", ".git", "__pycache__",
         "artifacts", "logs", "models", "node_modules",
         ".pytest_cache", ".mypy_cache", ".ipynb_checkpoints",
-        "dist", "build", "htmlcov", ".tox"
+        "dist", "build", "htmlcov", ".tox",
+        ".config", "secrets", "credentials",
+    }
+
+    # Explicitly skip files that often hold secrets
+    exclude_files = {
+        ".env", ".env.local", ".env.production", ".env.secret",
+        "config.py", "secrets.py", "credentials.py",
+        "databento_key.txt", "api_key.txt",
+        ".netrc", ".aws/credentials", ".gcloud/credentials.json",
     }
 
     # Binary extensions to skip entirely (cannot be read as text)
@@ -1574,11 +1356,39 @@ def create_audit_snapshot(root_dir: str = "."):
                 rel_path = file_path.relative_to(project_root)
                 if any(part in exclude_dirs for part in rel_path.parts):
                     continue
+                if file_path.name in exclude_files:
+                    continue
+                if any(keyword in file_path.name.lower() for keyword in ("key", "secret", "token", "credential", "password")):
+                    continue
                 if file_path.suffix.lower() in binary_extensions:
                     continue
+
                 f.write(f"--- \n### File: {rel_path}\n")
                 try:
                     content = file_path.read_text(encoding="utf-8", errors="replace")
+                    # Redact Databento API keys and other common credential patterns
+                    content = re.sub(
+                        r'(DATABENTO_API_KEY\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content,
+                        flags=re.IGNORECASE
+                    )
+                    content = re.sub(
+                        r'(api_key\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content,
+                        flags=re.IGNORECASE
+                    )
+                    content = re.sub(
+                        r'(API_KEY\s*=\s*["\'])([^"\']+)(["\'])',
+                        r'\1[REDACTED]\3',
+                        content
+                    )
+                    content = re.sub(
+                        r'(DATABENTO_API_KEY\s*=\s*)([^\s]+)',
+                        r'\1[REDACTED]',
+                        content
+                    )
                     f.write("```\n" + content + "\n```\n\n")
                 except Exception as e:
                     f.write(f"Error reading file: {e}\n\n")
@@ -1587,16 +1397,31 @@ def create_audit_snapshot(root_dir: str = "."):
         logger.error(f"Failed to create audit snapshot: {e}")
 
 def run_step(cmd_list, retries=2, delay=5):
-    """Executes a command with retry mechanism."""
+    """
+    Executes a command with real‑time output streaming.
+    Uses subprocess.Popen to show stdout/stderr immediately.
+    """
     for attempt in range(retries + 1):
         logger.info(f"Executing: {' '.join(cmd_list)}")
         try:
-            result = subprocess.run(cmd_list, capture_output=True, text=True)
-            if result.returncode == 0:
+            # Start the subprocess, piping stdout and stderr to parent
+            proc = subprocess.Popen(
+                cmd_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr into stdout for simpler handling
+                text=True,
+                bufsize=1,                 # line buffered
+                universal_newlines=True
+            )
+            # Stream output line by line
+            for line in proc.stdout:
+                print(line, end='', flush=True)   # print immediately
+            proc.wait()
+            if proc.returncode == 0:
                 logger.info("Step completed successfully.")
                 return True
             else:
-                logger.error(f"Attempt {attempt + 1} failed (rc={result.returncode}): {result.stderr[-500:]}")
+                logger.error(f"Attempt {attempt + 1} failed with return code {proc.returncode}")
         except Exception as e:
             logger.error(f"Exception during execution: {e}")
         if attempt < retries:
@@ -1670,7 +1495,6 @@ if __name__ == "__main__":
     agg_result = subprocess.run([sys.executable, "aggregate_metrics.py"], capture_output=True, text=True)
     if agg_result.returncode == 0:
         logger.info("✅ Aggregated metrics saved to artifacts/aggregated/")
-        # Print the output for visibility
         print("\n" + agg_result.stdout)
     else:
         logger.error(f"Aggregation failed: {agg_result.stderr}")
@@ -1688,7 +1512,7 @@ if __name__ == "__main__":
 """
 src/align.py
 Align 5‑min, 1‑hour and Daily streams without lookahead.
-Uses asof join for 1h and proper daily lag.
+Uses asof join for 1h and asof join for daily (backward).
 Now includes daily_vol_5 from the daily stream.
 """
 import polars as pl
@@ -1701,7 +1525,7 @@ logger = logging.getLogger(__name__)
 def align_htf_streams(df_5min: pl.DataFrame, df_1h: pl.DataFrame, df_daily: pl.DataFrame) -> pl.DataFrame:
     """
     For each 5‑min bar, add columns from the most recent 1h bar (closed <= 5min timestamp)
-    and the most recent daily bar (closed before the session).
+    and the most recent daily bar (closed before the 5min timestamp).
     Returns a single DataFrame with all 5min columns plus prefixed HTF columns.
     """
     # Ensure sorted
@@ -1724,39 +1548,23 @@ def align_htf_streams(df_5min: pl.DataFrame, df_1h: pl.DataFrame, df_daily: pl.D
         strategy="backward"
     )
 
-    # ---- 2. Join daily using previous day's close ----
-    df_aligned = df_aligned.with_columns(
-        pl.col("ts_event").dt.date().alias("date_5min")
-    )
-    df_daily = df_daily.with_columns(
-        pl.col("ts_event").dt.date().alias("date_daily")
-    )
-    # For each 5min date, take the daily bar from the previous trading day
-    df_daily_prev = df_daily.with_columns(
-        (pl.col("date_daily") + pl.duration(days=1)).alias("next_day")
-    ).select([
-        pl.col("date_daily").alias("prev_date"),
-        pl.col("next_day"),
+    # ---- 2. Join daily using asof (backward) – no future leakage ----
+    df_daily_renamed = df_daily.select([
+        "ts_event",
         pl.col("open").alias("daily_open"),
         pl.col("high").alias("daily_high"),
         pl.col("low").alias("daily_low"),
         pl.col("close").alias("daily_close"),
         pl.col("volume").alias("daily_volume"),
-        pl.col("daily_vol_5").alias("daily_vol_5"),   # <-- added
+        pl.col("daily_vol_5").alias("daily_vol_5"),
     ])
-    df_aligned = df_aligned.join(
-        df_daily_prev,
-        left_on="date_5min",
-        right_on="next_day",
-        how="left"
+    df_aligned = df_aligned.join_asof(
+        df_daily_renamed,
+        on="ts_event",
+        strategy="backward"
     )
-    # Forward fill daily columns for the first days where no previous day exists
-    daily_cols = ["daily_open", "daily_high", "daily_low", "daily_close", "daily_volume", "daily_vol_5"]
-    for col in daily_cols:
-        df_aligned = df_aligned.with_columns(pl.col(col).fill_null(strategy="forward"))
 
-    # Drop helper columns (ignore if missing)
-    df_aligned = df_aligned.drop(["date_5min", "prev_date", "next_day"], strict=False)
+    # No forward fill – asof join already gives last known daily bar
     return df_aligned
 ```
 
@@ -1868,14 +1676,13 @@ if __name__ == "__main__":
 """
 src/cli.py
 Entrypoint for the Deterministic Quant Pipeline.
-Integrates resampling, discovery, walkforward, and execution.
-Now with market‑specific config loading, single feature generation pass,
-aligned data caching, and automatic performance metrics output.
-Ensures target column is never used as a feature.
+Now with global seeding for reproducibility.
 """
 import argparse
 import logging
 import os
+import random
+import numpy as np
 import psutil
 from pathlib import Path
 import polars as pl
@@ -1889,6 +1696,10 @@ from src.walkforward import run_walkforward
 from src.io.canonical_parquet import write_canonical_parquet
 from src.analytics import calculate_metrics
 
+# Set deterministic seeds
+random.seed(config.SEED)
+np.random.seed(config.SEED)
+
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
@@ -1900,25 +1711,14 @@ def check_memory_safety():
         pass
 
 def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str, target_col: str) -> pl.DataFrame:
-    """
-    Keep only features listed in manifest['feature_names'] plus essential non‑feature columns.
-    The target column is explicitly excluded from the returned set (it will be added back later if needed).
-    """
     with open(manifest_path, 'r') as f:
         manifest = json.load(f)
     selected = manifest['feature_names']
-    # Essential non‑feature columns that must be kept (excluding target)
-    essential = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime", "benchmark_pnl"}
-    # Also keep any other columns that are not feature‑like
+    essential = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
     non_feature = [c for c in df.columns 
                    if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))
                    and c not in essential]
-    # Build list of columns to keep: essential + non_feature + selected features that exist
     keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
-    # Remove duplicate target column if present (should not be in selected, but be safe)
-    if target_col in keep:
-        keep.remove(target_col)
-    # Remove any duplicates while preserving order
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
@@ -1936,76 +1736,79 @@ def main():
     args = parser.parse_args()
     check_memory_safety()
 
-    # Load market‑specific configuration if the command uses data
     if args.command in ("discover", "run"):
         from src.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
 
     if args.command == "discover":
-        # Determine cache path for aligned data (store alongside manifest)
+        print("\n[CLI] === PHASE 1: FEATURE DISCOVERY ===", flush=True)
         cache_dir = Path(args.out).parent
         cache_dir.mkdir(parents=True, exist_ok=True)
         aligned_cache = cache_dir / "aligned_data.parquet"
         
-        # Load aligned data (will use cache if exists)
+        print("[CLI] Loading and cleaning data...", flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
+        print(f"[CLI] Data loaded. Rows: {df_aligned.height}", flush=True)
         
-        # Generate full feature matrix (includes target, HTF, cross)
+        print("[CLI] Generating feature matrix...", flush=True)
         df_features = generate_features(df_aligned)
+        if df_features.estimated_size() > config.RAM_CAP_BYTES:
+            raise MemoryError("Feature matrix exceeds RAM cap.")
         
-        # Cache the full feature matrix for later reuse by "run"
         feature_cache = cache_dir / "full_feature_matrix.parquet"
         write_canonical_parquet(df_features, str(feature_cache))
         logger.info(f"Full feature matrix cached to {feature_cache}")
+        print(f"[CLI] Feature matrix saved to {feature_cache}", flush=True)
         
-        # Run discovery on the cached matrix
+        print("[CLI] Running feature discovery...", flush=True)
         run_feature_discovery(str(feature_cache), args.out)
 
     elif args.command == "run":
-        # Determine target column (classification)
+        print("\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===", flush=True)
         target_col = "target_sign"
-        
-        # Load aligned data (try cache first)
         cache_dir = Path(args.manifest).parent
         aligned_cache = cache_dir / "aligned_data.parquet"
-        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        cross_assets = getattr(config, 'CROSS_ASSET_SYMBOLS', [])
+        print("[CLI] Loading aligned data...", flush=True)
+        df_aligned = load_and_clean_data(args.data, 
+                                         cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+                                         cross_asset_symbols=cross_assets)
         check_memory_safety()
 
-        # Try to load pre‑computed feature matrix from discovery phase
         feature_cache = cache_dir / "full_feature_matrix.parquet"
         if feature_cache.exists():
-            logger.info(f"Loading pre‑computed feature matrix from {feature_cache}")
+            print(f"[CLI] Loading pre-computed feature matrix from {feature_cache}", flush=True)
             df_features = pl.read_parquet(feature_cache)
         else:
-            logger.info("No cached feature matrix found; generating features (this may be slower).")
+            print("[CLI] No cached feature matrix found; generating features (slower).", flush=True)
             df_features = generate_features(df_aligned)
 
-        # Prune to only features selected in manifest (and keep essential non‑feature columns)
+        print("[CLI] Pruning features by manifest...", flush=True)
         df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         
-        # Ensure target column exists
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing after pruning.")
         
-        # Define feature columns: everything except metadata, target, and obvious non‑feature columns
-        excluded = {"ts_event", "open", "high", "low", "close", "volume",
-                    "session_id", "date", target_col, "regime", "benchmark_pnl"}
-        feature_cols = [c for c in df_pruned.columns if c not in excluded]
+        y = df_pruned.select(target_col)
+        X = df_pruned.drop(target_col)
         
-        # Safety: ensure target is not accidentally included
+        excluded_meta = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
+        feature_cols = [c for c in X.columns if c not in excluded_meta]
+        
         if target_col in feature_cols:
-            raise RuntimeError(f"Target column '{target_col}' leaked into feature columns! Aborting.")
+            raise RuntimeError(f"Target column '{target_col}' still in feature columns! Aborting.")
         
         logger.info(f"Walkforward with {len(feature_cols)} features.")
-        result_df = run_walkforward(df_pruned, feature_cols, target_col)
+        print(f"[CLI] Running walkforward with {len(feature_cols)} features...", flush=True)
+        result_df = run_walkforward(X, y, feature_cols, target_col)
 
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, "backtest_results.parquet")
         result_df.write_parquet(out_path)
         logger.info(f"Results saved to {out_path}")
+        print(f"[CLI] Results saved to {out_path}", flush=True)
 
-        # --- AUTOMATIC METRICS OUTPUT ---
         print("\n" + "="*60)
         print("FINAL PERFORMANCE METRICS")
         print("="*60)
@@ -2022,11 +1825,8 @@ if __name__ == "__main__":
 """
 src/discovery.py
 Phase 1: Feature discovery using ExtraTrees with bootstrap folds, stability selection,
-memory isolation via joblib loky, RSS monitoring, and sign consistency filtering.
-Now includes all feature types: baseline, ratios, pairwise, cross-timeframe, and HTF context.
-
-Folds can be run in parallel (config.DISCOVERY_PARALLEL_FOLDS) without affecting determinism
-because each fold has its own independent random seed derived from global seed and fold index.
+memory isolation, and sign consistency filtering.
+Now respects DISCOVERY_WINDOW_DAYS and includes all feature types.
 """
 import sys
 print("Discovery started. Waiting for folds...", flush=True)
@@ -2039,8 +1839,8 @@ import psutil
 import hashlib
 from datetime import datetime
 from sklearn.ensemble import ExtraTreesRegressor
-from joblib import Parallel, delayed
 from config import config
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -2051,79 +1851,69 @@ def get_fold_seed(fold_idx: int) -> int:
 def check_rss(limit_bytes):
     return psutil.Process().memory_info().rss > limit_bytes
 
-def fit_etree_fold(X, y, fold_idx, feature_names, rss_stop_bytes):
-    """Fit ExtraTrees on one bootstrap sample. Returns importances dict and sign of correlation."""
-    print(f"Fold {fold_idx+1} started at {datetime.now().strftime('%H:%M:%S')}")
-    if check_rss(rss_stop_bytes):
-        raise MemoryError(f"RSS stop limit exceeded in fold {fold_idx}")
-    n_samples = X.shape[0]
-    rng = np.random.RandomState(get_fold_seed(fold_idx))
-    indices = rng.choice(n_samples, size=n_samples, replace=True)
-    X_boot = X[indices]
-    y_boot = y[indices]
-    et_params = config.EXTRA_TREES_PARAMS.copy()
-    et_params['random_state'] = get_fold_seed(fold_idx)
-    et = ExtraTreesRegressor(**et_params)
-    et.fit(X_boot, y_boot)
-    importances = dict(zip(feature_names, et.feature_importances_))
-
-    # Compute sign consistency: correlation between feature and target (simple proxy)
-    signs = {}
-    for i, f in enumerate(feature_names):
-        with np.errstate(invalid='ignore'):
-            corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
-        if np.isnan(corr):
-            corr = 0.0
-        signs[f] = np.sign(corr)
-    return importances, signs
-
 def run_feature_discovery(data_path: str, manifest_out: str):
     logger.info("Phase 1: Feature Discovery")
-    # Directly load the pre‑computed feature matrix (already contains all features + target)
     df_features = pl.read_parquet(data_path)
 
     target_col = "target_5m"
     if target_col not in df_features.columns:
         raise ValueError(f"Target column {target_col} not found.")
-    
-    # --- Include ALL feature columns (HTF, cross, etc.) ---
+
+    # --- Limit to last DISCOVERY_WINDOW_DAYS trading days ---
+    df_features = df_features.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.date().alias("date")
+    )
+    unique_dates = sorted(df_features["date"].unique().to_list())
+    if len(unique_dates) > config.DISCOVERY_WINDOW_DAYS:
+        cutoff_date = unique_dates[-config.DISCOVERY_WINDOW_DAYS]
+        df_features = df_features.filter(pl.col("date") >= cutoff_date)
+        logger.info(f"Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days ({cutoff_date} onwards)")
+    df_features = df_features.drop("date")
+
+    # --- Feature columns (all except metadata and target) ---
     exclude_cols = {
-        "ts_event", "open", "high", "low", "close", "volume", 
-        "session_id", "date", target_col, "regime", "benchmark_pnl"
+        "ts_event", "open", "high", "low", "close", "volume",
+        "session_id", target_col, "regime", "benchmark_pnl"
     }
     feature_cols = [c for c in df_features.columns if c not in exclude_cols and not c.startswith("_")]
     feature_cols = [c for c in feature_cols if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)]
-    
-    htf_features = [c for c in feature_cols if c.startswith(("htf_", "cross_", "1h_", "daily_"))]
-    if not htf_features:
-        logger.warning("No HTF or cross-timeframe features found in feature set. Check generate_features.")
-    else:
-        logger.info(f"Discovery includes {len(htf_features)} HTF/cross features.")
 
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
 
-    n_bars = min(15840, X.shape[0])
-    X = X[:n_bars]
-    y = y[:n_bars]
     logger.info(f"Discovery using {X.shape[0]} rows, {X.shape[1]} features.")
 
     rss_stop = config.RSS_STOP_BYTES
     n_folds = config.BOOTSTRAP_FOLDS
 
-    # --- Parallel folds (deterministic, zero loss of accuracy) ---
-    n_parallel = min(getattr(config, 'DISCOVERY_PARALLEL_FOLDS', 1), n_folds)
-    logger.info(f"Running {n_folds} bootstrap folds in parallel with {n_parallel} workers...")
+    importances_list = []
+    signs_list = []
 
-    results = Parallel(n_jobs=n_parallel, backend='loky', verbose=10)(
-        delayed(fit_etree_fold)(X, y, i, feature_cols, rss_stop)
-        for i in range(n_folds)
-    )
+    for fold_idx in tqdm(range(n_folds), desc="Bootstrap folds", unit="fold"):
+        print(f"Fold {fold_idx+1} started at {datetime.now().strftime('%H:%M:%S')}", flush=True)
+        if check_rss(rss_stop):
+            raise MemoryError(f"RSS stop limit exceeded in fold {fold_idx}")
+        n_samples = X.shape[0]
+        rng = np.random.RandomState(get_fold_seed(fold_idx))
+        indices = rng.choice(n_samples, size=n_samples, replace=True)
+        X_boot = X[indices]
+        y_boot = y[indices]
+        et_params = config.EXTRA_TREES_PARAMS.copy()
+        et_params['random_state'] = get_fold_seed(fold_idx)
+        et = ExtraTreesRegressor(**et_params)
+        et.fit(X_boot, y_boot)
+        importances = dict(zip(feature_cols, et.feature_importances_))
+        signs = {}
+        for i, f in enumerate(feature_cols):
+            with np.errstate(invalid='ignore'):
+                corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
+            if np.isnan(corr):
+                corr = 0.0
+            signs[f] = np.sign(corr)
+        importances_list.append(importances)
+        signs_list.append(signs)
 
-    importances_list = [r[0] for r in results]
-    signs_list = [r[1] for r in results]
-
-    # Compute selection frequencies and mean importance
+    # Aggregate
     importances_sum = {f: 0.0 for f in feature_cols}
     selection_count = {f: 0 for f in feature_cols}
     n_folds = len(importances_list)
@@ -2134,7 +1924,6 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             if imp > 0:
                 selection_count[f] += 1
 
-    # Determine majority sign per feature across folds
     majority_sign = {}
     for f in feature_cols:
         pos = sum(1 for sd in signs_list if sd.get(f, 0) > 0)
@@ -2148,13 +1937,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     freq = {f: selection_count[f] / n_folds for f in feature_cols}
     mean_imp = {f: importances_sum[f] / n_folds for f in feature_cols}
 
-    # Apply frequency threshold AND sign consistency threshold
     selected = [f for f in feature_cols
                 if freq[f] >= config.SELECTION_FREQ_THRESHOLD
                 and sign_consistency_frac[f] >= config.SIGN_CONSISTENCY_THRESHOLD]
     selected_sorted = sorted(selected, key=lambda x: mean_imp[x], reverse=True)
 
-    # Cumulative importance selection
     cumsum = 0.0
     final_selected = []
     total_imp = sum(mean_imp[f] for f in selected_sorted) if selected_sorted else 1.0
@@ -2163,15 +1950,31 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         final_selected.append(f)
         if cumsum >= config.CUMULATIVE_IMPORTANCE_THRESHOLD:
             break
+
+    # Fallback to ensure MIN_SELECTED_FEATURES
     if len(final_selected) < config.MIN_SELECTED_FEATURES:
-        final_selected = selected_sorted[:config.MIN_SELECTED_FEATURES]
+        if len(selected_sorted) == 0:
+            all_sorted = sorted(mean_imp.items(), key=lambda x: x[1], reverse=True)
+            fallback_features = [f for f, _ in all_sorted[:config.MIN_SELECTED_FEATURES]]
+            final_selected = fallback_features
+        else:
+            needed = config.MIN_SELECTED_FEATURES - len(final_selected)
+            for f in selected_sorted:
+                if f not in final_selected:
+                    final_selected.append(f)
+                    needed -= 1
+                    if needed == 0:
+                        break
+            if needed > 0:
+                for f, _ in sorted(mean_imp.items(), key=lambda x: x[1], reverse=True):
+                    if f not in final_selected:
+                        final_selected.append(f)
+                        needed -= 1
+                        if needed == 0:
+                            break
 
-    logger.info(f"Selected {len(final_selected)} features (sign consistency threshold={config.SIGN_CONSISTENCY_THRESHOLD}).")
-    if htf_features:
-        selected_htf = [f for f in final_selected if f.startswith(("htf_", "cross_", "1h_", "daily_"))]
-        logger.info(f"Selected HTF/cross features: {len(selected_htf)} / {len(htf_features)}")
+    logger.info(f"Selected {len(final_selected)} features (min required: {config.MIN_SELECTED_FEATURES}).")
 
-    # Compute hash of frozen feature list
     feature_list_str = json.dumps(sorted(final_selected), sort_keys=True).encode()
     features_hash = hashlib.sha256(feature_list_str).hexdigest()
 
@@ -2188,7 +1991,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         "stability_stats": {
             "min_selection_freq": config.SELECTION_FREQ_THRESHOLD,
             "sign_consistency": config.SIGN_CONSISTENCY_THRESHOLD,
-            "sign_consistency_observed": {f: round(sign_consistency_frac[f], 3) for f in final_selected[:10]}
+            "sign_consistency_observed": {f: round(sign_consistency_frac.get(f, 0), 3) for f in final_selected[:10]}
         },
         "baseline_feature_list": [c for c in feature_cols if c.startswith("feature_")][:40],
         "baseline_features_hash": f"sha256:{features_hash}",
@@ -2201,7 +2004,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         },
         "discovery_status": "completed",
         "folds": [],
-        "htf_features_included": len(htf_features) > 0
+        "htf_features_included": any(c.startswith(("htf_", "cross_", "1h_", "daily_")) for c in feature_cols)
     }
     os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
     with open(manifest_out, "w") as f:
@@ -2216,19 +2019,15 @@ def run_feature_discovery(data_path: str, manifest_out: str):
 src/execution/simulator.py
 Execution simulation: stateful position tracking, volatility scaling,
 transaction costs, leverage limits, and flatten before session close.
-Now supports both regression (prediction) and classification (probability) modes.
+Now with safe fallbacks for missing HTF columns.
 """
 import polars as pl
 import numpy as np
 from config import config
 
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Classification version: uses column 'prediction_prob' (probability of up move).
-    Raw signal = 2*prob - 1 (range -1 to 1). Then scaled by TARGET_VOL / vol.
-    Adds columns: 'position', 'trade_cost', 'pnl'.
-    """
-    # ---- 1. Volatility column ----
+    """Classification version: uses 'prediction_prob'. Includes HTF scaling/alignment if columns exist."""
+    # Volatility column
     if "feature_ewma_vol_20" not in df.columns:
         ret = (pl.col("close") / pl.col("close").shift(1)).log()
         vol = ret.rolling_std(window_size=20)
@@ -2238,27 +2037,35 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
         vol.fill_null(strategy="forward").fill_null(1e-6).alias("vol")
     )
 
-    # ---- 2. Raw signal from probability ----
-    prob = pl.col("prediction_prob").fill_null(0.5).clip(0.0, 1.0)
-    raw_signal = (prob - 0.5) * 2.0   # maps [0,1] -> [-1,1]
+    # Bias removal (optional)
+    prob_series = df["prediction_prob"].fill_null(0.5).clip(0.0, 1.0)
+    if getattr(config, 'REMOVE_PREDICTION_BIAS', False):
+        probs = prob_series.to_numpy().copy()
+        sess_ids = df["session_id"].to_numpy()
+        for sess in np.unique(sess_ids):
+            mask = (sess_ids == sess)
+            sess_mean = probs[mask].mean()
+            probs[mask] = probs[mask] - sess_mean + 0.5
+        probs = np.clip(probs, 0.0, 1.0)
+        prob_series = pl.Series(probs)
 
+    raw_signal = (prob_series - 0.5) * 2.0
     target_raw_expr = (raw_signal / pl.col("vol")) * config.TARGET_VOL
     target_raw_expr = target_raw_expr.clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
 
-    # HTF volatility scaling
+    # HTF volatility scaling – only if column exists
     if config.HTF_VOL_SCALING and "htf_daily_vol_5" in df.columns:
         daily_atr = pl.col("htf_daily_vol_5").fill_null(strategy="forward").fill_null(1e-6)
         scaling = (config.TARGET_VOL / daily_atr).clip(0.25, 2.0)
         target_raw_expr = (target_raw_expr * scaling).clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
 
-    # HTF trend alignment filter
+    # HTF trend alignment – only if column exists
     if config.HTF_TREND_ALIGNMENT and "htf_daily_trend_slope_10" in df.columns:
         daily_trend = pl.col("htf_daily_trend_slope_10").sign()
         target_raw_expr = pl.when(
             (daily_trend == 0) | (target_raw_expr.sign() == daily_trend)
         ).then(target_raw_expr).otherwise(0)
 
-    # ---- 3. Rate limit (same as before) ----
     target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
     target_array = target_series.to_numpy()
 
@@ -2285,7 +2092,6 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)
     ret_exec = np.nan_to_num(ret_exec, nan=0.0)
 
-    # ---- 4. Loop ----
     n = len(df)
     positions = np.zeros(n, dtype=np.float32)
     trade_costs = np.zeros(n, dtype=np.float32)
@@ -2312,11 +2118,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ]).drop(["_session_rank", "_session_len"])
     return df
 
-# Keep original for backward compatibility (if needed)
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
-    """Legacy regression version (uses 'prediction' column)."""
-    # ... (original code unchanged) ...
-    # For brevity, not repeated here. Use the classification version.
     raise NotImplementedError("Use simulate_execution_classification for new pipeline.")
 ```
 
@@ -2331,7 +2133,7 @@ def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
 ```
 """
 src/features/baseline.py
-Generate the 40 frozen baseline features from YAML spec, using Polars expressions.
+Generate baseline features from YAML spec, plus Keltner Channels and Elder's Ray.
 All features are past-only and return float32.
 """
 import polars as pl
@@ -2346,10 +2148,8 @@ def load_baseline_feature_names() -> list:
 
 def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Add all 40 baseline features to the DataFrame.
-    Each feature is computed according to its canonical definition.
+    Add all baseline features to the DataFrame.
     """
-    # Ensure we have the required OHLCV columns
     close = pl.col("close").cast(pl.Float32)
     high = pl.col("high").cast(pl.Float32)
     low = pl.col("low").cast(pl.Float32)
@@ -2358,7 +2158,7 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
 
     exprs = []
 
-    # 1-4: Log returns at lags 1,5,10,20 (periods of 5-min bars)
+    # 1-4: Log returns at lags 1,5,10,20
     for lag in [1, 5, 10, 20]:
         ret = (close / close.shift(lag)).log()
         exprs.append(ret.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_ret_{lag}"))
@@ -2378,7 +2178,7 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     dist_ma50 = (close - ma50) / ma50.clip(config.EPS, None)
     exprs.append(dist_ma50.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_ma_50"))
 
-    # 10: ma_slope_20 – linear regression slope over 20 bars normalized by SMA20
+    # 10: ma_slope_20
     slope20 = (close - close.shift(20)) / 20.0 / ma20.clip(config.EPS, None)
     exprs.append(slope20.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_ma_slope_20"))
 
@@ -2389,11 +2189,11 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
         z = (close - mean) / std.clip(config.EPS, None)
         exprs.append(z.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_price_z_{window}"))
 
-    # 13: high_low_range_norm = (high - low) / max(close, EPS)
+    # 13: high_low_range_norm
     range_norm = (high - low) / pl.max_horizontal(close, config.EPS)
     exprs.append(range_norm.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_high_low_range_norm"))
 
-    # 14: true_range = max(high-low, |high-prev_close|, |low-prev_close|)
+    # 14: true_range
     prev_close = close.shift(1)
     tr = pl.max_horizontal(
         high - low,
@@ -2402,27 +2202,27 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     )
     exprs.append(tr.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_true_range"))
 
-    # 15: atr_14 = rolling_mean(true_range, 14)
+    # 15: atr_14
     atr14 = tr.rolling_mean(window_size=14)
     exprs.append(atr14.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_atr_14"))
 
-    # 16,17: realized_vol_5, realized_vol_20 (sample std of log returns)
+    # 16,17: realized_vol_5, realized_vol_20
     ret_1 = (close / close.shift(1)).log()
     for window in [5, 20]:
         rvol = ret_1.rolling_std(window_size=window)
         exprs.append(rvol.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_realized_vol_{window}"))
 
-    # 18: ewma_vol_20 – exponentially weighted moving average of squared returns
+    # 18: ewma_vol_20
     alpha = 2.0 / (20 + 1)
     ewma_vol = ret_1.pow(2).ewm_mean(alpha=alpha, adjust=False).sqrt()
     exprs.append(ewma_vol.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_ewma_vol_20"))
 
-    # 19,20: price_momentum_5, price_momentum_10 = (close - close.shift(window))/close.shift(window)
+    # 19,20: price_momentum_5, price_momentum_10
     for window in [5, 10]:
         mom = (close - close.shift(window)) / close.shift(window).clip(config.EPS, None)
         exprs.append(mom.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_price_momentum_{window}"))
 
-    # 21,22: mom_z_5, mom_z_10 (z-score of momentum)
+    # 21,22: mom_z_5, mom_z_10
     for window in [5, 10]:
         mom = (close - close.shift(window)) / close.shift(window).clip(config.EPS, None)
         mean_mom = mom.rolling_mean(window_size=window)
@@ -2440,17 +2240,17 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     rsi = 100 - 100 / (1 + rs)
     exprs.append(rsi.clip(0, 100).alias("feature_rsi_14"))
 
-    # 24: macd (12,26,9) – difference of EMAs
+    # 24: macd
     ema12 = close.ewm_mean(alpha=2/13, adjust=False)
     ema26 = close.ewm_mean(alpha=2/27, adjust=False)
     macd = ema12 - ema26
     exprs.append(macd.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_macd"))
 
-    # 25: macd_signal – 9-period EMA of MACD
+    # 25: macd_signal
     signal = macd.ewm_mean(alpha=2/10, adjust=False)
     exprs.append(signal.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_macd_signal"))
 
-    # 26: stoch_k (%K) – (close - low_14) / (high_14 - low_14)
+    # 26: stoch_k
     low14 = low.rolling_min(window_size=14)
     high14 = high.rolling_max(window_size=14)
     stoch_k = (close - low14) / (high14 - low14).clip(config.EPS, None) * 100
@@ -2466,53 +2266,70 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     vol_z = (volume - vol_mean) / vol_std.clip(config.EPS, None)
     exprs.append(vol_z.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_volume_z_20"))
 
-    # 29: obv – on‑balance volume: cumulative signed volume based on close direction
+    # 29: obv
     sign = pl.when(close > close.shift(1)).then(1).when(close < close.shift(1)).then(-1).otherwise(0)
     obv = (sign * volume).cum_sum()
     exprs.append(obv.cast(pl.Float32).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_obv"))
 
-    # 30: signed_bar_strength – tick-rule proxy (close vs open)
+    # 30: signed_bar_strength
     bar_sign = (close - open_).sign()
     bar_sign = bar_sign.fill_null(strategy="forward")
     signed_volume = bar_sign * volume
     signed_strength = signed_volume / volume.clip(config.EPS, None)
     exprs.append(signed_strength.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_signed_bar_strength"))
 
-    # 31: volume_price_divergence – proxy: volume * ret_1 (captures size-return interaction)
+    # 31: volume_price_divergence
     vol_price_div = (volume * ret_1).cast(pl.Float32)
     exprs.append(vol_price_div.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_volume_price_divergence"))
 
-    # 32: spread_proxy – (high - low) / close (proxy for bid-ask)
+    # 32: spread_proxy
     spread_proxy = (high - low) / close.clip(config.EPS, None)
     exprs.append(spread_proxy.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_spread_proxy"))
 
-    # 33: session_pos – linear position in session (0 to 1)
+    # 33: session_pos
     session_pos = (pl.col("ts_event").rank("ordinal").over("session_id") - 1) / (pl.col("ts_event").count().over("session_id") - 1)
     exprs.append(session_pos.fill_nan(0.5).cast(pl.Float32).alias("feature_session_pos"))
 
-    # 34: time_of_day_bucket – categorical [early,mid,late] based on session position
+    # 34: time_of_day_bucket
     bucket = pl.when(session_pos < 0.33).then(0.0).when(session_pos < 0.66).then(1.0).otherwise(2.0)
     exprs.append(bucket.cast(pl.Float32).alias("feature_time_of_day_bucket"))
 
-    # 35: 1h_bias – placeholder, will be overwritten by actual 1h target mapping (done later)
+    # 35: 1h_bias placeholder
     exprs.append(pl.lit(0.0).alias("feature_1h_bias"))
 
-    # 36: session_volatility – standard deviation of returns within current session
+    # 36: session_volatility
     session_vol = ret_1.rolling_std(window_size=config.ROLL_WINDOW_MIN_ROWS).over("session_id")
     exprs.append(session_vol.fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_session_volatility"))
 
-    # 37: pair_prod_template – placeholder, actual pairwise products will be added in expansion
+    # 37-40: placeholders
     exprs.append(pl.lit(0.0).alias("feature_pair_prod_template"))
-
-    # 38: ratio_template – placeholder
     exprs.append(pl.lit(0.0).alias("feature_ratio_template"))
-
-    # 39,40: pca_comp_1, pca_comp_2 – placeholders (PCA will be done later if orthogonalize=True)
     exprs.append(pl.lit(0.0).alias("feature_pca_comp_1"))
     exprs.append(pl.lit(0.0).alias("feature_pca_comp_2"))
 
-    # Apply all expressions and replace NaN/Inf with 0, then clip
+    # ---------- ADDITIONAL INDICATORS ----------
+    # Keltner Channels (20-period EMA, 2*ATR bands)
+    close_ema = close.ewm_mean(span=20, adjust=False)
+    atr = atr14  # already computed
+    keltner_upper = close_ema + 2 * atr
+    keltner_lower = close_ema - 2 * atr
+    keltner_width = (keltner_upper - keltner_lower) / close_ema.clip(config.EPS, None)
+    exprs.append(keltner_width.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_keltner_width"))
+    dist_to_upper = (keltner_upper - close) / close.clip(config.EPS, None)
+    dist_to_lower = (close - keltner_lower) / close.clip(config.EPS, None)
+    exprs.append(dist_to_upper.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_to_keltner_upper"))
+    exprs.append(dist_to_lower.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_to_keltner_lower"))
+
+    # Elder's Ray: Bull Power = high - EMA(close), Bear Power = low - EMA(close)
+    bull_power = high - close_ema
+    bear_power = low - close_ema
+    exprs.append(bull_power.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_bull_power"))
+    exprs.append(bear_power.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_bear_power"))
+
+    # Apply all expressions
     df = df.with_columns(exprs)
+
+    # Clean NaN/Inf and clip
     feature_cols = [c for c in df.columns if c.startswith("feature_")]
     for col in feature_cols:
         df = df.with_columns(
@@ -2635,12 +2452,9 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 ```
 """
 src/features/expansion.py
-Expand feature space with ratios, z-scores, regime-conditioned transforms,
-pairwise interactions (capped), cross-timeframe interactions,
-and additional advanced features (quantiles, Fourier, moments, acceleration, VWAP).
-
-All features are past-only, float32, clipped.
-Now with memory safety estimation and fixed rolling skew/kurt (no missing methods).
+Expand feature space with ratios, z-scores, regime‑conditioned transforms,
+pairwise interactions (capped), and cross‑timeframe interactions.
+Now with safe regime‑interaction subset and memory guard.
 """
 import polars as pl
 import numpy as np
@@ -2650,12 +2464,7 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# ----------------------------------------------------------------------
-# Existing functions (unchanged except early casting)
-# ----------------------------------------------------------------------
-
 def add_regime(df: pl.DataFrame) -> pl.DataFrame:
-    """Add regime column: 1=high vol, 0=low vol, using rolling median volatility."""
     ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     vol20 = ret.rolling_std(window_size=20)
     med_vol = vol20.rolling_median(window_size=config.VOL_MEDIAN_WINDOW)
@@ -2696,6 +2505,18 @@ def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(exprs)
     return df
 
+def add_regime_all_interactions(df: pl.DataFrame, baseline_cols: list) -> pl.DataFrame:
+    """Only interact with a sensible subset (volatility, momentum, return, spread)."""
+    regime = pl.col("regime")
+    subset = [c for c in baseline_cols if any(x in c for x in ("vol", "ret_1", "momentum", "spread"))]
+    exprs = []
+    for col in subset:
+        if col in df.columns:
+            exprs.append((pl.col(col) * regime).alias(f"{col}_regime"))
+    if exprs:
+        df = df.with_columns(exprs)
+    return df
+
 def add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     sorted_features = sorted(feature_cols)
     exprs = []
@@ -2713,10 +2534,9 @@ def add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFr
 
 def safe_add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     n_features = len(feature_cols)
-    max_combinations = config.MAX_PAIRWISE_INTERACTIONS
     total_possible = n_features * (n_features - 1) // 2
-    if total_possible > max_combinations:
-        logger.info(f"Pairwise combinations would exceed {max_combinations}, capping.")
+    if total_possible > config.MAX_PAIRWISE_INTERACTIONS:
+        logger.info(f"Pairwise combinations would exceed {config.MAX_PAIRWISE_INTERACTIONS}, capping.")
     return add_pairwise_interactions(df, feature_cols)
 
 def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_features: list) -> pl.DataFrame:
@@ -2738,12 +2558,7 @@ def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_f
         df = df.with_columns(exprs)
     return df
 
-# ----------------------------------------------------------------------
-# NEW FEATURE FAMILIES (with fixed rolling skew/kurt)
-# ----------------------------------------------------------------------
-
 def add_rolling_quantiles(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
-    """Add rolling quantiles (20th, 50th, 80th) of log returns."""
     ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     for q in [0.2, 0.5, 0.8]:
         expr = ret.rolling_quantile(quantile=q, window_size=window)
@@ -2751,7 +2566,6 @@ def add_rolling_quantiles(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
     return df
 
 def add_fourier_features(df: pl.DataFrame) -> pl.DataFrame:
-    """Add sine/cosine of time of day (period 24h) and day of week."""
     ts_local = pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE)
     minute_of_day = ts_local.dt.hour() * 60 + ts_local.dt.minute()
     period = 24 * 60
@@ -2766,42 +2580,23 @@ def add_fourier_features(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_rolling_moments(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
-    """
-    Add rolling skewness and kurtosis of log returns using central moments.
-    Avoids Polars methods that may be missing in older versions.
-    """
     ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     w = window
-
-    # Rolling sums of powers
     sum_x = ret.rolling_sum(window_size=w)
     sum_x2 = (ret * ret).rolling_sum(window_size=w)
     sum_x3 = (ret * ret * ret).rolling_sum(window_size=w)
     sum_x4 = (ret * ret * ret * ret).rolling_sum(window_size=w)
-
-    # Mean and variance (unbiased sample variance)
     mean = sum_x / w
     var = (sum_x2 - w * mean * mean) / (w - 1)
     std = var.sqrt()
-
-    # 3rd central moment
     m3 = sum_x3 - 3 * mean * sum_x2 + 2 * w * mean * mean * mean
-
-    # Sample skewness (bias‑corrected)
     skew = pl.when(w > 2).then(
         (m3 / (w - 1)) / (std.pow(3) + config.EPS) * (pl.lit(w) / (pl.lit(w) - 2))
     ).otherwise(pl.lit(0.0))
-
-    # 4th central moment
     m4 = (sum_x4 - 4 * mean * sum_x3 + 6 * mean * mean * sum_x2 - 3 * w * mean * mean * mean * mean)
-
-    # Excess kurtosis (population‑style, then subtract 3 for excess)
     kurt = (m4 / (w * (var * var + config.EPS))) - 3.0
-
-    # Clean and cast
     skew = skew.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
     kurt = kurt.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
-
     df = df.with_columns([
         skew.cast(pl.Float32).alias(f"feature_ret_skew_{window}"),
         kurt.cast(pl.Float32).alias(f"feature_ret_kurt_{window}"),
@@ -2809,14 +2604,12 @@ def add_rolling_moments(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
     return df
 
 def add_acceleration(df: pl.DataFrame) -> pl.DataFrame:
-    """Price acceleration: second difference of log returns."""
     ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
     acc = ret - ret.shift(1)
     df = df.with_columns(acc.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias("feature_ret_acceleration"))
     return df
 
 def add_vwap_deviation(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
-    """Deviation of close from rolling Volume-Weighted Average Price (VWAP)."""
     typical_price = (pl.col("high") + pl.col("low") + pl.col("close")) / 3.0
     cum_pv = (typical_price * pl.col("volume")).rolling_sum(window_size=window)
     cum_vol = pl.col("volume").rolling_sum(window_size=window)
@@ -2825,42 +2618,11 @@ def add_vwap_deviation(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
     df = df.with_columns(deviation.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias("feature_vwap_deviation"))
     return df
 
-def add_regime_all_interactions(df: pl.DataFrame, baseline_cols: list) -> pl.DataFrame:
-    """Multiply all baseline features by regime indicator."""
-    regime = pl.col("regime")
-    exprs = []
-    for col in baseline_cols:
-        if col in df.columns:
-            expr = (pl.col(col) * regime).alias(f"{col}_regime")
-            exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX))
-    if exprs:
-        df = df.with_columns(exprs)
-    return df
-
-# ----------------------------------------------------------------------
-# Main expand_features (updated to call new functions)
-# ----------------------------------------------------------------------
-
 def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFrame:
-    """
-    Full expansion pipeline:
-      - regime
-      - ratios & z-scores
-      - regime-conditioned transforms (limited)
-      - rolling quantiles
-      - Fourier (time of day, day of week)
-      - rolling skew/kurtosis
-      - acceleration
-      - VWAP deviation
-      - regime interactions for all baseline features
-      - pairwise interactions (capped)
-    (Cross‑timeframe interactions are added later in engine.py)
-    """
     df = add_regime(df)
     df = add_ratios_and_z_scores(df, baseline_feature_cols)
     df = add_regime_conditioned_transforms(df)
 
-    # --- New features (using modern Polars API) ---
     df = add_rolling_quantiles(df)
     df = add_fourier_features(df)
     df = add_rolling_moments(df)
@@ -2868,24 +2630,20 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_vwap_deviation(df)
     df = add_regime_all_interactions(df, baseline_feature_cols)
 
-    # Collect all existing feature-like columns for further expansion
     current_features = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))]
     htf_cols = [c for c in df.columns if c.startswith(("1h_", "daily_", "htf_"))]
 
-    # Memory safety: estimate total column count after adding pairwise and cross interactions
+    # Memory estimation
     est_pairwise = min(config.MAX_PAIRWISE_INTERACTIONS, len(current_features) * (len(current_features) - 1) // 2)
     est_cross = 0
     if htf_cols:
         est_cross = min(config.MAX_CROSS_TIMEFRAME_INTERACTIONS, len(current_features) * len(htf_cols))
     total_est = len(df.columns) + est_pairwise + est_cross
-    if total_est > 5000:
-        raise MemoryError(f"Estimated feature count {total_est} exceeds safety limit of 5000. "
-                          f"Reduce MAX_PAIRWISE_INTERACTIONS or MAX_CROSS_TIMEFRAME_INTERACTIONS.")
+    if total_est > 10000:
+        raise MemoryError(f"Estimated feature count {total_est} exceeds safety limit of 10000. Reduce interaction caps.")
 
-    # Add pairwise interactions (capped)
     df = safe_add_pairwise_interactions(df, current_features)
 
-    # Final clipping and nan fill for all non‑metadata columns
     exclude_cols = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
     all_feature_cols = [c for c in df.columns if c not in exclude_cols]
     for col in all_feature_cols:
@@ -2997,26 +2755,21 @@ def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
 --- 
 ### File: src\features\variance_filter.py
 ```
-"""
-src/features/variance_filter.py
-Remove constant (zero variance) features from training data.
-"""
-import numpy as np
-from sklearn.feature_selection import VarianceThreshold
 import logging
+import numpy as np
+import polars as pl
+from sklearn.feature_selection import VarianceThreshold
 
 logger = logging.getLogger(__name__)
 
-def remove_constant_features(df, feature_cols, threshold=1e-9):
-    """
-    Returns list of feature columns that have variance > threshold.
-    Fits only on the provided DataFrame (train fold).
-    """
+def remove_constant_features(df: pl.DataFrame, feature_cols: list, threshold: float = 1e-9) -> list:
+    if len(feature_cols) == 0:
+        return []
     X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     selector = VarianceThreshold(threshold=threshold)
     selector.fit(X)
-    non_const_mask = selector.get_support()
-    kept = [c for c, keep in zip(feature_cols, non_const_mask) if keep]
+    keep_mask = selector.get_support()
+    kept = [col for col, keep in zip(feature_cols, keep_mask) if keep]
     removed = len(feature_cols) - len(kept)
     if removed > 0:
         logger.info(f"Removed {removed} constant features. Remaining: {len(kept)}")
@@ -3028,8 +2781,9 @@ def remove_constant_features(df, feature_cols, threshold=1e-9):
 ```
 """
 src/ingest.py
-Handles ingestion of all three streams (5m, 1h, 1d) and alignment.
-Now caches aligned DataFrame to disk for reuse.
+Handles ingestion of three streams (5m, 1h, 1d) for a primary symbol,
+and optionally loads other symbols’ 5‑min data as cross‑asset features.
+Now with verbose prints and cache detection.
 """
 import polars as pl
 import logging
@@ -3042,9 +2796,8 @@ from src.io.canonical_parquet import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
 
-
 def validate_memory_and_integrity(df: pl.DataFrame):
-    """Same as before, but now df includes HTF columns; we still check OHLC."""
+    """Memory and OHLC integrity checks (unchanged)."""
     logger.info("Running memory and integrity validation...")
     if not df["ts_event"].is_sorted():
         raise ValueError("ts_event not strictly increasing.")
@@ -3071,35 +2824,65 @@ def validate_memory_and_integrity(df: pl.DataFrame):
     logger.info(f"Safe rows_per_chunk: {rows_per_chunk}")
     return rows_per_chunk
 
-
-def load_and_clean_data(data_glob: str, cache_path: str = None) -> pl.DataFrame:
+def load_cross_asset_features(data_glob: str, secondary_symbol: str) -> pl.DataFrame:
     """
-    Load all three streams (5m, 1h, 1d) from the given glob pattern,
-    align them without lookahead, and validate.
-    If cache_path is provided and exists, load from cache instead of recomputing.
+    Load 5‑min resampled data for a secondary symbol and return a DataFrame
+    with columns: ts_event, {symbol}_ret_1 (lagged log return).
+    """
+    primary_path = Path(data_glob)
+    secondary_glob = str(primary_path.parent.parent / secondary_symbol / primary_path.name)
+    print(f"[INGEST] Loading cross‑asset features for {secondary_symbol} from {secondary_glob}", flush=True)
+    try:
+        streams = load_all_streams_chunked(secondary_glob)
+        df_5min = streams["5m"]
+        df_5min = df_5min.with_columns(
+            (pl.col("close") / pl.col("close").shift(1)).log().alias(f"{secondary_symbol}_ret_1")
+        )
+        df_5min = df_5min.select(["ts_event", f"{secondary_symbol}_ret_1"])
+        logger.info(f"Loaded cross‑asset features for {secondary_symbol}, {df_5min.height} rows")
+        return df_5min
+    except Exception as e:
+        logger.warning(f"Could not load cross‑asset features for {secondary_symbol}: {e}")
+        return pl.DataFrame()
+
+def load_and_clean_data(data_glob: str, cache_path: str = None, cross_asset_symbols: list = None) -> pl.DataFrame:
+    """
+    Load three streams for the primary symbol, align them, then optionally join
+    cross‑asset features from other symbols (aligned on ts_event).
     """
     if cache_path and Path(cache_path).exists():
+        print(f"[INGEST] Loading aligned data from cache: {cache_path}", flush=True)
         logger.info(f"Loading aligned data from cache: {cache_path}")
         df_aligned = pl.read_parquet(cache_path)
         validate_memory_and_integrity(df_aligned)
         return df_aligned
 
+    print(f"[INGEST] No cache found. Loading three streams from: {data_glob}", flush=True)
     logger.info(f"Loading three streams from: {data_glob}")
-    print("DEBUG: Starting load_all_streams_chunked...", flush=True)
     streams = load_all_streams_chunked(data_glob)
-    print(f"DEBUG: Streams loaded. 5min rows: {streams['5m'].height}", flush=True)
     df_5min = streams["5m"]
     df_1h = streams["1h"]
     df_daily = streams["1d"]
-    print("DEBUG: Aligning streams...", flush=True)
+    print("[INGEST] Aligning HTF streams...", flush=True)
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
-    print(f"DEBUG: Alignment done. Aligned rows: {df_aligned.height}", flush=True)
     validate_memory_and_integrity(df_aligned)
-    
+
+    # Add cross‑asset features if requested
+    if cross_asset_symbols:
+        for sym in cross_asset_symbols:
+            print(f"[INGEST] Adding cross‑asset features for {sym}...", flush=True)
+            df_cross = load_cross_asset_features(data_glob, sym)
+            if not df_cross.is_empty():
+                df_aligned = df_aligned.join(df_cross, on="ts_event", how="left")
+                for col in df_cross.columns:
+                    if col != "ts_event":
+                        df_aligned = df_aligned.with_columns(pl.col(col).fill_null(strategy="forward"))
+
     if cache_path:
+        print(f"[INGEST] Caching aligned data to {cache_path}", flush=True)
         logger.info(f"Caching aligned data to {cache_path}")
         write_canonical_parquet(df_aligned, cache_path)
-    
+
     if config.MEMORY_LOG_ENABLED:
         logger.info(f"RSS after load: {psutil.Process().memory_info().rss / 1024**3:.2f} GB")
     return df_aligned
@@ -3226,10 +3009,8 @@ def load_market_config(symbol: str):
 ```
 """
 src/session.py
-Implements Globex session definition, session_id, and resampling to multiple frequencies (5m, 1h, 1d).
-Now supports streaming for large aggregations and returns all three streams with early float32.
-Uses ThreadPoolExecutor to process frequencies in parallel for speed.
-Temporary directories are automatically cleaned up after each frequency.
+Implements Globex session definition, session_id, and resampling to 5m, 1h, 1d.
+Now sequential (no threads) and deterministic.
 """
 import polars as pl
 import logging
@@ -3239,8 +3020,8 @@ from pathlib import Path
 import tempfile
 import glob
 import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import config
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -3248,9 +3029,7 @@ TZ = pytz.timezone(config.TIMEZONE)
 SESSION_START = config.SESSION_START_LOCAL
 SESSION_END = config.SESSION_END_LOCAL
 
-
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
-    """Add session_id using Globex rollover rule: shift by 6h for dates."""
     df = df.with_columns(
         pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).alias("ts_local")
     )
@@ -3258,9 +3037,7 @@ def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(session_id.alias("session_id"))
     return df.drop("ts_local")
 
-
 def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
-    """Keep rows within [18:00, 16:00) ET."""
     df = df.with_columns(
         pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.time().alias("time_local")
     )
@@ -3269,14 +3046,7 @@ def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
     )
     return df.drop("time_local")
 
-
 def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
-    """
-    Resample 1‑min df to given frequency (e.g., '5m', '1h', '1d') within each session.
-    For 1h, require at least 45 minutes of ticks; for 1d, require at least 360 minutes (6 hours).
-    For daily, also compute rolling 5-day volatility of log returns.
-    Returns a DataFrame (already collected, no extra collect needed).
-    """
     df = df.with_columns(
         pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).alias("ts_local")
     )
@@ -3291,24 +3061,20 @@ def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
         pl.col("volume").sum().alias("volume"),
         pl.len().alias("n_ticks"),
     ])
-    
-    # Drop incomplete bars based on frequency
+
     if freq == "5m" and config.DROP_INCOMPLETE_ROWS:
         agg = agg.filter(pl.col("n_ticks") == 5)
     elif freq == "1h":
         agg = agg.filter(pl.col("n_ticks") >= 45)
     elif freq == "1d":
         agg = agg.filter(pl.col("n_ticks") >= 360)
-    
+
     agg = agg.rename({f"ts_{freq}": "ts_event"})
     agg = agg.drop("n_ticks")
     agg = agg.sort(["session_id", "ts_event"])
 
-    # For daily, add rolling 5-day volatility (using log returns of daily closes)
     if freq == "1d":
-        agg = agg.with_columns(
-            pl.col("close").log().alias("log_close")
-        )
+        agg = agg.with_columns(pl.col("close").log().alias("log_close"))
         agg = agg.with_columns(
             (pl.col("log_close") - pl.col("log_close").shift(1)).alias("daily_log_return")
         )
@@ -3318,29 +3084,18 @@ def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
         agg = agg.with_columns(pl.col("daily_vol_5").fill_null(strategy="forward"))
         agg = agg.drop(["log_close", "daily_log_return"])
 
-    # Convert back to UTC for storage
     agg = agg.with_columns(
         pl.col("ts_event").dt.convert_time_zone("UTC").alias("ts_event")
     )
-    
-    # Cast all price/volume columns to float32 early
     agg = agg.with_columns([
         pl.col("open").cast(pl.Float32),
         pl.col("high").cast(pl.Float32),
         pl.col("low").cast(pl.Float32),
         pl.col("close").cast(pl.Float32),
     ])
-    
     return agg
 
-
-def process_one_file_multi(file_path: str, out_temp_dir: str, freq: str) -> str:
-    """
-    Read a single 1‑min Parquet file, filter sessions, add session_id,
-    resample to given frequency, and write to a temporary file.
-    Returns path to the written file, or None if empty.
-    """
-    logger.info(f"Processing file {file_path} for freq {freq}")
+def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str:
     df = pl.read_parquet(file_path)
     if df["ts_event"].dtype != pl.Datetime:
         df = df.with_columns(pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC")))
@@ -3356,52 +3111,37 @@ def process_one_file_multi(file_path: str, out_temp_dir: str, freq: str) -> str:
     df_resampled.write_parquet(out_file)
     return str(out_file)
 
-
 def process_frequency(freq: str, all_files: list) -> tuple:
-    """
-    Process a single frequency across all 1‑min files.
-    Returns (freq, combined DataFrame). The temporary directory is cleaned up afterwards.
-    """
+    print(f"\n[SESSION] Resampling {freq} (found {len(all_files)} files)", flush=True)
     temp_dir = tempfile.mkdtemp(prefix=f"resampled_{freq}_")
     temp_paths = []
     try:
-        for f in all_files:
-            out = process_one_file_multi(f, temp_dir, freq)
+        for f in tqdm(all_files, desc=f"Resampling {freq}", unit="file"):
+            out = process_one_file(f, temp_dir, freq)
             if out:
                 temp_paths.append(out)
         if not temp_paths:
             raise ValueError(f"No data after resampling to {freq}")
-        # Use lazy scanning for concatenation to reduce memory
         lf = pl.scan_parquet(temp_paths[0])
         for p in temp_paths[1:]:
             lf = pl.concat([lf, pl.scan_parquet(p)], how="vertical")
         lf = lf.sort(["session_id", "ts_event"])
         df = lf.collect(streaming=True)
+        print(f"[SESSION] {freq} stream has {df.height} rows.", flush=True)
         return freq, df
     finally:
-        # Clean up temporary directory even if an exception occurred
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-
 def load_all_streams_chunked(data_glob: str) -> dict:
-    """
-    Process all 1‑min files and generate three streams: 5m, 1h, 1d.
-    Uses ThreadPoolExecutor to process frequencies in parallel.
-    Returns dictionary with keys '5m', '1h', '1d' containing Polars DataFrames.
-    """
-    all_files = glob.glob(data_glob)
+    all_files = sorted(glob.glob(data_glob))   # deterministic order
     if not all_files:
         raise FileNotFoundError(f"No parquet files found matching {data_glob}")
-    print(f"DEBUG: Found {len(all_files)} files for {data_glob}", flush=True)
+    print(f"[SESSION] Found {len(all_files)} files.", flush=True)
 
     streams = {}
-    # Process all frequencies in parallel (3 threads max, one per frequency)
-    with ThreadPoolExecutor(max_workers=len(config.RESAMPLE_FREQUENCIES)) as executor:
-        futures = {executor.submit(process_frequency, freq, all_files): freq for freq in config.RESAMPLE_FREQUENCIES}
-        for future in as_completed(futures):
-            freq, df = future.result()
-            streams[freq] = df
-            print(f"DEBUG:   {freq} stream has {df.height} rows", flush=True)
+    for freq in config.RESAMPLE_FREQUENCIES:
+        _, df = process_frequency(freq, all_files)
+        streams[freq] = df
     return streams
 ```
 
@@ -3505,60 +3245,77 @@ if __name__ == "__main__":
 ```
 """
 src/walkforward.py
-Walkforward with LogisticRegression (classification) predicting sign of next 5-bar return.
-Includes constant feature removal, correlation pruning, and safety checks.
+Walkforward with configurable model (Ridge or RandomForestClassifier).
+Predicts probability of upward move. Includes probability smoothing.
+Now with Ridge and logistic link for full compliance.
 """
 import logging
 import numpy as np
 import polars as pl
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
+from scipy.special import expit
 from joblib import Parallel, delayed
 from config import config
 from src.execution.simulator import simulate_execution_classification
 from src.features.corr_prune import correlation_prune
 from src.features.variance_filter import remove_constant_features
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-def train_and_predict(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                      feature_cols: list, target_col: str) -> np.ndarray:
-    """
-    Train LogisticRegression on train, predict probability of upward move on test.
-    First removes constant features and ensures target is not in features.
-    """
-    # Safety: ensure target column is not in feature_cols
-    if target_col in feature_cols:
-        raise ValueError(f"Target column '{target_col}' is in feature_cols! Remove it first.")
-    
-    # Remove constant features on train fold
-    feature_cols = remove_constant_features(train_df, feature_cols, threshold=1e-9)
+def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series,
+                      test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
+    """Train either Ridge or RandomForest and return probabilities."""
+    # Remove constant features
+    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-9)
     if len(feature_cols) == 0:
         logger.warning("No non-constant features left. Returning uniform probabilities.")
-        return np.full(len(test_df), 0.5, dtype=np.float32)
-    
-    X_train = train_df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
-    y_train = train_df.select(target_col).to_numpy().astype(np.int8).ravel()
-    X_test = test_df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+        return np.full(len(test_X), 0.5, dtype=np.float32)
+
+    X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+    y_train = train_y.to_numpy().astype(np.int8).ravel()
+    X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
 
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    model = LogisticRegression(
-        penalty='l2',
-        C=1.0 / config.RIDGE_PARAMS['alpha'] if 'alpha' in config.RIDGE_PARAMS else 1.0,
-        solver='lbfgs',
-        max_iter=1000,
-        random_state=config.SEED,
-        class_weight='balanced'
-    )
-    model.fit(X_train_scaled, y_train)
-    probs = model.predict_proba(X_test_scaled)[:, 1].astype(np.float32)
+    if config.MODEL_TYPE == "Ridge":
+        model = Ridge(**config.RIDGE_PARAMS)
+        model.fit(X_train_scaled, y_train)
+        raw_pred = model.predict(X_test_scaled)
+        probs = expit(raw_pred).astype(np.float32)
+    elif config.MODEL_TYPE == "RandomForestClassifier":
+        model = RandomForestClassifier(
+            n_estimators=100, max_depth=6, min_samples_split=10,
+            min_samples_leaf=5, max_features='sqrt',
+            random_state=config.SEED, n_jobs=1, class_weight='balanced'
+        )
+        model.fit(X_train_scaled, y_train)
+        probs = model.predict_proba(X_test_scaled)[:, 1].astype(np.float32)
+    else:
+        raise ValueError(f"Unknown MODEL_TYPE: {config.MODEL_TYPE}")
     return probs
 
+def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float = 0.1) -> np.ndarray:
+    """Exponential moving average smoothing, reset at session boundaries."""
+    if alpha <= 0:
+        return probs
+    smoothed = np.zeros_like(probs)
+    current_smooth = 0.5
+    last_session = None
+    for i, (p, sess) in enumerate(zip(probs, session_ids)):
+        if sess != last_session:
+            current_smooth = 0.5
+            last_session = sess
+        current_smooth = alpha * p + (1 - alpha) * current_smooth
+        smoothed[i] = current_smooth
+    return smoothed
+
 def compute_benchmark(df: pl.DataFrame) -> pl.Series:
-    """Naive benchmark: 20-period SMA crossover using lagged close to avoid lookahead."""
+    """Naive benchmark: 20-period SMA crossover using lagged close."""
     close = df["close"].to_numpy()
     open_ = df["open"].to_numpy()
     close_lagged = np.roll(close, 1)
@@ -3574,70 +3331,66 @@ def compute_benchmark(df: pl.DataFrame) -> pl.Series:
     pnl = np.nan_to_num(pnl, nan=0.0)
     return pl.Series("benchmark_pnl", pnl).cast(pl.Float32)
 
-def process_fold(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                 feature_cols: list, target_col: str) -> pl.DataFrame:
-    """Process a single walkforward fold: train, predict, simulate execution."""
-    probs = train_and_predict(train_df, test_df, feature_cols, target_col)
-    test_df = test_df.with_columns(pl.Series("prediction_prob", probs))
-    test_df = test_df.with_columns(compute_benchmark(test_df))
-    return simulate_execution_classification(test_df)
+def process_fold(train_X: pl.DataFrame, train_y: pl.Series,
+                 test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
+    """Train, predict, smooth, then simulate execution."""
+    probs = train_and_predict(train_X, train_y, test_original, feature_cols)
+    if config.PROBABILITY_SMOOTHING_ALPHA > 0:
+        session_ids = test_original["session_id"].to_numpy()
+        probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
+    result = test_original.with_columns(pl.Series("prediction_prob", probs))
+    result = result.with_columns(compute_benchmark(result))
+    return simulate_execution_classification(result)
 
-def run_walkforward(df: pl.DataFrame, feature_cols: list,
+def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list,
                     target_col: str = "target_sign") -> pl.DataFrame:
-    """
-    Walkforward with 60-day train, 1-day test, rolling by 1 day.
-    """
-    # Defensive: remove target column from feature_cols if present (should not happen)
-    if target_col in feature_cols:
-        logger.error(f"Target column '{target_col}' found in feature_cols! Removing it.")
-        feature_cols = [c for c in feature_cols if c != target_col]
-
-    if "ts_event" not in df.columns:
-        raise ValueError("DataFrame must have ts_event for temporal splits.")
+    """Walkforward with train/test split by date."""
+    df = X.with_columns(y)
+    if target_col not in df.columns:
+        raise KeyError(f"Target column '{target_col}' not found.")
     df = df.with_columns(pl.col("ts_event").dt.date().alias("date"))
     unique_dates = sorted(df["date"].unique().to_list())
-    train_days = config.WF_TRAIN_DAYS
-    test_days = config.WF_TEST_DAYS
-    step_days = config.WF_STEP_DAYS
 
     # Prune correlated features using first training fold
-    first_train_dates = unique_dates[:train_days]
+    first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
     first_train_df = df.filter(pl.col("date").is_in(first_train_dates))
     if len(first_train_df) > 0:
         pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
         logger.info(f"Correlation pruning reduced features from {len(feature_cols)} to {len(pruned_features)}")
     else:
         pruned_features = feature_cols
-        logger.warning("Could not determine pruned features; using all features.")
 
-    # Prepare folds
     folds = []
-    for i in range(0, len(unique_dates) - train_days - test_days + 1, step_days):
-        train_end_idx = i + train_days
-        test_start_idx = train_end_idx
-        test_end_idx = test_start_idx + test_days
-        train_dates = unique_dates[i:train_end_idx]
-        test_dates = unique_dates[test_start_idx:test_end_idx]
+    for i in range(0, len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
+        train_end = i + config.WF_TRAIN_DAYS
+        test_start = train_end
+        test_end = test_start + config.WF_TEST_DAYS
+        train_dates = unique_dates[i:train_end]
+        test_dates = unique_dates[test_start:test_end]
+
         train_df = df.filter(pl.col("date").is_in(train_dates))
         test_df = df.filter(pl.col("date").is_in(test_dates))
         if train_df.is_empty() or test_df.is_empty():
             continue
-        folds.append((train_df, test_df, pruned_features, target_col))
-        logger.info(f"Prepared fold: train {train_dates[0]} to {train_dates[-1]}, test {test_dates[0]}")
+
+        train_X = train_df.drop([target_col, "date"])
+        train_y = train_df[target_col]
+        test_original = test_df.drop([target_col, "date"])
+        folds.append((train_X, train_y, test_original, pruned_features))
 
     if not folds:
         raise ValueError("No folds processed.")
 
-    n_parallel = getattr(config, 'WF_PARALLEL_FOLDS', 1)
-    if n_parallel > 1:
-        logger.info(f"Processing {len(folds)} folds in parallel with {n_parallel} workers...")
-        results = Parallel(n_jobs=n_parallel, backend='loky')(
-            delayed(process_fold)(train_df, test_df, feat_cols, tgt)
-            for (train_df, test_df, feat_cols, tgt) in folds
-        )
+    if config.WF_PARALLEL_FOLDS == 1:
+        results = []
+        for (train_X, train_y, test_original, feat_cols) in tqdm(folds, desc="Walkforward folds", unit="fold"):
+            results.append(process_fold(train_X, train_y, test_original, feat_cols))
     else:
-        results = [process_fold(train_df, test_df, feat_cols, tgt) for (train_df, test_df, feat_cols, tgt) in folds]
-
+        logger.info(f"Processing {len(folds)} folds in parallel with {config.WF_PARALLEL_FOLDS} workers...")
+        results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')(
+            delayed(process_fold)(train_X, train_y, test_original, feat_cols)
+            for (train_X, train_y, test_original, feat_cols) in folds
+        )
     final = pl.concat(results)
     final = final.sort(["session_id", "ts_event"])
     return final

@@ -2,7 +2,7 @@
 Deterministic CPU‑only intraday futures pipeline: 1‑min → three streams (5min, 1h, Daily) → mixed‑timeframe features → HTF context → ExtraTrees discovery → frozen features → walkforward Ridge → top‑down execution.
 Implementation status: Snapshot implements 5min stream fully; 1h/Daily streams, cross‑timeframe features, HTF context, HTF execution filters missing (flagged below). Config values below match config/config.py.
 
-Hardware: RAM 14GB, storage 200GB, single‑threaded (OMP_NUM_THREADS=1), CPU only, Python 3.10+, pytz (not zoneinfo).
+Hardware: RAM 16 GB, storage 500 GB, single‑threaded (OMP_NUM_THREADS=1, OPENBLAS_NUM_THREADS=1, MKL_NUM_THREADS=1, POLARS_MAX_THREADS=1), CPU only (AMD Ryzen 5 2600, 6 cores / 12 logical processors), Python 3.10+, pytz (not zoneinfo).
 
 Pipeline Flowchart: 
 
@@ -29,12 +29,12 @@ Step 11 = execution simulation, HTF volatility sizing, slippage/latency modeling
 Step 12 = monitoring and CI gating for deploy.
 
 1. OBJECTIVE
-Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <14GB, seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
+Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, no overnight holds. Zero leakage, memory <16GB (safe cap 14GB), seed 42, float32 only. Polars (no pandas), pytz, chunked processing.
 
 2. GLOBAL ENV
 SEED=42 for numpy/random/sklearn
 
-OMP_NUM_THREADS=OPENBLAS_NUM_THREADS=MKL_NUM_THREADS=1
+OMP_NUM_THREADS=OPENBLAS_NUM_THREADS=MKL_NUM_THREADS=POLARS_MAX_THREADS=1
 
 Libs: polars, numpy, sklearn, pyarrow, joblib, pytz
 
@@ -53,7 +53,7 @@ TRADES_OUT = "artifacts/trades.csv"
 LOG_DIR = "logs/"
 Memory & determinism
 text
-RAM_CAP_BYTES = 14 * 1024**3
+RAM_CAP_BYTES = 14 * 1024**3   # still leaves 2GB headroom on 16GB system
 RSS_STOP_BYTES = 13.5 * 1024**3
 ROWS_PER_CHUNK_MAX = 5_000_000
 MEMORY_SAFETY_MARGIN = 0.95
@@ -121,7 +121,7 @@ METRICS_TO_COMPUTE = ["Sharpe","MaxDrawdown","Turnover","HitRate","AvgWin","AvgL
 ANNUALIZATION_FACTOR = 66528   # 5‑min bars/year
 ROW_GROUP_SIZE = 65536
 4. HARDWARE LIMITS
-RSS stop at 13.5GB, hard cap 14GB.
+RSS stop at 13.5GB, hard cap 14GB (leaving 2GB for OS and other processes on 16GB system).
 
 Check memory before each chunk.
 

@@ -2,22 +2,15 @@
 src/execution/simulator.py
 Execution simulation: stateful position tracking, volatility scaling,
 transaction costs, leverage limits, and flatten before session close.
-Now includes per‑session bias removal to eliminate spurious drift profits.
+Now with safe fallbacks for missing HTF columns.
 """
 import polars as pl
 import numpy as np
 from config import config
 
-
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Classification version: uses column 'prediction_prob' (probability of up move).
-    Raw signal = 2*prob - 1 (range -1 to 1). Then scaled by TARGET_VOL / vol.
-    Bias removal: centres probabilities per session (mean becomes 0.5) to remove
-    any systematic long/short bias that could profit from a trending market.
-    Adds columns: 'position', 'trade_cost', 'pnl'.
-    """
-    # ---- 1. Volatility column ----
+    """Classification version: uses 'prediction_prob'. Includes HTF scaling/alignment if columns exist."""
+    # Volatility column
     if "feature_ewma_vol_20" not in df.columns:
         ret = (pl.col("close") / pl.col("close").shift(1)).log()
         vol = ret.rolling_std(window_size=20)
@@ -27,43 +20,35 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
         vol.fill_null(strategy="forward").fill_null(1e-6).alias("vol")
     )
 
-    # ---- 2. Bias removal (per session) ----
+    # Bias removal (optional)
     prob_series = df["prediction_prob"].fill_null(0.5).clip(0.0, 1.0)
     if getattr(config, 'REMOVE_PREDICTION_BIAS', False):
-        # Convert to writable numpy array
-        probs = prob_series.to_numpy().copy()   # .copy() makes it writable
+        probs = prob_series.to_numpy().copy()
         sess_ids = df["session_id"].to_numpy()
-        unique_sessions = np.unique(sess_ids)
-        for sess in unique_sessions:
+        for sess in np.unique(sess_ids):
             mask = (sess_ids == sess)
             sess_mean = probs[mask].mean()
-            # Center around 0.5, keeping the same range
             probs[mask] = probs[mask] - sess_mean + 0.5
-        # Clip again to [0,1] after adjustment
         probs = np.clip(probs, 0.0, 1.0)
         prob_series = pl.Series(probs)
-        print(f"Per‑session bias removed: each session's mean probability → 0.5")
 
-    # ---- 3. Raw signal from probability ----
-    raw_signal = (prob_series - 0.5) * 2.0   # maps [0,1] -> [-1,1]
-
+    raw_signal = (prob_series - 0.5) * 2.0
     target_raw_expr = (raw_signal / pl.col("vol")) * config.TARGET_VOL
     target_raw_expr = target_raw_expr.clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
 
-    # HTF volatility scaling
+    # HTF volatility scaling – only if column exists
     if config.HTF_VOL_SCALING and "htf_daily_vol_5" in df.columns:
         daily_atr = pl.col("htf_daily_vol_5").fill_null(strategy="forward").fill_null(1e-6)
         scaling = (config.TARGET_VOL / daily_atr).clip(0.25, 2.0)
         target_raw_expr = (target_raw_expr * scaling).clip(-config.MAX_LEVERAGE, config.MAX_LEVERAGE)
 
-    # HTF trend alignment filter
+    # HTF trend alignment – only if column exists
     if config.HTF_TREND_ALIGNMENT and "htf_daily_trend_slope_10" in df.columns:
         daily_trend = pl.col("htf_daily_trend_slope_10").sign()
         target_raw_expr = pl.when(
             (daily_trend == 0) | (target_raw_expr.sign() == daily_trend)
         ).then(target_raw_expr).otherwise(0)
 
-    # ---- 4. Rate limit (loop) ----
     target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
     target_array = target_series.to_numpy()
 
@@ -90,7 +75,6 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)
     ret_exec = np.nan_to_num(ret_exec, nan=0.0)
 
-    # ---- 5. Loop ----
     n = len(df)
     positions = np.zeros(n, dtype=np.float32)
     trade_costs = np.zeros(n, dtype=np.float32)
@@ -117,7 +101,5 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ]).drop(["_session_rank", "_session_len"])
     return df
 
-
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
-    """Legacy regression version (uses 'prediction' column)."""
     raise NotImplementedError("Use simulate_execution_classification for new pipeline.")
