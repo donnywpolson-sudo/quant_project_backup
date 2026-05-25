@@ -57,6 +57,13 @@ def main():
     run_parser.add_argument("--data", required=True)
     run_parser.add_argument("--manifest", default="artifacts/manifest.json")
     run_parser.add_argument("--out", required=True)
+    pipeline_parser = subparsers.add_parser("pipeline")
+    pipeline_parser.add_argument("--data", required=True)
+    pipeline_parser.add_argument("--out", default="artifacts/manifest_mvp.json")
+    pipeline_parser.add_argument("--prod-mode", action="store_true")
+    pipeline_parser.add_argument("--no-discovery", action="store_true", help="Only persist baseline, skip discovery run")
+    pipeline_parser.add_argument("--top-k", type=int, default=20)
+    pipeline_parser.add_argument("--bootstrap-folds", type=int, default=1, help="Number of bootstrap folds for discovery")
 
     args = parser.parse_args()
     check_memory_safety()
@@ -65,6 +72,18 @@ def main():
         from quant.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
+
+    if args.command == "pipeline":
+        from quant.market_config import detect_symbol_from_path, load_market_config
+        symbol = detect_symbol_from_path(args.data)
+        load_market_config(symbol)
+        from quant.pipeline import run_pipeline
+        print("[CLI] Running MVP pipeline...", flush=True)
+        manifest = run_pipeline(args.data, out_manifest=args.out, prod_mode=args.prod_mode,
+                    top_k=args.top_k, discovery_run=(not args.no_discovery),
+                    bootstrap_folds=args.bootstrap_folds)
+        print(f"[CLI] Pipeline completed. Manifest: {args.out}", flush=True)
+        return
 
     if args.command == "discover":
         print("\n[CLI] === PHASE 1: FEATURE DISCOVERY ===", flush=True)
@@ -91,7 +110,8 @@ def main():
 
     elif args.command == "run":
         print("\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===", flush=True)
-        target_col = "target_sign"
+        # Prefer the 4-hour target for the MVP objective; fall back to 1h if present.
+        target_col = "target_sign_4h"
         cache_dir = Path(args.manifest).parent
         aligned_cache = cache_dir / "aligned_data.parquet"
         cross_assets = getattr(config, 'CROSS_ASSET_SYMBOLS', [])
@@ -109,11 +129,15 @@ def main():
             print("[CLI] No cached feature matrix found; generating features (slower).", flush=True)
             df_features = generate_features(df_aligned)
 
+        if target_col not in df_features.columns and "target_sign_1h" in df_features.columns:
+            target_col = "target_sign_1h"
+        print(f"[CLI] Using target column: {target_col}", flush=True)
+
         print("[CLI] Pruning features by manifest...", flush=True)
         df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         
         if target_col not in df_pruned.columns:
-            raise KeyError(f"Target column '{target_col}' missing after pruning.")
+            raise KeyError(f"Target column '{target_col}' missing after pruning. Ensure appropriate targets were generated.")
         
         y = df_pruned.select(target_col)
         X = df_pruned.drop(target_col)

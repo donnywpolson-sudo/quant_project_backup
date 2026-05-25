@@ -76,8 +76,12 @@ def add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFr
         expr = (pl.col(a) * pl.col(b)).cast(pl.Float32)
         exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
         count += 1
+    # Apply in small batches to reduce peak memory during query planning/execution
     if exprs:
-        df = df.with_columns(exprs)
+        batch_size = 50
+        for i in range(0, len(exprs), batch_size):
+            batch = exprs[i:i+batch_size]
+            df = df.with_columns(batch)
     return df
 
 def safe_add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
@@ -88,20 +92,37 @@ def safe_add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.D
     return add_pairwise_interactions(df, feature_cols)
 
 def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_features: list) -> pl.DataFrame:
-    ltf_sorted = sorted(ltf_features)
-    htf_sorted = sorted(htf_features)
+    # Only consider columns that exist in the dataframe
+    ltf_sorted = [c for c in sorted(ltf_features) if c in df.columns]
+    htf_sorted = [c for c in sorted(htf_features) if c in df.columns]
+
+    # Only numeric dtypes are valid for multiplication
+    numeric_types = (
+        pl.Float32, pl.Float64,
+        pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    )
+
     exprs = []
     count = 0
+    batch_size = 50
     for a in ltf_sorted:
+        if count >= config.MAX_CROSS_TIMEFRAME_INTERACTIONS:
+            break
+        if df[a].dtype not in numeric_types:
+            continue
         for b in htf_sorted:
             if count >= config.MAX_CROSS_TIMEFRAME_INTERACTIONS:
                 break
+            if df[b].dtype not in numeric_types:
+                continue
             name = f"cross_{a}_x_{b}"
             expr = (pl.col(a) * pl.col(b)).cast(pl.Float32)
             exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
             count += 1
-        if count >= config.MAX_CROSS_TIMEFRAME_INTERACTIONS:
-            break
+            if len(exprs) >= batch_size:
+                df = df.with_columns(exprs)
+                exprs = []
     if exprs:
         df = df.with_columns(exprs)
     return df
@@ -178,8 +199,9 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_vwap_deviation(df)
     df = add_regime_all_interactions(df, baseline_feature_cols)
 
-    current_features = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))]
-    htf_cols = [c for c in df.columns if c.startswith(("1h_", "daily_", "htf_"))]
+    # Only include derived feature prefixes for pairwise expansions; exclude raw 1h_/daily_ raw OHLC/ts columns
+    current_features = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_"))]
+    htf_cols = [c for c in df.columns if c.startswith(("htf_",))]
 
     # Memory estimation
     est_pairwise = min(config.MAX_PAIRWISE_INTERACTIONS, len(current_features) * (len(current_features) - 1) // 2)
@@ -193,9 +215,20 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = safe_add_pairwise_interactions(df, current_features)
 
     exclude_cols = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
-    all_feature_cols = [c for c in df.columns if c not in exclude_cols]
-    for col in all_feature_cols:
-        df = df.with_columns(
-            pl.col(col).fill_nan(config.REPLACE_INF_NAN_WITH).fill_null(config.REPLACE_INF_NAN_WITH).clip(config.CLIP_MIN, config.CLIP_MAX)
-        )
+    numeric_types = (
+        pl.Float32, pl.Float64,
+        pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    )
+    exprs = []
+    for c, t in zip(df.columns, df.dtypes):
+        if c in exclude_cols:
+            continue
+        # Only apply numeric cleaning to numeric dtypes; skip HTF and raw HTF streams (preserve their NaNs)
+        if c.startswith("htf_") or c.startswith("daily_") or c.startswith("1h_"):
+            continue
+        if isinstance(t, tuple(numeric_types)) or t in numeric_types:
+            exprs.append(pl.col(c).fill_nan(config.REPLACE_INF_NAN_WITH).fill_null(config.REPLACE_INF_NAN_WITH).clip(config.CLIP_MIN, config.CLIP_MAX).alias(c))
+    if exprs:
+        df = df.with_columns(exprs)
     return df

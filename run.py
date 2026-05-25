@@ -188,19 +188,27 @@ def process_file(data_path: Path):
     logger.removeHandler(file_handler)
 
 if __name__ == "__main__":
+    import argparse
+
     create_audit_snapshot()
 
-    futures_dir = Path("futures")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", default=None, help="Path to root folder containing market/year parquet files (overrides 'futures')")
+    args = parser.parse_args()
+
+    # Allow env var fallback
+    data_dir = args.data_dir or os.environ.get("DATA_DIR") or "futures"
+    futures_dir = Path(data_dir)
     if not futures_dir.exists():
-        logger.error("Directory 'futures' not found.")
+        logger.error("Directory '%s' not found.", data_dir)
         sys.exit(1)
 
     files = list(futures_dir.rglob("*.parquet"))
     if not files:
-        logger.warning("No Parquet files found under 'futures/'.")
+        logger.warning("No Parquet files found under '%s'.", data_dir)
         sys.exit(0)
 
-    logger.info(f"Found {len(files)} file(s) to process.")
+    logger.info(f"Found {len(files)} file(s) to process in '{data_dir}'.")
     for file_path in files:
         process_file(file_path)
 

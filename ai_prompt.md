@@ -4,29 +4,87 @@ Implementation status: Snapshot implements 5min stream fully; 1h/Daily streams, 
 
 Hardware: RAM 16 GB, storage 500 GB, single‑threaded (OMP_NUM_THREADS=1, OPENBLAS_NUM_THREADS=1, MKL_NUM_THREADS=1, POLARS_MAX_THREADS=1), CPU only (AMD Ryzen 5 2600, 6 cores / 12 logical processors), Python 3.10+, pytz (not zoneinfo).
 
-Pipeline Flowchart: 
+"Pipeline Flowchart: 
 
-Data Collection & Engineering:
-Step 1 = data sourcing, timezone normalization, sessionization, raw manifest.
-Step 2 = resampling and explicit ts_close.
-Step 3 = HTF alignment enforcing causality.
-Step 4 = HTF feature engineering (indicators, ATR, slopes).
+1) Clean Data (get it usable)
+Collect raw data
+Normalize timezone
+Build sessions
+Resample to bars (5m + HTF)
+Ensure no future leakage (causal alignment)
 
-Alpha Research & Modeling:
-Step 5 = HTF discovery and feature selection.
-Step 6 = 5m baseline features.
-Step 7 = joining frozen HTF to 5m (conditioning).
-Step 8 = feature expansion and pruning.
-Step 9 = 5m discovery conditioned on HTF.
+2) Build HTF Context (slow signals)
+Compute HTF indicators (ATR, trends, slopes, etc.)
+Select useful HTF features
+Freeze HTF features (no peeking forward)
 
-Backtesting & Validation:
-Step 10 = walkforward Ridge training, per‑fold scalers, OOS metrics.
-Step 11 = execution simulation produces trades and PnL for validation.
-Step 12 = CI tests, reproducibility, no‑leakage checks.
+3) Build 5m Features (fast signals)
+Create baseline 5m features (returns, volatility, microstructure)
+Join frozen HTF features → conditions the 5m model
 
-Portfolio Optimization & Execution:
-Step 11 = execution simulation, HTF volatility sizing, slippage/latency modeling.
-Step 12 = monitoring and CI gating for deploy.
+4) Expand + Select Features
+Use ExtraTrees to:
+Generate feature importance
+Expand interactions / nonlinear signals
+Prune weak features → keep only signal
+
+5) Train Model (simple + robust)
+Model = Ridge Regression
+
+Use walkforward training:
+Train on past
+Test on next slice (OOS)
+Repeat across time
+
+Use per-fold scaling (no leakage)
+
+6) Backtest (does it make money?)
+Turn predictions → trades
+
+Simulate:
+position sizing (HTF volatility-based)
+slippage + latency
+
+Output:
+PnL
+Sharpe / drawdown
+stability across folds
+
+7) Validate (don’t fool yourself)
+Reproducibility checks
+No leakage tests
+CI-style sanity checks
+
+8) Deploy + Monitor
+Run live with same pipeline
+Track performance drift
+Gate updates via CI"
+
+MVP Scope — Minimal Viable Product (single-market)
+- Goal: find a repeatable alpha for next 4-hour direction using 1-minute history.
+- Limit: one market (pick CL/ES/ZB). Run locally, deterministic, single-threaded.
+- I/O schema & entrypoint:
+	- Implement `run_pipeline(data_path, --prod-mode)` entrypoint.
+	- Minimal schema: input parquet (1-min UTC ts_event, open/high/low/close, volume).
+	- Optional flags: `--prod-mode` to enable canonical writer and full manifest.
+- Small baseline:
+	- Select 20 core features (from existing 40) computed per session.
+	- Clip, cast to `float32`, persist baseline matrix to `artifacts/baseline_feature_matrix.parquet` for reproducibility.
+- Discovery (fast loop):
+	- Single ExtraTrees run, 5–10 bootstrap folds in-process.
+	- Params: `n_estimators=100`, `max_depth=8`.
+	- Compute selection frequency and mean importance; freeze top K (e.g., K=20).
+- Stability checks:
+	- Sign-consistency check across folds, correlation filter on frozen set. Reduce K if unstable.
+- Modeling:
+	- Train `Ridge` on 5-min resampled data using frozen features.
+	- Deterministic scaler per fold, walkforward slices evaluate Sharpe, hit rate, turnover.
+- Execution simulation (minimal):
+	- Simple slippage + commission model, require flat N minutes before session close.
+	- Keep position sizing fixed for MVP (no HTF scaling).
+- Iterate:
+	- If signal passes walkforward and checks, scale discovery folds, enable pairwise interactions, subprocess isolation, and `--prod-mode` serialization.
+
 
 1. OBJECTIVE
 Strict intraday Globex 23/5 18:00 America/New_York → 16:00 America/New_York, with the CME settlement gap excluded from 17:00–18:00 ET, no overnight holds. Zero leakage, memory <16GB (safe cap 14GB), seed 42, float32 only. Polars (no pandas), pytz, chunked processing.

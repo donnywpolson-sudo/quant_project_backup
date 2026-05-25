@@ -15,18 +15,29 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     signal_expr = signal_expr.when((pl.col("prediction_prob").fill_null(0.5) - 0.5) < 0).then(-1.0).otherwise(0.0)
 
     # HTF directional bias: daily trend gives a long/short/neutral bias, hourly alignment sharpens it.
-    if config.HTF_TREND_ALIGNMENT and "htf_daily_trend_slope_10" in df.columns:
-        daily_bias = pl.when(
-            pl.col("htf_daily_trend_slope_10").abs() >= config.HTF_TREND_THRESHOLD
-        ).then(pl.col("htf_daily_trend_slope_10").sign()).otherwise(0.0)
+    if config.HTF_TREND_ALIGNMENT:
+        # Prefer supplied htf features, otherwise derive simple biases from 1h/daily OHLC.
+        if "htf_daily_trend_slope_10" in df.columns:
+            daily_bias = pl.when(
+                pl.col("htf_daily_trend_slope_10").abs() >= config.HTF_TREND_THRESHOLD
+            ).then(pl.col("htf_daily_trend_slope_10").sign()).otherwise(0.0)
+        elif "daily_close" in df.columns and "daily_open" in df.columns:
+            daily_bias = pl.when((pl.col("daily_close") - pl.col("daily_open")).abs() >= 0).then(
+                (pl.col("daily_close") - pl.col("daily_open")).sign()
+            ).otherwise(0.0)
+        else:
+            daily_bias = pl.lit(0.0)
+
         if "htf_hourly_trend_alignment" in df.columns:
             hourly_align = pl.col("htf_hourly_trend_alignment").sign()
-            daily_bias = pl.when(
-                (daily_bias != 0.0) & (hourly_align == daily_bias)
-            ).then(daily_bias).otherwise(0.0)
-        target_raw_expr = pl.when(
-            (signal_expr == daily_bias) & (daily_bias != 0.0)
-        ).then(daily_bias).otherwise(0.0)
+        elif "1h_close" in df.columns and "1h_open" in df.columns:
+            hourly_align = (pl.col("1h_close") - pl.col("1h_open")).sign()
+        else:
+            hourly_align = pl.lit(0.0)
+
+        # Require agreement between daily bias and hourly alignment
+        daily_bias = pl.when((daily_bias != 0.0) & (hourly_align == daily_bias)).then(daily_bias).otherwise(0.0)
+        target_raw_expr = pl.when((signal_expr == daily_bias) & (daily_bias != 0.0)).then(daily_bias).otherwise(0.0)
     else:
         target_raw_expr = signal_expr
 

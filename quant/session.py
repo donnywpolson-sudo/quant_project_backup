@@ -122,7 +122,13 @@ def process_frequency(freq: str, all_files: list) -> tuple:
         for p in temp_paths[1:]:
             lf = pl.concat([lf, pl.scan_parquet(p)], how="vertical")
         lf = lf.sort(["session_id", "ts_event"])
-        df = lf.collect(streaming=True)
+        # Use the streaming engine where available to keep memory usage low.
+        # `streaming=True` is deprecated; use `engine="streaming"`.
+        try:
+            df = lf.collect(engine="streaming")
+        except TypeError:
+            # Older polars versions may not support the `engine` kwarg; fall back.
+            df = lf.collect(streaming=True)
         print(f"[SESSION] {freq} stream has {df.height} rows.", flush=True)
         return freq, df
     finally:

@@ -9,6 +9,7 @@ from quant.features.baseline import compute_baseline_features, load_baseline_fea
 from quant.features.expansion import expand_features, add_cross_timeframe_interactions
 from quant.features.htf_context import add_htf_context_features
 from quant.features.target import add_target_5m, drop_incomplete_target
+from quant.features.target import add_target_1h, add_target_4h
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     
     # Add target (binary for classification)
     df = add_target_5m(df)
+    # Add 1-hour horizon target aligned to 5-min rows
+    df = add_target_1h(df)
+    # Add 4-hour horizon target aligned to 5-min rows
+    df = add_target_4h(df)
     df = drop_incomplete_target(df)
 
     # Ensure all feature columns are float32
