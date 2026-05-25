@@ -1,0 +1,64 @@
+import subprocess
+import sys
+
+def run(cmd, check=True):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        print(f"Error: {' '.join(cmd)}\n{result.stderr}")
+        sys.exit(1)
+    return result.stdout.strip()
+
+# Get staged files
+lines = run(["git", "diff", "--cached", "--name-status"]).splitlines()
+
+if not lines:
+    print("Nothing staged.")
+    sys.exit(0)
+
+added = []
+modified = []
+deleted = []
+
+for line in lines:
+    parts = line.split("\t")
+    status = parts[0]
+    file = parts[-1]
+
+    if status == "A":
+        added.append(file)
+    elif status == "M":
+        modified.append(file)
+    elif status == "D":
+        deleted.append(file)
+
+# Save working state
+stash_output = run(["git", "stash", "--keep-index"])
+did_stash = "No local changes" not in stash_output
+
+# Unstage everything
+run(["git", "reset"])
+
+def safe_commit(files, message):
+    if not files:
+        return
+    print(f"Committing {len(files)} files: {message}")
+
+    for f in files:
+        subprocess.run(["git", "add", f])
+
+    result = subprocess.run(["git", "commit", "-m", message])
+    if result.returncode != 0:
+        print(f"⚠️ Commit failed for {message}, skipping...")
+
+# Commit in groups
+safe_commit(added, "Add files")
+safe_commit(modified, "Update files")
+safe_commit(deleted, "Remove files")
+
+# Restore stash
+if did_stash:
+    result = subprocess.run(["git", "stash", "pop"])
+    if result.returncode != 0:
+        print("⚠️ Stash pop had conflicts")
+
+print("Done.")
