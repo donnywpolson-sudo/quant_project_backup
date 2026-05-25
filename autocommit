@@ -30,30 +30,37 @@ for line in lines:
         modified.append(file)
     elif status == "D":
         deleted.append(file)
+    elif status.startswith("R"):  # Rename
+        modified.append(file)
+    elif status.startswith("C"):  # Copy
+        added.append(file)
 
-# Save working state
+# Save working state (only unstaged changes)
 stash_output = run(["git", "stash", "--keep-index"])
-did_stash = "No local changes" not in stash_output
+did_stash = "Saved working directory" in stash_output
 
 # Unstage everything
 run(["git", "reset"])
 
-def safe_commit(files, message):
+def safe_commit(files, message, remove=False):
     if not files:
         return
+
     print(f"Committing {len(files)} files: {message}")
 
-    for f in files:
-        subprocess.run(["git", "add", f])
+    if remove:
+        subprocess.run(["git", "rm", "--cached"] + files)
+    else:
+        subprocess.run(["git", "add"] + files)
 
     result = subprocess.run(["git", "commit", "-m", message])
     if result.returncode != 0:
-        print(f"⚠️ Commit failed for {message}, skipping...")
+        print(f"⚠️ Commit failed for: {message}")
 
 # Commit in groups
-safe_commit(added, "Add files")
-safe_commit(modified, "Update files")
-safe_commit(deleted, "Remove files")
+safe_commit(added, f"Add {len(added)} file(s)")
+safe_commit(modified, f"Update {len(modified)} file(s)")
+safe_commit(deleted, f"Remove {len(deleted)} file(s)", remove=True)
 
 # Restore stash
 if did_stash:
