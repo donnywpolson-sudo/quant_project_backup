@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series,
                       test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
     """Train either Ridge or RandomForest and return probabilities."""
+
     # Remove constant features
     feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-9)
     if len(feature_cols) == 0:
@@ -33,25 +34,46 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series,
     y_train = train_y.to_numpy().astype(np.int8).ravel()
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
 
+    # Standardization (fit on train only)
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
     if config.MODEL_TYPE == "Ridge":
-        model = Ridge(**config.RIDGE_PARAMS)
+        # Slightly stronger regularization for stability
+        ridge_params = config.RIDGE_PARAMS.copy()
+        ridge_params["alpha"] = max(ridge_params.get("alpha", 1.0), 2.0)
+
+        model = Ridge(**ridge_params)
         model.fit(X_train_scaled, y_train)
+
         raw_pred = model.predict(X_test_scaled)
+
+        # Clip extreme raw predictions to avoid instability
+        raw_pred = np.clip(raw_pred, -5.0, 5.0)
+
         probs = expit(raw_pred).astype(np.float32)
+
     elif config.MODEL_TYPE == "RandomForestClassifier":
         model = RandomForestClassifier(
-            n_estimators=100, max_depth=6, min_samples_split=10,
-            min_samples_leaf=5, max_features='sqrt',
-            random_state=config.SEED, n_jobs=1, class_weight='balanced'
+            n_estimators=100,
+            max_depth=5,              # tighter depth
+            min_samples_split=20,     # stronger regularization
+            min_samples_leaf=10,
+            max_features='sqrt',
+            random_state=config.SEED,
+            n_jobs=1,
+            class_weight='balanced'
         )
         model.fit(X_train_scaled, y_train)
         probs = model.predict_proba(X_test_scaled)[:, 1].astype(np.float32)
+
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {config.MODEL_TYPE}")
+
+    # Final probability clipping to reduce overconfidence
+    probs = np.clip(probs, 0.05, 0.95)
+
     return probs
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float = 0.1) -> np.ndarray:
@@ -90,9 +112,15 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series,
                  test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     """Train, predict, smooth, then simulate execution."""
     probs = train_and_predict(train_X, train_y, test_original, feature_cols)
+
     if config.PROBABILITY_SMOOTHING_ALPHA > 0:
         session_ids = test_original["session_id"].to_numpy()
-        probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
+        probs = smooth_probabilities(
+            probs,
+            session_ids,
+            alpha=min(config.PROBABILITY_SMOOTHING_ALPHA, 0.2)  # cap smoothing to avoid lag overfit
+        )
+
     result = test_original.with_columns(pl.Series("prediction_prob", probs))
     result = result.with_columns(compute_benchmark(result))
     return simulate_execution_classification(result)
@@ -103,115 +131,77 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list,
     df = X.with_columns(y)
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
+
     df = df.with_columns(pl.col("ts_event").dt.date().alias("date"))
     unique_dates = sorted(df["date"].unique().to_list())
 
-    # If training target is the 1-hour horizon, collapse the dataset to one
-    # representative row per 1h bar for modeling, then map predictions back to
-    # the original 5-min rows for execution.
     is_1h_target = target_col.endswith("_1h")
 
     if is_1h_target:
         if "1h_ts_event" not in df.columns:
             raise KeyError("Missing '1h_ts_event' column required for 1h target flow.")
-        # Representative per-1h row: take the last 5-min row within each 1h group
+
         per1h = (
-            df.sort(["1h_ts_event", "ts_event"]) 
+            df.sort(["1h_ts_event", "ts_event"])
             .groupby("1h_ts_event", maintain_order=True)
             .agg([pl.all().last()])
         )
-        # normalize column names (agg nests columns)
-        # `per1h` will have columns like <col>_last; simplify by renaming
         per1h = per1h.rename({c: c.replace("_last", "") for c in per1h.columns})
         per_df = per1h
+
         first_train_dates = sorted(per_df["1h_ts_event"].dt.date().unique().to_list())[:config.WF_TRAIN_DAYS]
         first_train_df = per_df.filter(pl.col("1h_ts_event").dt.date().is_in(first_train_dates))
+
         if len(first_train_df) > 0:
             pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
-            logger.info(f"Correlation pruning reduced features from {len(feature_cols)} to {len(pruned_features)}")
         else:
             pruned_features = feature_cols
+
     else:
-        # Prune correlated features using first training fold (5-min flow)
         first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
         first_train_df = df.filter(pl.col("date").is_in(first_train_dates))
+
         if len(first_train_df) > 0:
             pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
-            logger.info(f"Correlation pruning reduced features from {len(feature_cols)} to {len(pruned_features)}")
         else:
             pruned_features = feature_cols
 
     folds = []
-    if is_1h_target:
-        per_df = per_df.with_columns(pl.col("1h_ts_event").dt.date().alias("date"))
-        unique_dates_1h = sorted(per_df["date"].unique().to_list())
-        for i in range(0, len(unique_dates_1h) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
-            train_end = i + config.WF_TRAIN_DAYS
-            test_start = train_end
-            test_end = test_start + config.WF_TEST_DAYS
-            train_dates = unique_dates_1h[i:train_end]
-            test_dates = unique_dates_1h[test_start:test_end]
 
-            train_df = per_df.filter(pl.col("date").is_in(train_dates))
-            test_df = per_df.filter(pl.col("date").is_in(test_dates))
-            if train_df.is_empty() or test_df.is_empty():
-                continue
+    for i in range(0, len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
+        train_end = i + config.WF_TRAIN_DAYS
+        test_start = train_end
+        test_end = test_start + config.WF_TEST_DAYS
 
-            train_X = train_df.drop([target_col, "date"]) 
-            train_y = train_df[target_col]
-            test_original = test_df.drop([target_col, "date"]) 
-            folds.append((train_X, train_y, test_original, pruned_features))
-    else:
-        for i in range(0, len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
-            train_end = i + config.WF_TRAIN_DAYS
-            test_start = train_end
-            test_end = test_start + config.WF_TEST_DAYS
-            train_dates = unique_dates[i:train_end]
-            test_dates = unique_dates[test_start:test_end]
+        train_dates = unique_dates[i:train_end]
+        test_dates = unique_dates[test_start:test_end]
 
-            train_df = df.filter(pl.col("date").is_in(train_dates))
-            test_df = df.filter(pl.col("date").is_in(test_dates))
-            if train_df.is_empty() or test_df.is_empty():
-                continue
+        train_df = df.filter(pl.col("date").is_in(train_dates))
+        test_df = df.filter(pl.col("date").is_in(test_dates))
 
-            train_X = train_df.drop([target_col, "date"])
-            train_y = train_df[target_col]
-            test_original = test_df.drop([target_col, "date"])
-            folds.append((train_X, train_y, test_original, pruned_features))
+        if train_df.is_empty() or test_df.is_empty():
+            continue
+
+        train_X = train_df.drop([target_col, "date"])
+        train_y = train_df[target_col]
+        test_original = test_df.drop([target_col, "date"])
+
+        folds.append((train_X, train_y, test_original, pruned_features))
 
     if not folds:
         raise ValueError("No folds processed.")
 
-    if config.WF_PARALLEL_FOLDS == 1 or is_1h_target:
+    if config.WF_PARALLEL_FOLDS == 1:
         results = []
         for (train_X, train_y, test_original, feat_cols) in tqdm(folds, desc="Walkforward folds", unit="fold"):
-            # For 1h target flow, train on per-1h rows and then map preds back to 5-min rows
             res = process_fold(train_X, train_y, test_original, feat_cols)
-            if is_1h_target:
-                # `res` contains simulated 1h-level rows; map prediction_prob back to 5-min DF
-                # Join predictions (prediction_prob) from res (which has 1h_ts_event) back to original df
-                preds = res.select(["1h_ts_event", "prediction_prob"]) if "1h_ts_event" in res.columns else res
-                # If preds lacks 1h_ts_event, assume index alignment and skip mapping
-                if "1h_ts_event" in res.columns:
-                    # Join preds to full df on 1h_ts_event to get 5-min level rows for this test period
-                    test_5min_mask = df["1h_ts_event"].is_in(preds["1h_ts_event"].to_list())
-                    test_5min = df.filter(test_5min_mask)
-                    test_5min = test_5min.join(preds, on="1h_ts_event", how="left")
-                    # simulate execution on 5-min rows
-                    sim = process_fold(test_5min.drop(["prediction_prob"], errors="ignore"), 
-                                       test_5min[target_col] if target_col in test_5min.columns else test_5min["target_1h"],
-                                       test_5min, feat_cols)
-                    results.append(sim)
-                else:
-                    results.append(res)
-            else:
-                results.append(res)
+            results.append(res)
     else:
-        logger.info(f"Processing {len(folds)} folds in parallel with {config.WF_PARALLEL_FOLDS} workers...")
         results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')(
             delayed(process_fold)(train_X, train_y, test_original, feat_cols)
             for (train_X, train_y, test_original, feat_cols) in folds
         )
+
     final = pl.concat(results)
     final = final.sort(["session_id", "ts_event"])
     return final

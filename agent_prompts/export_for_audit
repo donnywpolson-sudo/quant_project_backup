@@ -1,0 +1,50 @@
+from pathlib import Path
+
+ROOT = Path(".")
+OUT_DIR = ROOT / "agent_prompts"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+EXT = {".py", ".yml", ".yaml", ".json"}
+SKIP = {".git", "__pycache__", "venv", ".venv", "env",
+        "node_modules", ".idea", ".vscode", "data"}
+
+MAX_FILE_KB = 200
+MAX_CHARS = 120_000  # slightly under 128k to stay safe
+
+def ok(p):
+    return (
+        p.suffix in EXT
+        and not any(x in SKIP for x in p.parts)
+        and p.stat().st_size < MAX_FILE_KB * 1024
+    )
+
+def new_output_file(index):
+    return open(OUT_DIR / f"audit_dump_{index:03d}.txt", "w", encoding="utf-8")
+
+file_index = 1
+current_chars = 0
+out = new_output_file(file_index)
+
+for f in sorted(p for p in ROOT.rglob("*") if p.is_file() and ok(p)):
+    header = f"\n{'='*80}\nFILE: {f.relative_to(ROOT)}\n{'='*80}\n\n"
+    
+    try:
+        content = f.read_text(encoding="utf-8", errors="ignore") + "\n\n"
+    except Exception as e:
+        content = f"[ERROR: {e}]\n\n"
+
+    chunk = header + content
+
+    # If adding this exceeds limit → rotate file
+    if current_chars + len(chunk) > MAX_CHARS:
+        out.close()
+        file_index += 1
+        out = new_output_file(file_index)
+        current_chars = 0
+
+    out.write(chunk)
+    current_chars += len(chunk)
+
+out.close()
+
+print(f"Done. Created {file_index} file(s) in {OUT_DIR}")

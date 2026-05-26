@@ -2,9 +2,9 @@ import os
 import sys
 import subprocess
 import logging
-import pandas as pd
 from pathlib import Path
 import yaml
+import polars as pl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("QuantRunner")
@@ -61,23 +61,34 @@ def select_uncorrelated_markets(files, config):
     for f in files:
         market = f.parent.name
 
-        df = pd.read_parquet(f, columns=["close"])
-        returns = df["close"].pct_change().dropna()
+        df = pl.read_parquet(f).select("close")
+        returns = df.select(pl.col("close").pct_change()).drop_nulls()
 
         if market not in market_returns:
             market_returns[market] = returns
         else:
-            market_returns[market] = pd.concat([market_returns[market], returns])
+            market_returns[market] = pl.concat([market_returns[market], returns])
 
-    df = pd.DataFrame({m: r for m, r in market_returns.items()}).dropna()
+    # Combine markets into one DataFrame
+    combined = []
+    for m, r in market_returns.items():
+        combined.append(r.rename({"close": m}))
 
-    corr = df.corr().abs()
+    df = pl.concat(combined, how="horizontal").drop_nulls()
+
+    # Compute correlation
+    corr = df.corr()
+
+    # Convert to numpy for safe indexing
+    corr_np = corr.to_numpy()
+    cols = corr.columns
+    col_index = {c: i for i, c in enumerate(cols)}
 
     selected = []
     threshold = config.get("correlation_threshold", 0.75)
 
-    for m in corr.columns:
-        if all(corr.loc[m, s] < threshold for s in selected):
+    for m in cols:
+        if all(abs(corr_np[col_index[m], col_index[s]]) < threshold for s in selected):
             selected.append(m)
 
     max_markets = config.get("max_markets")

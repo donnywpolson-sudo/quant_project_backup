@@ -16,13 +16,14 @@ all_markets:
   - 6E
   - 6J
 
-# Leave empty = auto-select via correlation filtering
-markets: []
+# Phase 1: use a single market for fast iteration
+markets:
+  - ES
 
-# Correlation filtering
-use_correlation_filter: true
+# Disable correlation filtering (not needed for 1 market)
+use_correlation_filter: false
 correlation_threshold: 0.75
-max_markets: 5
+max_markets: 1
 
 # =========================
 # TIME RANGE
@@ -31,16 +32,17 @@ max_markets: 5
 data_start_year: 2010
 data_end_year: 2026
 
-start_year: 2018
+# Minimal range for 1 split
+start_year: 2022
 end_year: 2023
 
 # =========================
 # WALKFORWARD SETTINGS
 # =========================
 
-training_years: 3
+training_years: 1
 walkforward_years: 1
-rolling: true   # enable rolling windows
+rolling: true
 
 # =========================
 # PERFORMANCE

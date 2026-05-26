@@ -1,0 +1,2938 @@
+
+================================================================================
+FILE: aggregate_metrics.py
+================================================================================
+
+"""
+aggregate_metrics.py
+Professional performance metrics for prop firm review.
+Outputs JSON reports per market and across all markets.
+Now robust to missing columns and prints debug info.
+"""
+import json
+import polars as pl
+import numpy as np
+from pathlib import Path
+import sys
+import warnings
+
+# Suppress the harmless divide-by-zero warning in correlation (when stddev=0)
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+
+ARTIFACTS_ROOT = Path("artifacts")
+OUTPUT_DIR = ARTIFACTS_ROOT / "aggregated"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+ANNUAL_FACTOR = 66528
+RISK_FREE_RATE = 0.0
+
+def compute_pro_metrics(pnl_series: pl.Series, positions_series: pl.Series = None,
+                        benchmark_series: pl.Series = None) -> dict:
+    """
+    Compute a full set of professional trading metrics.
+    """
+    pnl = pnl_series.to_numpy().astype(np.float64)
+    total_pnl = float(pnl.sum())
+    total_return = total_pnl / (np.abs(pnl).mean() + 1e-9) * 100
+
+    avg_pnl = float(pnl.mean())
+    std_pnl = float(pnl.std())
+    if std_pnl > 0:
+        sharpe = (avg_pnl / std_pnl) * np.sqrt(ANNUAL_FACTOR)
+    else:
+        sharpe = 0.0
+
+    downside = pnl[pnl < 0]
+    if len(downside) > 0:
+        downside_std = downside.std()
+        sortino = (avg_pnl / (downside_std + 1e-9)) * np.sqrt(ANNUAL_FACTOR)
+    else:
+        sortino = np.inf if avg_pnl > 0 else 0.0
+
+    cum_pnl = np.cumsum(pnl)
+    running_max = np.maximum.accumulate(cum_pnl)
+    drawdown = cum_pnl - running_max
+    max_drawdown = float(drawdown.min())
+
+    annualized_return = avg_pnl * ANNUAL_FACTOR
+    calmar = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0.0
+
+    trades = 0
+    win_rate = 0.0
+    avg_win = 0.0
+    avg_loss = 0.0
+    profit_factor = 0.0
+    avg_holding_bars = 0.0
+    turnover = 0.0
+
+    if positions_series is not None and len(positions_series) > 0:
+        positions = positions_series.to_numpy()
+        pos_changes = np.diff(positions, prepend=0)
+        entry_idx = np.where(pos_changes != 0)[0]
+        trades = len(entry_idx)
+        
+        if trades > 1:
+            holding_bars = np.diff(entry_idx)
+            avg_holding_bars = float(holding_bars.mean())
+        
+        # Trade-level PnL using cumulative sums
+        cum_pnl_arr = cum_pnl
+        trade_pnl = []
+        current_pos = 0
+        entry_bar = 0
+        for i in range(len(pnl)):
+            if positions[i] != current_pos:
+                if current_pos != 0:
+                    trade_pnl.append(cum_pnl_arr[i] - cum_pnl_arr[entry_bar])
+                current_pos = positions[i]
+                entry_bar = i
+        if current_pos != 0:
+            trade_pnl.append(cum_pnl_arr[-1] - cum_pnl_arr[entry_bar])
+        
+        trade_pnl = np.array(trade_pnl)
+        if len(trade_pnl) > 0:
+            gains = trade_pnl[trade_pnl > 0]
+            losses = trade_pnl[trade_pnl < 0]
+            win_rate = len(gains) / len(trade_pnl)
+            avg_win = gains.mean() if len(gains) > 0 else 0.0
+            avg_loss = losses.mean() if len(losses) > 0 else 0.0
+            profit_factor = gains.sum() / abs(losses.sum()) if losses.sum() != 0 else np.inf
+        
+        turnover = float(np.abs(positions).sum() / (len(positions) + 1))
+
+    benchmark_sharpe = None
+    benchmark_maxdd = None
+    correlation_with_benchmark = None
+    if benchmark_series is not None:
+        bench = benchmark_series.to_numpy()
+        bench_avg = bench.mean()
+        bench_std = bench.std()
+        if bench_std > 0:
+            benchmark_sharpe = (bench_avg / bench_std) * np.sqrt(ANNUAL_FACTOR)
+        else:
+            benchmark_sharpe = 0.0
+        bench_cum = np.cumsum(bench)
+        bench_max = np.maximum.accumulate(bench_cum)
+        benchmark_maxdd = float((bench_cum - bench_max).min())
+        if len(pnl) == len(bench):
+            correlation_with_benchmark = float(np.corrcoef(pnl, bench)[0, 1])
+
+    return {
+        "total_pnl": round(total_pnl, 4),
+        "total_return_percent": round(total_return, 2),
+        "sharpe_annualized": round(sharpe, 3),
+        "sortino_annualized": round(sortino if np.isfinite(sortino) else 0.0, 3),
+        "calmar_ratio": round(calmar, 3),
+        "max_drawdown": round(max_drawdown, 4),
+        "win_rate": round(win_rate, 4),
+        "profit_factor": round(profit_factor, 4) if np.isfinite(profit_factor) else "inf",
+        "avg_win": round(avg_win, 6),
+        "avg_loss": round(avg_loss, 6),
+        "ratio_avg_win_loss": round(avg_win / abs(avg_loss), 3) if avg_loss != 0 else 0.0,
+        "number_of_trades": trades,
+        "avg_holding_bars": round(avg_holding_bars, 1),
+        "turnover": round(turnover, 4),
+        "benchmark_sharpe": round(benchmark_sharpe, 3) if benchmark_sharpe is not None else None,
+        "benchmark_max_drawdown": round(benchmark_maxdd, 4) if benchmark_maxdd is not None else None,
+        "correlation_with_benchmark": round(correlation_with_benchmark, 4) if correlation_with_benchmark is not None else None,
+    }
+
+def load_all_backtests() -> dict:
+    """Returns dict: market -> list of (year, df) pairs, with only essential columns."""
+    results_by_market = {}
+    essential_cols = ["pnl", "position", "benchmark_pnl"]  # ts_event is mandatory separately
+    
+    for parquet_file in ARTIFACTS_ROOT.glob("*/*/backtest_results.parquet"):
+        parts = parquet_file.parts
+        if len(parts) >= 3:
+            market = parts[1]
+            year = parts[2]
+            try:
+                df = pl.read_parquet(parquet_file)
+                # Debug: print columns
+                print(f"Columns in {market}/{year}: {df.columns[:10]}...")
+                
+                # Ensure ts_event exists
+                if "ts_event" not in df.columns:
+                    print(f"Warning: {parquet_file} missing 'ts_event', skipping.")
+                    continue
+                
+                # Select only columns that exist
+                cols_to_keep = ["ts_event"]
+                for col in essential_cols:
+                    if col in df.columns:
+                        cols_to_keep.append(col)
+                    else:
+                        print(f"Warning: {market}/{year} missing column '{col}'")
+                
+                # Remove duplicates (though none should exist)
+                cols_to_keep = list(dict.fromkeys(cols_to_keep))
+                
+                # If pnl is missing, skip this file (cannot compute metrics)
+                if "pnl" not in cols_to_keep:
+                    print(f"Warning: {market}/{year} has no 'pnl' column, skipping.")
+                    continue
+                
+                df = df.select(cols_to_keep).sort("ts_event")
+                results_by_market.setdefault(market, []).append((year, df))
+                print(f"Loaded {market}/{year}: {df.height} rows, columns: {df.columns}")
+            except Exception as e:
+                print(f"Error loading {parquet_file}: {e}")
+    return results_by_market
+
+def aggregate_market(market: str, dfs: list) -> pl.DataFrame:
+    """
+    Concatenate all DataFrames for a market, selecting only common columns.
+    Since all dataframes now have same essential columns, concat works.
+    """
+    combined = pl.concat([df for _, df in dfs])
+    return combined.sort("ts_event")
+
+def compute_year_breakdown(market: str, year_dfs: list) -> list:
+    """Compute per‑year metrics for this market."""
+    breakdown = []
+    for year, df in year_dfs:
+        # df always has pnl (ensured in load)
+        pnl = df["pnl"]
+        positions = df["position"] if "position" in df.columns else None
+        bench = df["benchmark_pnl"] if "benchmark_pnl" in df.columns else None
+        metrics = compute_pro_metrics(pnl, positions, bench)
+        metrics["year"] = year
+        breakdown.append(metrics)
+    return breakdown
+
+def save_json(data, path):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def main():
+    results = load_all_backtests()
+    if not results:
+        print("No backtest results found under artifacts/. Run the pipeline first.")
+        sys.exit(0)
+
+    all_pnl_series = []
+
+    for market, year_dfs in results.items():
+        print(f"\n--- Aggregating {market} ---")
+        combined_df = aggregate_market(market, year_dfs)
+        if combined_df.is_empty():
+            print(f"  No data for {market}, skipping.")
+            continue
+            
+        pnl_series = combined_df["pnl"]
+        positions_series = combined_df["position"] if "position" in combined_df.columns else None
+        bench_series = combined_df["benchmark_pnl"] if "benchmark_pnl" in combined_df.columns else None
+
+        market_metrics = compute_pro_metrics(pnl_series, positions_series, bench_series)
+        market_metrics["market"] = market
+        market_metrics["num_years"] = len(year_dfs)
+        market_metrics["total_rows"] = combined_df.height
+        market_metrics["years_breakdown"] = compute_year_breakdown(market, year_dfs)
+
+        out_file = OUTPUT_DIR / f"{market}_metrics.json"
+        save_json(market_metrics, out_file)
+        print(f"Saved {out_file}")
+        print(f"  Sharpe: {market_metrics['sharpe_annualized']} | Total PnL: {market_metrics['total_pnl']} | Trades: {market_metrics['number_of_trades']}")
+
+        all_pnl_series.append(pnl_series)
+
+    if len(all_pnl_series) > 1:
+        # Build combined series across markets by aligning ts_event
+        combined_across = None
+        for market, year_dfs in results.items():
+            df = aggregate_market(market, year_dfs).select(["ts_event", "pnl"])
+            if combined_across is None:
+                combined_across = df
+            else:
+                combined_across = combined_across.join(df, on="ts_event", how="outer", suffix=f"_{market}")
+        pnl_cols = [c for c in combined_across.columns if c == "pnl" or c.startswith("pnl_")]
+        total_pnl_series = combined_across.with_columns(
+            sum(pl.col(c).fill_null(0) for c in pnl_cols).alias("total_pnl")
+        )["total_pnl"]
+        
+        total_metrics = compute_pro_metrics(total_pnl_series, positions_series=None, benchmark_series=None)
+        total_metrics["description"] = "Sum of PnL across all markets (equal capital allocation, no correlation adjustment)"
+        total_metrics["markets_included"] = list(results.keys())
+        out_all = OUTPUT_DIR / "all_markets_combined.json"
+        save_json(total_metrics, out_all)
+        print(f"\nSaved across-markets report: {out_all}")  # fixed hyphen
+        print(f"  Combined Sharpe: {total_metrics['sharpe_annualized']} | Total PnL: {total_metrics['total_pnl']}")
+    else:
+        print("\nOnly one market found. No across-markets aggregation performed.")  # fixed hyphen
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: config/baseline_features.yaml
+================================================================================
+
+# config/baseline_features.yaml
+baseline_features:
+  - feature_ret_1
+  - feature_ret_5
+  - feature_ret_10
+  - feature_ret_20
+  - feature_ma_5
+  - feature_ma_20
+  - feature_ma_50
+  - feature_dist_ma_20
+  - feature_dist_ma_50
+  - feature_ma_slope_20
+  - feature_price_z_20
+  - feature_price_z_50
+  - feature_high_low_range_norm
+  - feature_true_range
+  - feature_atr_14
+  - feature_realized_vol_5
+  - feature_realized_vol_20
+  - feature_ewma_vol_20
+  - feature_price_momentum_5
+  - feature_price_momentum_10
+  - feature_mom_z_5
+  - feature_mom_z_10
+  - feature_rsi_14
+  - feature_macd
+  - feature_macd_signal
+  - feature_stoch_k
+  - feature_log_volume
+  - feature_volume_z_20
+  - feature_obv
+  - feature_signed_bar_strength
+  - feature_volume_price_divergence
+  - feature_spread_proxy
+  - feature_session_pos
+  - feature_time_of_day_bucket
+  - feature_1h_bias
+  - feature_session_volatility
+  - feature_pair_prod_template
+  - feature_ratio_template
+  - feature_pca_comp_1
+  - feature_pca_comp_2
+
+
+================================================================================
+FILE: config/markets/CL.yaml
+================================================================================
+
+contract_symbol: "CL"
+exchange_timezone: "America/New_York"
+
+session_start_local: "17:00"
+session_end_local: "16:00"
+
+roll_windows: [5, 10, 20, 50]
+roll_windows_1h: [2, 4, 6, 12]
+roll_windows_daily: [5, 10, 20]
+
+regime_high_thresh: 0.7
+regime_low_thresh: 0.4
+
+htf_trend_windows: [5, 10, 20]
+htf_volatility_windows: [5, 10, 20]
+
+slippage_k: 0.002
+vol_penalty: 0.005
+commission_per_trade: 0.00002
+max_leverage: 2.0
+target_vol: 0.015
+
+max_position_size: 30
+max_notional_usd: 750_000
+
+
+================================================================================
+FILE: config/markets/ES.yaml
+================================================================================
+
+contract_symbol: "ES"
+exchange_timezone: "America/New_York"
+
+session_start_local: "17:00"
+session_end_local: "16:00"
+
+roll_windows: [5, 10, 20, 50]
+roll_windows_1h: [2, 4, 6, 12]
+roll_windows_daily: [5, 10, 20]
+
+regime_high_thresh: 0.6
+regime_low_thresh: 0.4
+
+htf_trend_windows: [5, 10, 20]
+htf_volatility_windows: [5, 10, 20]
+
+slippage_k: 0.0005
+vol_penalty: 0.002
+commission_per_trade: 0.00001
+max_leverage: 3.0
+target_vol: 0.01
+
+max_position_size: 50
+max_notional_usd: 1_000_000
+
+
+================================================================================
+FILE: config/markets/ZB.yaml
+================================================================================
+
+contract_symbol: "ZB"
+exchange_timezone: "America/New_York"
+
+session_start_local: "17:00"
+session_end_local: "16:00"
+
+roll_windows: [10, 20, 50]
+roll_windows_1h: [2, 4, 8]
+roll_windows_daily: [5, 10, 20]
+
+regime_high_thresh: 0.5
+regime_low_thresh: 0.3
+
+htf_trend_windows: [10, 20, 30]
+htf_volatility_windows: [10, 20]
+
+slippage_k: 0.0002
+vol_penalty: 0.001
+commission_per_trade: 0.00001
+max_leverage: 2.5
+target_vol: 0.008
+
+max_position_size: 20
+max_notional_usd: 2_000_000
+
+
+================================================================================
+FILE: config.py
+================================================================================
+
+# config.py
+from datetime import time
+from types import SimpleNamespace
+
+config = SimpleNamespace()
+
+# Paths
+config.DATA_GLOB = "data/futures/*.parquet"
+config.MANIFEST_PATH = "artifacts/manifest.json"
+config.BASELINE_FEATURES_FILE = "config/baseline_features.yaml"
+config.BASELINE_FEATURES_PERSIST_PATH = "artifacts/baseline_feature_matrix.parquet"
+config.TRADES_OUT = "artifacts/trades.csv"
+config.LOG_DIR = "logs/"
+
+# Memory & determinism
+config.RAM_CAP_BYTES = 14 * 1024**3
+config.RSS_STOP_BYTES = 13.5 * 1024**3
+config.ROWS_PER_CHUNK_MAX = 5_000_000
+config.MEMORY_SAFETY_MARGIN = 0.95
+
+# Time & session
+config.TIMEZONE = "America/New_York"
+config.SESSION_START_LOCAL = time(18, 0)
+config.SESSION_END_LOCAL = time(16, 0)
+config.SESSION_BREAK_START_LOCAL = time(17, 0)
+config.SESSION_BREAK_END_LOCAL = time(18, 0)
+config.RESAMPLE_FREQUENCIES = ["5m", "1h", "1d"]
+config.DROP_INCOMPLETE_ROWS = True
+
+# Feature windows
+config.ROLL_WINDOWS = [5, 10, 20, 50]
+config.ROLL_WINDOWS_1H = [2, 4, 6, 12]
+config.ROLL_WINDOWS_DAILY = [5, 10, 20]
+config.ROLL_WINDOW_MIN_ROWS = 20          # <--- ADDED (used in baseline.py)
+
+# Feature expansion
+config.FEATURE_TRANSFORMS = ["lags","ratios","z_scores","pairwise_products_limited","cross_timeframe_ratios"]
+config.MAX_PAIRWISE_INTERACTIONS = 500
+config.MAX_CROSS_TIMEFRAME_INTERACTIONS = 200
+
+# HTF context
+config.HTF_TREND_WINDOWS = [5, 10, 20]
+config.HTF_VOLATILITY_WINDOWS = [5, 10, 20]
+config.HTF_ALIGNMENT_FILTER = True
+config.HTF_TREND_THRESHOLD = 0.1
+
+# Regime
+config.VOL_MEDIAN_WINDOW = 20
+config.VOL_SMOOTH_WINDOW = 5
+config.REGIME_HIGH_THRESH = 0.6
+config.REGIME_LOW_THRESH = 0.4
+config.REGIME_MISSING_DEFAULT = 0.0
+
+# Target
+config.TARGET_5M_HORIZON = 1
+config.TARGET_SCALE_FACTOR = 100.0
+
+# Discovery
+config.DISCOVERY_WINDOW_DAYS = 60
+config.BOOTSTRAP_FOLDS = 30
+config.EXTRA_TREES_PARAMS = {"random_state":42, "n_jobs":1, "n_estimators":100,
+                             "max_depth":12, "max_features":0.3, "bootstrap":False}
+config.SELECTION_FREQ_THRESHOLD = 0.75
+config.SIGN_CONSISTENCY_THRESHOLD = 0.8
+config.CUMULATIVE_IMPORTANCE_THRESHOLD = 0.95
+config.MIN_SELECTED_FEATURES = 10
+config.MAX_SELECTED_FEATURES = 1000
+
+# Walkforward & model
+config.WF_TRAIN_DAYS = 60
+config.WF_TEST_DAYS = 1
+config.WF_STEP_DAYS = 1
+config.RIDGE_PARAMS = {"alpha":1.0, "solver":"cholesky", "fit_intercept":True, "random_state":42}
+config.MODEL_TYPE = "Ridge"
+config.PROBABILITY_SMOOTHING_ALPHA = 0.1
+config.CORR_THRESHOLD = 0.95
+config.WF_PARALLEL_FOLDS = 1
+
+# Execution
+config.EXECUTE_AT = "open[t+1]"
+config.SLIPPAGE_K = 0.001
+config.VOL_PENALTY = 0.005
+config.COMMISSION_PER_TRADE = 0.00002
+config.TARGET_VOL = 0.01
+config.MAX_LEVERAGE = 3.0
+config.MAX_POS_CHANGE_PER_MIN = 0.1
+config.FLAT_BEFORE_CLOSE_MINUTES = 5
+config.HTF_TREND_ALIGNMENT = True
+config.HTF_VOL_SCALING = True
+config.HTF_VOL_WINDOW = 10
+config.REMOVE_PREDICTION_BIAS = False
+
+# Misc
+config.SEED = 42
+config.CLIP_MIN = -10.0
+config.CLIP_MAX = 10.0
+config.EPS = 1e-9
+config.REPLACE_INF_NAN_WITH = 0.0
+config.ROW_GROUP_SIZE = 65536
+config.MEMORY_LOG_ENABLED = True
+
+# Market config paths
+config.MARKET_CONFIGS = {
+    "ES": "config/markets/ES.yaml",
+    "CL": "config/markets/CL.yaml",
+    "ZB": "config/markets/ZB.yaml",
+}
+
+
+================================================================================
+FILE: config.yaml
+================================================================================
+
+# =========================
+# MARKET SELECTION
+# =========================
+
+all_markets:
+  - ES
+  - NQ
+  - YM
+  - RTY
+  - CL
+  - GC
+  - SI
+  - HG
+  - ZN
+  - ZB
+  - 6E
+  - 6J
+
+# Phase 1: use a single market for fast iteration
+markets:
+  - ES
+
+# Disable correlation filtering (not needed for 1 market)
+use_correlation_filter: false
+correlation_threshold: 0.75
+max_markets: 1
+
+# =========================
+# TIME RANGE
+# =========================
+
+data_start_year: 2010
+data_end_year: 2026
+
+# Minimal range for 1 split
+start_year: 2022
+end_year: 2023
+
+# =========================
+# WALKFORWARD SETTINGS
+# =========================
+
+training_years: 1
+walkforward_years: 1
+rolling: true
+
+# =========================
+# PERFORMANCE
+# =========================
+
+max_files: 20
+skip_completed: true
+
+
+================================================================================
+FILE: quant/__init__.py
+================================================================================
+
+
+
+
+================================================================================
+FILE: quant/align.py
+================================================================================
+
+"""
+src/align.py
+Align 5‑min, 1‑hour and Daily streams without lookahead.
+Uses asof join for 1h and asof join for daily (backward).
+Now includes daily_vol_5 from the daily stream.
+"""
+import polars as pl
+import logging
+from config import config
+
+logger = logging.getLogger(__name__)
+
+
+def align_htf_streams(df_5min: pl.DataFrame, df_1h: pl.DataFrame, df_daily: pl.DataFrame) -> pl.DataFrame:
+    """
+    For each 5‑min bar, add columns from the most recent 1h bar (closed <= 5min timestamp)
+    and the most recent daily bar (closed before the 5min timestamp).
+    Returns a single DataFrame with all 5min columns plus prefixed HTF columns.
+    """
+    # Ensure sorted; guard against empty HTF inputs
+    df_5min = df_5min.sort("ts_event")
+    if df_1h is None or df_1h.is_empty() or "ts_event" not in df_1h.columns:
+        df_1h = None
+    else:
+        df_1h = df_1h.sort("ts_event")
+    if df_daily is None or df_daily.is_empty() or "ts_event" not in df_daily.columns:
+        df_daily = None
+    else:
+        df_daily = df_daily.sort("ts_event")
+
+    # ---- 1. Join 1h using asof (backward) ----
+    # Keep the original 1h timestamp as an explicit column so downstream
+    # logic can reference the 1h bar boundary (no ambiguity with the 5m ts_event).
+    if df_1h is not None:
+        # keep the original ts_event (for join) and also expose the 1h timestamp
+        df_1h_renamed = df_1h.select([
+        pl.col("ts_event"),
+        pl.col("ts_event").alias("1h_ts_event"),
+        pl.col("open").alias("1h_open"),
+        pl.col("high").alias("1h_high"),
+        pl.col("low").alias("1h_low"),
+        pl.col("close").alias("1h_close"),
+        pl.col("volume").alias("1h_volume"),
+    ])
+        df_aligned = df_5min.join_asof(
+            df_1h_renamed,
+            on="ts_event",
+            strategy="backward"
+        )
+    else:
+        df_aligned = df_5min
+
+    # ---- 2. Join daily using asof (backward) – no future leakage ----
+    if df_daily is not None:
+        # keep original ts_event (for asof join) and expose daily_ts_event
+        df_daily_renamed = df_daily.select([
+        pl.col("ts_event"),
+        pl.col("ts_event").alias("daily_ts_event"),
+        pl.col("open").alias("daily_open"),
+        pl.col("high").alias("daily_high"),
+        pl.col("low").alias("daily_low"),
+        pl.col("close").alias("daily_close"),
+        pl.col("volume").alias("daily_volume"),
+        pl.col("daily_vol_5").alias("daily_vol_5"),
+    ])
+        df_aligned = df_aligned.join_asof(
+            df_daily_renamed,
+            on="ts_event",
+            strategy="backward"
+        )
+        # Ensure daily volatility is forward-filled so early bars inherit previous daily stats
+        if "daily_vol_5" in df_aligned.columns:
+            df_aligned = df_aligned.with_columns(
+                pl.col("daily_vol_5").fill_null(strategy="forward").fill_nan(0.0).fill_null(0.0)
+            )
+
+    # No forward fill – asof join already gives last known daily bar
+    return df_aligned
+
+
+================================================================================
+FILE: quant/analytics.py
+================================================================================
+
+"""
+src/analytics.py
+Calculates performance metrics from walk-forward simulation output.
+Uses the 'pnl' column from backtest_results.parquet (produced by src.walkforward).
+Also computes correlation between predictions and actual returns if available,
+and compares against a naive benchmark column 'benchmark_pnl' if present.
+"""
+import sys
+import polars as pl
+import numpy as np
+
+def calculate_metrics(file_path: str):
+    """
+    Reads a Parquet file (expected to have columns: pnl, position, prediction, target_5m)
+    and prints key performance statistics.
+    """
+    try:
+        df = pl.read_parquet(file_path)
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
+
+    # Required column: pnl (from execution simulation)
+    if "pnl" not in df.columns:
+        print("No 'pnl' column found. Ensure backtest_results.parquet contains execution output.")
+        return
+
+    pnl = df["pnl"].to_numpy()
+    total_pnl = pnl.sum()
+    avg_pnl = pnl.mean()
+    std_pnl = pnl.std()
+    
+    # Annualized Sharpe (assuming 5-min bars, 264 bars per session, 252 trading days)
+    if std_pnl > 0:
+        sharpe = (avg_pnl / std_pnl) * np.sqrt(252 * 264)
+    else:
+        sharpe = 0.0
+
+    # Cumulative PnL and max drawdown
+    cum_pnl = np.cumsum(pnl)
+    running_max = np.maximum.accumulate(cum_pnl)
+    drawdown = cum_pnl - running_max
+    max_drawdown = drawdown.min()
+
+    # Turnover: sum of absolute position changes divided by average position (if any)
+    if "position" in df.columns:
+        position_changes = df["position"].diff().abs().sum()
+        avg_position = df["position"].abs().mean()
+        turnover = position_changes / avg_position if avg_position > 0 else 0.0
+    else:
+        turnover = 0.0
+
+    # Optional: correlation between prediction and target_5m (if available)
+    corr = 0.0
+    if "prediction" in df.columns and "target_5m" in df.columns:
+        pred = df["prediction"].to_numpy()
+        target = df["target_5m"].to_numpy()
+        mask = ~(np.isnan(pred) | np.isnan(target))
+        if mask.sum() > 1:
+            corr = np.corrcoef(pred[mask], target[mask])[0, 1]
+
+    # Benchmark comparison if benchmark_pnl exists
+    benchmark_sharpe = None
+    benchmark_maxdd = None
+    if "benchmark_pnl" in df.columns:
+        bench_pnl = df["benchmark_pnl"].to_numpy()
+        bench_avg = bench_pnl.mean()
+        bench_std = bench_pnl.std()
+        if bench_std > 0:
+            benchmark_sharpe = (bench_avg / bench_std) * np.sqrt(252 * 264)
+        else:
+            benchmark_sharpe = 0.0
+        bench_cum = np.cumsum(bench_pnl)
+        bench_running_max = np.maximum.accumulate(bench_cum)
+        benchmark_maxdd = (bench_cum - bench_running_max).min()
+
+    # Print report
+    print("\n" + "="*50)
+    print("            PERFORMANCE REPORT")
+    print("="*50)
+    print(f"Total PnL:            {total_pnl:>12.4f}")
+    print(f"Avg PnL per bar:      {avg_pnl:>12.6f}")
+    print(f"Std PnL per bar:      {std_pnl:>12.6f}")
+    print(f"Sharpe (ann.):        {sharpe:>12.3f}")
+    print(f"Max Drawdown:         {max_drawdown:>12.4f}")
+    print(f"Turnover:             {turnover:>12.4f}")
+    print(f"Prediction-Target Corr:{corr:>12.4f}")
+    if benchmark_sharpe is not None:
+        print(f"Benchmark Sharpe:     {benchmark_sharpe:>12.3f}")
+        print(f"Benchmark MaxDD:      {benchmark_maxdd:>12.4f}")
+    print("="*50)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python -m src.analytics <path_to_backtest_results.parquet>")
+        sys.exit(1)
+    calculate_metrics(sys.argv[1])
+
+
+================================================================================
+FILE: quant/cli.py
+================================================================================
+
+"""
+src/cli.py
+Entrypoint for the Deterministic Quant Pipeline.
+Now with global seeding for reproducibility.
+"""
+import argparse
+import logging
+import os
+import random
+import numpy as np
+import psutil
+from pathlib import Path
+import polars as pl
+import json
+
+from config import config
+from quant.ingest import load_and_clean_data
+from quant.features.engine import generate_features
+from quant.discovery import run_feature_discovery
+from quant.walkforward import run_walkforward
+from quant.io.canonical_parquet import write_canonical_parquet
+from quant.analytics import calculate_metrics
+
+# Set deterministic seeds
+random.seed(config.SEED)
+np.random.seed(config.SEED)
+
+logger = logging.getLogger(__name__)
+
+def check_memory_safety():
+    try:
+        mem = psutil.Process().memory_info().rss
+        if mem > config.RAM_CAP_BYTES:
+            raise MemoryError(f"RSS {mem/(1024**3):.2f}GB > cap {config.RAM_CAP_BYTES/(1024**3):.2f}GB")
+    except ImportError:
+        pass
+
+def prune_features_by_manifest(df: pl.DataFrame, manifest_path: str, target_col: str) -> pl.DataFrame:
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+    selected = manifest['feature_names']
+    essential = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
+    non_feature = [c for c in df.columns 
+                   if not c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_", "1h_", "daily_"))
+                   and c not in essential]
+    keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
+    keep = list(dict.fromkeys(keep))
+    return df.select(keep)
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    discover_parser = subparsers.add_parser("discover")
+    discover_parser.add_argument("--data", required=True)
+    discover_parser.add_argument("--out", default="artifacts/manifest.json")
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--data", required=True)
+    run_parser.add_argument("--manifest", default="artifacts/manifest.json")
+    run_parser.add_argument("--out", required=True)
+    pipeline_parser = subparsers.add_parser("pipeline")
+    pipeline_parser.add_argument("--data", required=True)
+    pipeline_parser.add_argument("--out", default="artifacts/manifest_mvp.json")
+    pipeline_parser.add_argument("--prod-mode", action="store_true")
+    pipeline_parser.add_argument("--no-discovery", action="store_true", help="Only persist baseline, skip discovery run")
+    pipeline_parser.add_argument("--top-k", type=int, default=20)
+    pipeline_parser.add_argument("--bootstrap-folds", type=int, default=1, help="Number of bootstrap folds for discovery")
+
+    args = parser.parse_args()
+    check_memory_safety()
+
+    if args.command in ("discover", "run"):
+        from quant.market_config import detect_symbol_from_path, load_market_config
+        symbol = detect_symbol_from_path(args.data)
+        load_market_config(symbol)
+
+    if args.command == "pipeline":
+        from quant.market_config import detect_symbol_from_path, load_market_config
+        symbol = detect_symbol_from_path(args.data)
+        load_market_config(symbol)
+        from quant.pipeline import run_pipeline
+        print("[CLI] Running MVP pipeline...", flush=True)
+        manifest = run_pipeline(args.data, out_manifest=args.out, prod_mode=args.prod_mode,
+                    top_k=args.top_k, discovery_run=(not args.no_discovery),
+                    bootstrap_folds=args.bootstrap_folds)
+        print(f"[CLI] Pipeline completed. Manifest: {args.out}", flush=True)
+        return
+
+    if args.command == "discover":
+        print("\n[CLI] === PHASE 1: FEATURE DISCOVERY ===", flush=True)
+        cache_dir = Path(args.out).parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        aligned_cache = cache_dir / "aligned_data.parquet"
+        
+        print("[CLI] Loading and cleaning data...", flush=True)
+        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
+        print(f"[CLI] Data loaded. Rows: {df_aligned.height}", flush=True)
+        
+        print("[CLI] Generating feature matrix...", flush=True)
+        df_features = generate_features(df_aligned)
+        if df_features.estimated_size() > config.RAM_CAP_BYTES:
+            raise MemoryError("Feature matrix exceeds RAM cap.")
+        
+        feature_cache = cache_dir / "full_feature_matrix.parquet"
+        write_canonical_parquet(df_features, str(feature_cache))
+        logger.info(f"Full feature matrix cached to {feature_cache}")
+        print(f"[CLI] Feature matrix saved to {feature_cache}", flush=True)
+        
+        print("[CLI] Running feature discovery...", flush=True)
+        run_feature_discovery(str(feature_cache), args.out)
+
+    elif args.command == "run":
+        print("\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===", flush=True)
+        # Prefer the 4-hour target for the MVP objective; fall back to 1h if present.
+        target_col = "target_sign_4h"
+        cache_dir = Path(args.manifest).parent
+        aligned_cache = cache_dir / "aligned_data.parquet"
+        cross_assets = getattr(config, 'CROSS_ASSET_SYMBOLS', [])
+        print("[CLI] Loading aligned data...", flush=True)
+        df_aligned = load_and_clean_data(args.data, 
+                                         cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+                                         cross_asset_symbols=cross_assets)
+        check_memory_safety()
+
+        feature_cache = cache_dir / "full_feature_matrix.parquet"
+        if feature_cache.exists():
+            print(f"[CLI] Loading pre-computed feature matrix from {feature_cache}", flush=True)
+            df_features = pl.read_parquet(feature_cache)
+        else:
+            print("[CLI] No cached feature matrix found; generating features (slower).", flush=True)
+            df_features = generate_features(df_aligned)
+
+        if target_col not in df_features.columns and "target_sign_1h" in df_features.columns:
+            target_col = "target_sign_1h"
+        print(f"[CLI] Using target column: {target_col}", flush=True)
+
+        print("[CLI] Pruning features by manifest...", flush=True)
+        df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+        
+        if target_col not in df_pruned.columns:
+            raise KeyError(f"Target column '{target_col}' missing after pruning. Ensure appropriate targets were generated.")
+        
+        y = df_pruned.select(target_col)
+        X = df_pruned.drop(target_col)
+        
+        excluded_meta = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
+        feature_cols = [c for c in X.columns if c not in excluded_meta]
+        
+        if target_col in feature_cols:
+            raise RuntimeError(f"Target column '{target_col}' still in feature columns! Aborting.")
+        
+        logger.info(f"Walkforward with {len(feature_cols)} features.")
+        print(f"[CLI] Running walkforward with {len(feature_cols)} features...", flush=True)
+        result_df = run_walkforward(X, y, feature_cols, target_col)
+
+        os.makedirs(args.out, exist_ok=True)
+        out_path = os.path.join(args.out, "backtest_results.parquet")
+        result_df.write_parquet(out_path)
+        logger.info(f"Results saved to {out_path}")
+        print(f"[CLI] Results saved to {out_path}", flush=True)
+
+        print("\n" + "="*60)
+        print("FINAL PERFORMANCE METRICS")
+        print("="*60)
+        calculate_metrics(out_path)
+        print("="*60 + "\n")
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: quant/discovery.py
+================================================================================
+
+"""
+src/discovery.py
+Phase 1: Feature discovery using ExtraTrees with bootstrap folds, stability selection,
+memory isolation, and sign consistency filtering.
+Now respects DISCOVERY_WINDOW_DAYS and includes all feature types.
+"""
+import sys
+print("Discovery started. Waiting for folds...", flush=True)
+import os
+import json
+import logging
+import numpy as np
+import polars as pl
+import psutil
+import hashlib
+from datetime import datetime
+from sklearn.ensemble import ExtraTreesRegressor
+from config import config
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+def get_fold_seed(fold_idx: int) -> int:
+    seed_str = f"{config.SEED}_fold_{fold_idx}"
+    return int(hashlib.sha256(seed_str.encode()).hexdigest(), 16) % (2**32)
+
+def check_rss(limit_bytes):
+    return psutil.Process().memory_info().rss > limit_bytes
+
+def run_feature_discovery(data_path: str, manifest_out: str):
+    logger.info("Phase 1: Feature Discovery")
+    df_features = pl.read_parquet(data_path)
+
+    target_col = "target_5m"
+    if target_col not in df_features.columns:
+        raise ValueError(f"Target column {target_col} not found.")
+
+    # --- Limit to last DISCOVERY_WINDOW_DAYS trading days ---
+    df_features = df_features.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.date().alias("date")
+    )
+    unique_dates = sorted(df_features["date"].unique().to_list())
+    if len(unique_dates) > config.DISCOVERY_WINDOW_DAYS:
+        cutoff_date = unique_dates[-config.DISCOVERY_WINDOW_DAYS]
+        df_features = df_features.filter(pl.col("date") >= cutoff_date)
+        logger.info(f"Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days ({cutoff_date} onwards)")
+    df_features = df_features.drop("date")
+
+    # --- Feature columns (all except metadata and target) ---
+    exclude_cols = {
+        "ts_event", "open", "high", "low", "close", "volume",
+        "session_id", target_col, "regime", "benchmark_pnl"
+    }
+    feature_cols = [c for c in df_features.columns if c not in exclude_cols and not c.startswith("_")]
+    feature_cols = [c for c in feature_cols if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)]
+
+    X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+    y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
+
+    logger.info(f"Discovery using {X.shape[0]} rows, {X.shape[1]} features.")
+
+    rss_stop = config.RSS_STOP_BYTES
+    n_folds = config.BOOTSTRAP_FOLDS
+
+    importances_list = []
+    signs_list = []
+
+    for fold_idx in tqdm(range(n_folds), desc="Bootstrap folds", unit="fold"):
+        print(f"Fold {fold_idx+1} started at {datetime.now().strftime('%H:%M:%S')}", flush=True)
+        if check_rss(rss_stop):
+            raise MemoryError(f"RSS stop limit exceeded in fold {fold_idx}")
+        n_samples = X.shape[0]
+        rng = np.random.RandomState(get_fold_seed(fold_idx))
+        indices = rng.choice(n_samples, size=n_samples, replace=True)
+        X_boot = X[indices]
+        y_boot = y[indices]
+        et_params = config.EXTRA_TREES_PARAMS.copy()
+        et_params['random_state'] = get_fold_seed(fold_idx)
+        et = ExtraTreesRegressor(**et_params)
+        et.fit(X_boot, y_boot)
+        importances = dict(zip(feature_cols, et.feature_importances_))
+        signs = {}
+        for i, f in enumerate(feature_cols):
+            with np.errstate(invalid='ignore'):
+                corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
+            if np.isnan(corr):
+                corr = 0.0
+            signs[f] = np.sign(corr)
+        importances_list.append(importances)
+        signs_list.append(signs)
+
+    # Aggregate
+    importances_sum = {f: 0.0 for f in feature_cols}
+    selection_count = {f: 0 for f in feature_cols}
+    n_folds = len(importances_list)
+
+    for imp_dict, sign_dict in zip(importances_list, signs_list):
+        for f, imp in imp_dict.items():
+            importances_sum[f] += imp
+            if imp > 0:
+                selection_count[f] += 1
+
+    majority_sign = {}
+    for f in feature_cols:
+        pos = sum(1 for sd in signs_list if sd.get(f, 0) > 0)
+        neg = n_folds - pos
+        majority_sign[f] = 1 if pos > neg else -1
+    sign_consistency_frac = {}
+    for f in feature_cols:
+        consistent = sum(1 for sd in signs_list if sd.get(f, 0) == majority_sign[f])
+        sign_consistency_frac[f] = consistent / n_folds
+
+    freq = {f: selection_count[f] / n_folds for f in feature_cols}
+    mean_imp = {f: importances_sum[f] / n_folds for f in feature_cols}
+
+    selected = [f for f in feature_cols
+                if freq[f] >= config.SELECTION_FREQ_THRESHOLD
+                and sign_consistency_frac[f] >= config.SIGN_CONSISTENCY_THRESHOLD]
+    selected_sorted = sorted(selected, key=lambda x: mean_imp[x], reverse=True)
+
+    cumsum = 0.0
+    final_selected = []
+    total_imp = sum(mean_imp[f] for f in selected_sorted) if selected_sorted else 1.0
+    for f in selected_sorted:
+        cumsum += mean_imp[f] / total_imp
+        final_selected.append(f)
+        if cumsum >= config.CUMULATIVE_IMPORTANCE_THRESHOLD:
+            break
+
+    # Fallback to ensure MIN_SELECTED_FEATURES
+    if len(final_selected) < config.MIN_SELECTED_FEATURES:
+        if len(selected_sorted) == 0:
+            all_sorted = sorted(mean_imp.items(), key=lambda x: x[1], reverse=True)
+            fallback_features = [f for f, _ in all_sorted[:config.MIN_SELECTED_FEATURES]]
+            final_selected = fallback_features
+        else:
+            needed = config.MIN_SELECTED_FEATURES - len(final_selected)
+            for f in selected_sorted:
+                if f not in final_selected:
+                    final_selected.append(f)
+                    needed -= 1
+                    if needed == 0:
+                        break
+            if needed > 0:
+                for f, _ in sorted(mean_imp.items(), key=lambda x: x[1], reverse=True):
+                    if f not in final_selected:
+                        final_selected.append(f)
+                        needed -= 1
+                        if needed == 0:
+                            break
+
+    logger.info(f"Selected {len(final_selected)} features (min required: {config.MIN_SELECTED_FEATURES}).")
+
+    feature_list_str = json.dumps(sorted(final_selected), sort_keys=True).encode()
+    features_hash = hashlib.sha256(feature_list_str).hexdigest()
+
+    manifest = {
+        "version": "1.0",
+        "feature_names": final_selected,
+        "dtypes": {f: "float32" for f in final_selected},
+        "selection_seed": config.SEED,
+        "selection_date": datetime.utcnow().isoformat() + "Z",
+        "selection_model": "ExtraTreesRegressor",
+        "selection_params": config.EXTRA_TREES_PARAMS,
+        "selected_K": len(final_selected),
+        "cumulative_importance": config.CUMULATIVE_IMPORTANCE_THRESHOLD,
+        "stability_stats": {
+            "min_selection_freq": config.SELECTION_FREQ_THRESHOLD,
+            "sign_consistency": config.SIGN_CONSISTENCY_THRESHOLD,
+            "sign_consistency_observed": {f: round(sign_consistency_frac.get(f, 0), 3) for f in final_selected[:10]}
+        },
+        "baseline_feature_list": [c for c in feature_cols if c.startswith("feature_")][:40],
+        "baseline_features_hash": f"sha256:{features_hash}",
+        "baseline_feature_matrix_path": config.BASELINE_FEATURES_PERSIST_PATH,
+        "serialization_params": {
+            "parquet_version": "2.0",
+            "compression": "snappy",
+            "row_group_size": config.ROW_GROUP_SIZE,
+            "column_ordering": "lexicographic"
+        },
+        "discovery_status": "completed",
+        "folds": [],
+        "htf_features_included": any(c.startswith(("htf_", "cross_", "1h_", "daily_")) for c in feature_cols)
+    }
+    os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
+    with open(manifest_out, "w") as f:
+        json.dump(manifest, f, indent=4)
+    logger.info(f"Manifest saved to {manifest_out}")
+
+
+================================================================================
+FILE: quant/execution/__init__.py
+================================================================================
+
+
+
+
+================================================================================
+FILE: quant/execution/simulator.py
+================================================================================
+
+"""
+src/execution/simulator.py
+Execution simulation: stateful position tracking, volatility scaling,
+transaction costs, leverage limits, and flatten before session close.
+Now with safe fallbacks for missing HTF columns.
+"""
+import polars as pl
+import numpy as np
+from config import config
+
+def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
+    """Classification version: uses 'prediction_prob'. Uses fixed unit sizing and HTF trend bias."""
+    # Always use fixed contract sizing: signal direction is binary, size is constant.
+    signal_expr = pl.when((pl.col("prediction_prob").fill_null(0.5) - 0.5) > 0).then(1.0)
+    signal_expr = signal_expr.when((pl.col("prediction_prob").fill_null(0.5) - 0.5) < 0).then(-1.0).otherwise(0.0)
+
+    # HTF directional bias: daily trend gives a long/short/neutral bias, hourly alignment sharpens it.
+    if config.HTF_TREND_ALIGNMENT:
+        # Prefer supplied htf features, otherwise derive simple biases from 1h/daily OHLC.
+        if "htf_daily_trend_slope_10" in df.columns:
+            daily_bias = pl.when(
+                pl.col("htf_daily_trend_slope_10").abs() >= config.HTF_TREND_THRESHOLD
+            ).then(pl.col("htf_daily_trend_slope_10").sign()).otherwise(0.0)
+        elif "daily_close" in df.columns and "daily_open" in df.columns:
+            daily_bias = pl.when((pl.col("daily_close") - pl.col("daily_open")).abs() >= 0).then(
+                (pl.col("daily_close") - pl.col("daily_open")).sign()
+            ).otherwise(0.0)
+        else:
+            daily_bias = pl.lit(0.0)
+
+        if "htf_hourly_trend_alignment" in df.columns:
+            hourly_align = pl.col("htf_hourly_trend_alignment").sign()
+        elif "1h_close" in df.columns and "1h_open" in df.columns:
+            hourly_align = (pl.col("1h_close") - pl.col("1h_open")).sign()
+        else:
+            hourly_align = pl.lit(0.0)
+
+        # Require agreement between daily bias and hourly alignment
+        daily_bias = pl.when((daily_bias != 0.0) & (hourly_align == daily_bias)).then(daily_bias).otherwise(0.0)
+        target_raw_expr = pl.when((signal_expr == daily_bias) & (daily_bias != 0.0)).then(daily_bias).otherwise(0.0)
+    else:
+        target_raw_expr = signal_expr
+
+    target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
+    target_array = target_series.to_numpy()
+
+    # Volatility column for cost estimation only.
+    if "feature_ewma_vol_20" not in df.columns:
+        ret = (pl.col("close") / pl.col("close").shift(1)).log()
+        vol = ret.rolling_std(window_size=20)
+    else:
+        vol = pl.col("feature_ewma_vol_20")
+    df = df.with_columns(
+        vol.fill_null(strategy="forward").fill_null(1e-6).alias("vol")
+    )
+
+    # Spread proxy
+    if "feature_spread_proxy" in df.columns:
+        spread_expr = pl.col("feature_spread_proxy")
+    else:
+        spread_expr = (pl.col("high") - pl.col("low")) / pl.col("close").clip(config.EPS, None)
+    spread_series = df.select(spread_expr).to_series().fill_nan(0.0).fill_null(0.0)
+    unit_cost_array = (config.COMMISSION_PER_TRADE + config.SLIPPAGE_K * spread_series + config.VOL_PENALTY * df["vol"]).to_numpy()
+
+    # Session flatten mask
+    df = df.with_columns(
+        pl.col("ts_event").rank("ordinal").over("session_id").alias("_session_rank"),
+        pl.col("ts_event").count().over("session_id").alias("_session_len")
+    )
+    last_bars_mask = (df["_session_rank"] > (df["_session_len"] - config.FLAT_BEFORE_CLOSE_MINUTES // 5)).to_numpy()
+
+    # Pre‑compute returns
+    open_next = np.roll(df["open"].to_numpy().astype(np.float64), -1)
+    close_next = np.roll(df["close"].to_numpy().astype(np.float64), -1)
+    open_next[-1] = np.nan
+    close_next[-1] = np.nan
+    ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)
+    ret_exec = np.nan_to_num(ret_exec, nan=0.0)
+
+    n = len(df)
+    positions = np.zeros(n, dtype=np.float32)
+    trade_costs = np.zeros(n, dtype=np.float32)
+    current_pos = 0.0
+    for i in range(n):
+        desired = target_array[i]
+        if last_bars_mask[i]:
+            desired = 0.0
+        delta = np.clip(desired - current_pos, -config.MAX_POS_CHANGE_PER_MIN, config.MAX_POS_CHANGE_PER_MIN)
+        new_pos = current_pos + delta
+        new_pos = np.clip(new_pos, -config.MAX_LEVERAGE, config.MAX_LEVERAGE)
+        cost = abs(new_pos - current_pos) * unit_cost_array[i]
+        trade_costs[i] = cost
+        positions[i] = new_pos
+        current_pos = new_pos
+
+    pnl = positions * ret_exec - trade_costs
+    pnl = np.nan_to_num(pnl, nan=0.0)
+
+    df = df.with_columns([
+        pl.Series("position", positions).cast(pl.Float32),
+        pl.Series("trade_cost", trade_costs).cast(pl.Float32),
+        pl.Series("pnl", pnl).cast(pl.Float32)
+    ]).drop(["_session_rank", "_session_len"])
+    return df
+
+def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
+    raise NotImplementedError("Use simulate_execution_classification for new pipeline.")
+
+
+================================================================================
+FILE: quant/features/__init__.py
+================================================================================
+
+
+
+
+================================================================================
+FILE: quant/features/baseline.py
+================================================================================
+
+"""
+src/features/baseline.py
+Generate baseline features from YAML spec, plus Keltner Channels and Elder's Ray.
+All features are past-only and return float32.
+"""
+import polars as pl
+import yaml
+from config import config
+
+def load_baseline_feature_names() -> list:
+    """Load feature names from baseline_features.yaml"""
+    with open(config.BASELINE_FEATURES_FILE, 'r') as f:
+        data = yaml.safe_load(f)
+    return data['baseline_features']
+
+def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Add all baseline features to the DataFrame.
+    """
+    close = pl.col("close").cast(pl.Float32)
+    high = pl.col("high").cast(pl.Float32)
+    low = pl.col("low").cast(pl.Float32)
+    open_ = pl.col("open").cast(pl.Float32)
+    volume = pl.col("volume").cast(pl.Float32)
+
+    exprs = []
+
+    # 1-4: Log returns at lags 1,5,10,20
+    for lag in [1, 5, 10, 20]:
+        ret = (close / close.shift(lag)).log()
+        exprs.append(ret.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_ret_{lag}"))
+
+    # 5-7: Simple moving averages of close
+    for window in [5, 20, 50]:
+        ma = close.rolling_mean(window_size=window)
+        exprs.append(ma.alias(f"feature_ma_{window}"))
+
+    # 8: dist_ma_20 = (close - MA20)/MA20
+    ma20 = close.rolling_mean(window_size=20)
+    dist_ma20 = (close - ma20) / ma20.clip(config.EPS, None)
+    exprs.append(dist_ma20.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_ma_20"))
+
+    # 9: dist_ma_50
+    ma50 = close.rolling_mean(window_size=50)
+    dist_ma50 = (close - ma50) / ma50.clip(config.EPS, None)
+    exprs.append(dist_ma50.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_ma_50"))
+
+    # 10: ma_slope_20
+    slope20 = (close - close.shift(20)) / 20.0 / ma20.clip(config.EPS, None)
+    exprs.append(slope20.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_ma_slope_20"))
+
+    # 11,12: price_z_20, price_z_50
+    for window in [20, 50]:
+        mean = close.rolling_mean(window_size=window)
+        std = close.rolling_std(window_size=window)
+        z = (close - mean) / std.clip(config.EPS, None)
+        exprs.append(z.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_price_z_{window}"))
+
+    # 13: high_low_range_norm
+    range_norm = (high - low) / pl.max_horizontal(close, config.EPS)
+    exprs.append(range_norm.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_high_low_range_norm"))
+
+    # 14: true_range
+    prev_close = close.shift(1)
+    tr = pl.max_horizontal(
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    )
+    exprs.append(tr.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_true_range"))
+
+    # 15: atr_14
+    atr14 = tr.rolling_mean(window_size=14)
+    exprs.append(atr14.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_atr_14"))
+
+    # 16,17: realized_vol_5, realized_vol_20
+    ret_1 = (close / close.shift(1)).log()
+    for window in [5, 20]:
+        rvol = ret_1.rolling_std(window_size=window)
+        exprs.append(rvol.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_realized_vol_{window}"))
+
+    # 18: ewma_vol_20
+    alpha = 2.0 / (20 + 1)
+    ewma_vol = ret_1.pow(2).ewm_mean(alpha=alpha, adjust=False).sqrt()
+    exprs.append(ewma_vol.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_ewma_vol_20"))
+
+    # 19,20: price_momentum_5, price_momentum_10
+    for window in [5, 10]:
+        mom = (close - close.shift(window)) / close.shift(window).clip(config.EPS, None)
+        exprs.append(mom.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_price_momentum_{window}"))
+
+    # 21,22: mom_z_5, mom_z_10
+    for window in [5, 10]:
+        mom = (close - close.shift(window)) / close.shift(window).clip(config.EPS, None)
+        mean_mom = mom.rolling_mean(window_size=window)
+        std_mom = mom.rolling_std(window_size=window)
+        mom_z = (mom - mean_mom) / std_mom.clip(config.EPS, None)
+        exprs.append(mom_z.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"feature_mom_z_{window}"))
+
+    # 23: rsi_14
+    delta = close.diff()
+    gain = delta.clip(lower_bound=0)
+    loss = (-delta).clip(lower_bound=0)
+    avg_gain = gain.rolling_mean(window_size=14)
+    avg_loss = loss.rolling_mean(window_size=14)
+    rs = avg_gain / avg_loss.clip(config.EPS, None)
+    rsi = 100 - 100 / (1 + rs)
+    exprs.append(rsi.clip(0, 100).alias("feature_rsi_14"))
+
+    # 24: macd
+    ema12 = close.ewm_mean(alpha=2/13, adjust=False)
+    ema26 = close.ewm_mean(alpha=2/27, adjust=False)
+    macd = ema12 - ema26
+    exprs.append(macd.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_macd"))
+
+    # 25: macd_signal
+    signal = macd.ewm_mean(alpha=2/10, adjust=False)
+    exprs.append(signal.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_macd_signal"))
+
+    # 26: stoch_k
+    low14 = low.rolling_min(window_size=14)
+    high14 = high.rolling_max(window_size=14)
+    stoch_k = (close - low14) / (high14 - low14).clip(config.EPS, None) * 100
+    exprs.append(stoch_k.clip(0, 100).alias("feature_stoch_k"))
+
+    # 27: log_volume
+    log_vol = volume.log().fill_null(0.0)
+    exprs.append(log_vol.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_log_volume"))
+
+    # 28: volume_z_20
+    vol_mean = volume.rolling_mean(window_size=20)
+    vol_std = volume.rolling_std(window_size=20)
+    vol_z = (volume - vol_mean) / vol_std.clip(config.EPS, None)
+    exprs.append(vol_z.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_volume_z_20"))
+
+    # 29: obv
+    sign = pl.when(close > close.shift(1)).then(1).when(close < close.shift(1)).then(-1).otherwise(0)
+    obv = (sign * volume).cum_sum()
+    exprs.append(obv.cast(pl.Float32).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_obv"))
+
+    # 30: signed_bar_strength
+    bar_sign = (close - open_).sign()
+    bar_sign = bar_sign.fill_null(strategy="forward")
+    signed_volume = bar_sign * volume
+    signed_strength = signed_volume / volume.clip(config.EPS, None)
+    exprs.append(signed_strength.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_signed_bar_strength"))
+
+    # 31: volume_price_divergence
+    vol_price_div = (volume * ret_1).cast(pl.Float32)
+    exprs.append(vol_price_div.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_volume_price_divergence"))
+
+    # 32: spread_proxy
+    spread_proxy = (high - low) / close.clip(config.EPS, None)
+    exprs.append(spread_proxy.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_spread_proxy"))
+
+    # 33: session_pos
+    session_pos = (pl.col("ts_event").rank("ordinal").over("session_id") - 1) / (pl.col("ts_event").count().over("session_id") - 1)
+    exprs.append(session_pos.fill_nan(0.5).cast(pl.Float32).alias("feature_session_pos"))
+
+    # 34: time_of_day_bucket
+    bucket = pl.when(session_pos < 0.33).then(0.0).when(session_pos < 0.66).then(1.0).otherwise(2.0)
+    exprs.append(bucket.cast(pl.Float32).alias("feature_time_of_day_bucket"))
+
+    # 35: 1h_bias placeholder
+    exprs.append(pl.lit(0.0).alias("feature_1h_bias"))
+
+    # 36: session_volatility
+    session_vol = ret_1.rolling_std(window_size=config.ROLL_WINDOW_MIN_ROWS).over("session_id")
+    exprs.append(session_vol.fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_session_volatility"))
+
+    # 37-40: placeholders
+    exprs.append(pl.lit(0.0).alias("feature_pair_prod_template"))
+    exprs.append(pl.lit(0.0).alias("feature_ratio_template"))
+    exprs.append(pl.lit(0.0).alias("feature_pca_comp_1"))
+    exprs.append(pl.lit(0.0).alias("feature_pca_comp_2"))
+
+    # ---------- ADDITIONAL INDICATORS ----------
+    # Keltner Channels (20-period EMA, 2*ATR bands)
+    close_ema = close.ewm_mean(span=20, adjust=False)
+    atr = atr14  # already computed
+    keltner_upper = close_ema + 2 * atr
+    keltner_lower = close_ema - 2 * atr
+    keltner_width = (keltner_upper - keltner_lower) / close_ema.clip(config.EPS, None)
+    exprs.append(keltner_width.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_keltner_width"))
+    dist_to_upper = (keltner_upper - close) / close.clip(config.EPS, None)
+    dist_to_lower = (close - keltner_lower) / close.clip(config.EPS, None)
+    exprs.append(dist_to_upper.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_to_keltner_upper"))
+    exprs.append(dist_to_lower.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dist_to_keltner_lower"))
+
+    # Elder's Ray: Bull Power = high - EMA(close), Bear Power = low - EMA(close)
+    bull_power = high - close_ema
+    bear_power = low - close_ema
+    exprs.append(bull_power.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_bull_power"))
+    exprs.append(bear_power.clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_bear_power"))
+
+    # Apply all expressions
+    df = df.with_columns(exprs)
+
+    # Clean NaN/Inf and clip
+    feature_cols = [c for c in df.columns if c.startswith("feature_")]
+    for col in feature_cols:
+        df = df.with_columns(
+            pl.col(col).fill_nan(config.REPLACE_INF_NAN_WITH).fill_null(config.REPLACE_INF_NAN_WITH).clip(config.CLIP_MIN, config.CLIP_MAX)
+        )
+    return df
+
+
+================================================================================
+FILE: quant/features/corr_prune.py
+================================================================================
+
+"""
+src/features/corr_prune.py
+Deterministic correlation pruning.
+Implements Section 15: float64 computation, keeps first occurrence, drops subsequent.
+"""
+import logging
+import numpy as np
+import polars as pl
+
+logger = logging.getLogger(__name__)
+
+def correlation_prune(df: pl.DataFrame, feature_cols: list, threshold: float = 0.90) -> list:
+    """
+    Deterministic correlation pruning.
+    CRITICAL: Must be executed strictly on the TRAIN split to prevent look-ahead bias.
+    Uses float64 for computation precision, but keeps data intact for float32 pipelines.
+    """
+    if df.height == 0 or len(feature_cols) == 0:
+        return feature_cols
+
+    logger.info(f"Running correlation pruning on {len(feature_cols)} features (threshold={threshold})...")
+    
+    # Section 15: Upcast to float64 exclusively for the matrix computation
+    X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float64)
+
+    # rowvar=False ensures columns are treated as variables
+    with np.errstate(divide='ignore', invalid='ignore'):
+        corr = np.corrcoef(X, rowvar=False)
+
+    keep = []
+    dropped = set()
+
+    for i, f in enumerate(feature_cols):
+        if f in dropped:
+            continue
+
+        keep.append(f)
+
+        # Check all subsequent features against the kept feature
+        for j in range(i + 1, len(feature_cols)):
+            if feature_cols[j] in dropped:
+                continue
+            
+            val = corr[i, j]
+            # Drop if correlation exceeds threshold (ignoring NaNs from zero-variance columns)
+            if not np.isnan(val) and abs(val) > threshold:
+                dropped.add(feature_cols[j])
+
+    logger.info(f"Correlation pruning dropped {len(dropped)} features. Kept {len(keep)} features.")
+    return keep
+
+
+================================================================================
+FILE: quant/features/engine.py
+================================================================================
+
+"""
+src/features/engine.py
+Orchestrates feature generation. Excludes raw 1h_ and daily_ columns from feature set.
+"""
+import polars as pl
+import logging
+from config import config
+from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
+from quant.features.expansion import expand_features, add_cross_timeframe_interactions
+from quant.features.htf_context import add_htf_context_features
+from quant.features.target import add_target_5m, drop_incomplete_target
+from quant.features.target import add_target_1h, add_target_4h
+
+logger = logging.getLogger(__name__)
+
+def generate_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Full feature engineering pipeline for three-stream HTF data.
+    Assumes df already contains aligned 1h and daily columns (prefixed 1h_, daily_).
+    Final feature columns are those starting with: feature_, ratio_, pair_, zscore, cross_, htf_
+    (raw 1h_ and daily_ are excluded).
+    """
+    df = compute_baseline_features(df)
+    baseline_names = load_baseline_feature_names()
+    baseline_cols = [c for c in baseline_names if c in df.columns]
+
+    df = add_htf_context_features(df)   # adds htf_* columns
+
+    df = expand_features(df, baseline_cols)   # adds regime, ratios, pairwise, etc.
+
+    # After expansion, add cross-timeframe interactions (using only derived features)
+    # But exclude raw 1h_/daily_ columns from ltf features
+    htf_cols = [c for c in df.columns if c.startswith("htf_")]
+    ltf_candidate = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_")) 
+                     and not c.startswith(("1h_", "daily_"))]
+    # Also ensure we don't already have cross_ from previous runs (avoid duplication)
+    ltf_cols = [c for c in ltf_candidate if not c.startswith("cross_")]
+    
+    if htf_cols and ltf_cols:
+        df = add_cross_timeframe_interactions(df, ltf_cols, htf_cols)
+    
+    # Add target (binary for classification)
+    df = add_target_5m(df)
+    # Add 1-hour horizon target aligned to 5-min rows
+    df = add_target_1h(df)
+    # Add 4-hour horizon target aligned to 5-min rows
+    df = add_target_4h(df)
+    df = drop_incomplete_target(df)
+
+    # Ensure all feature columns are float32
+    feature_cols = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_"))]
+    df = df.with_columns([pl.col(c).cast(pl.Float32) for c in feature_cols])
+    logger.info(f"Final feature matrix has {len(feature_cols)} features.")
+    return df
+
+
+================================================================================
+FILE: quant/features/expansion.py
+================================================================================
+
+"""
+src/features/expansion.py
+Expand feature space with ratios, z-scores, regime‑conditioned transforms,
+pairwise interactions (capped), and cross‑timeframe interactions.
+Now with safe regime‑interaction subset and memory guard.
+"""
+import polars as pl
+import numpy as np
+import logging
+from itertools import combinations
+from config import config
+
+logger = logging.getLogger(__name__)
+
+def add_regime(df: pl.DataFrame) -> pl.DataFrame:
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
+    vol20 = ret.rolling_std(window_size=20)
+    med_vol = vol20.rolling_median(window_size=config.VOL_MEDIAN_WINDOW)
+    smooth_vol = med_vol.rolling_mean(window_size=config.VOL_SMOOTH_WINDOW)
+    regime = pl.when(smooth_vol >= config.REGIME_HIGH_THRESH).then(1.0) \
+              .when(smooth_vol <= config.REGIME_LOW_THRESH).then(0.0) \
+              .otherwise(None)
+    regime = regime.fill_null(strategy="forward").fill_null(config.REGIME_MISSING_DEFAULT)
+    df = df.with_columns(regime.cast(pl.Float32).alias("regime"))
+    return df
+
+def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFrame:
+    core = ["close", "volume", "feature_spread_proxy", "feature_high_low_range_norm"]
+    existing = [c for c in core if c in df.columns]
+    exprs = []
+    for i, a in enumerate(existing):
+        for b in existing[i+1:]:
+            name = f"ratio_{a}_over_{b}"
+            expr = (pl.col(a) / pl.col(b).clip(config.EPS, None)).cast(pl.Float32)
+            exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
+    for col in base_features[:20]:
+        if col in df.columns:
+            mean = pl.col(col).rolling_mean(window_size=20)
+            std = pl.col(col).rolling_std(window_size=20)
+            z = (pl.col(col) - mean) / std.clip(config.EPS, None)
+            exprs.append(z.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f"{col}_zscore"))
+    df = df.with_columns(exprs)
+    return df
+
+def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
+    regime = pl.col("regime")
+    interact_cols = ["feature_ret_1", "feature_ret_5", "feature_ewma_vol_20", "feature_volume_z_20"]
+    exprs = []
+    for col in interact_cols:
+        if col in df.columns:
+            expr = (pl.col(col) * regime).alias(f"{col}_regime")
+            exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX))
+    df = df.with_columns(exprs)
+    return df
+
+def add_regime_all_interactions(df: pl.DataFrame, baseline_cols: list) -> pl.DataFrame:
+    """Only interact with a sensible subset (volatility, momentum, return, spread)."""
+    regime = pl.col("regime")
+    subset = [c for c in baseline_cols if any(x in c for x in ("vol", "ret_1", "momentum", "spread"))]
+    exprs = []
+    for col in subset:
+        if col in df.columns:
+            exprs.append((pl.col(col) * regime).alias(f"{col}_regime"))
+    if exprs:
+        df = df.with_columns(exprs)
+    return df
+
+def add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
+    sorted_features = sorted(feature_cols)
+    exprs = []
+    count = 0
+    for a, b in combinations(sorted_features, 2):
+        if count >= config.MAX_PAIRWISE_INTERACTIONS:
+            break
+        name = f"pair_{a}_x_{b}"
+        expr = (pl.col(a) * pl.col(b)).cast(pl.Float32)
+        exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
+        count += 1
+    # Apply in small batches to reduce peak memory during query planning/execution
+    if exprs:
+        batch_size = 50
+        for i in range(0, len(exprs), batch_size):
+            batch = exprs[i:i+batch_size]
+            df = df.with_columns(batch)
+    return df
+
+def safe_add_pairwise_interactions(df: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
+    n_features = len(feature_cols)
+    total_possible = n_features * (n_features - 1) // 2
+    if total_possible > config.MAX_PAIRWISE_INTERACTIONS:
+        logger.info(f"Pairwise combinations would exceed {config.MAX_PAIRWISE_INTERACTIONS}, capping.")
+    return add_pairwise_interactions(df, feature_cols)
+
+def add_cross_timeframe_interactions(df: pl.DataFrame, ltf_features: list, htf_features: list) -> pl.DataFrame:
+    # Only consider columns that exist in the dataframe
+    ltf_sorted = [c for c in sorted(ltf_features) if c in df.columns]
+    htf_sorted = [c for c in sorted(htf_features) if c in df.columns]
+
+    # Only numeric dtypes are valid for multiplication
+    numeric_types = (
+        pl.Float32, pl.Float64,
+        pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    )
+
+    exprs = []
+    count = 0
+    batch_size = 50
+    for a in ltf_sorted:
+        if count >= config.MAX_CROSS_TIMEFRAME_INTERACTIONS:
+            break
+        if df[a].dtype not in numeric_types:
+            continue
+        for b in htf_sorted:
+            if count >= config.MAX_CROSS_TIMEFRAME_INTERACTIONS:
+                break
+            if df[b].dtype not in numeric_types:
+                continue
+            name = f"cross_{a}_x_{b}"
+            expr = (pl.col(a) * pl.col(b)).cast(pl.Float32)
+            exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
+            count += 1
+            if len(exprs) >= batch_size:
+                df = df.with_columns(exprs)
+                exprs = []
+    if exprs:
+        df = df.with_columns(exprs)
+    return df
+
+def add_rolling_quantiles(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
+    for q in [0.2, 0.5, 0.8]:
+        expr = ret.rolling_quantile(quantile=q, window_size=window)
+        df = df.with_columns(expr.clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias(f"feature_ret_quantile_{q}_{window}"))
+    return df
+
+def add_fourier_features(df: pl.DataFrame) -> pl.DataFrame:
+    ts_local = pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE)
+    minute_of_day = ts_local.dt.hour() * 60 + ts_local.dt.minute()
+    period = 24 * 60
+    sin_time = (2 * np.pi * minute_of_day / period).sin()
+    cos_time = (2 * np.pi * minute_of_day / period).cos()
+    dow = ts_local.dt.weekday()
+    df = df.with_columns([
+        sin_time.cast(pl.Float32).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_sin_time"),
+        cos_time.cast(pl.Float32).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_cos_time"),
+        dow.cast(pl.Float32).clip(config.CLIP_MIN, config.CLIP_MAX).alias("feature_dow"),
+    ])
+    return df
+
+def add_rolling_moments(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
+    w = window
+    sum_x = ret.rolling_sum(window_size=w)
+    sum_x2 = (ret * ret).rolling_sum(window_size=w)
+    sum_x3 = (ret * ret * ret).rolling_sum(window_size=w)
+    sum_x4 = (ret * ret * ret * ret).rolling_sum(window_size=w)
+    mean = sum_x / w
+    var = (sum_x2 - w * mean * mean) / (w - 1)
+    std = var.sqrt()
+    m3 = sum_x3 - 3 * mean * sum_x2 + 2 * w * mean * mean * mean
+    skew = pl.when(w > 2).then(
+        (m3 / (w - 1)) / (std.pow(3) + config.EPS) * (pl.lit(w) / (pl.lit(w) - 2))
+    ).otherwise(pl.lit(0.0))
+    m4 = (sum_x4 - 4 * mean * sum_x3 + 6 * mean * mean * sum_x2 - 3 * w * mean * mean * mean * mean)
+    kurt = (m4 / (w * (var * var + config.EPS))) - 3.0
+    skew = skew.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
+    kurt = kurt.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
+    df = df.with_columns([
+        skew.cast(pl.Float32).alias(f"feature_ret_skew_{window}"),
+        kurt.cast(pl.Float32).alias(f"feature_ret_kurt_{window}"),
+    ])
+    return df
+
+def add_acceleration(df: pl.DataFrame) -> pl.DataFrame:
+    ret = (pl.col("close") / pl.col("close").shift(1)).log().cast(pl.Float32)
+    acc = ret - ret.shift(1)
+    df = df.with_columns(acc.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias("feature_ret_acceleration"))
+    return df
+
+def add_vwap_deviation(df: pl.DataFrame, window: int = 20) -> pl.DataFrame:
+    typical_price = (pl.col("high") + pl.col("low") + pl.col("close")) / 3.0
+    cum_pv = (typical_price * pl.col("volume")).rolling_sum(window_size=window)
+    cum_vol = pl.col("volume").rolling_sum(window_size=window)
+    vwap = cum_pv / cum_vol.clip(config.EPS, None)
+    deviation = (pl.col("close") - vwap) / vwap.clip(config.EPS, None)
+    df = df.with_columns(deviation.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32).alias("feature_vwap_deviation"))
+    return df
+
+def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFrame:
+    df = add_regime(df)
+    df = add_ratios_and_z_scores(df, baseline_feature_cols)
+    df = add_regime_conditioned_transforms(df)
+
+    df = add_rolling_quantiles(df)
+    df = add_fourier_features(df)
+    df = add_rolling_moments(df)
+    df = add_acceleration(df)
+    df = add_vwap_deviation(df)
+    df = add_regime_all_interactions(df, baseline_feature_cols)
+
+    # Only include derived feature prefixes for pairwise expansions; exclude raw 1h_/daily_ raw OHLC/ts columns
+    current_features = [c for c in df.columns if c.startswith(("feature_", "ratio_", "pair_", "zscore", "cross_", "htf_"))]
+    htf_cols = [c for c in df.columns if c.startswith(("htf_",))]
+
+    # Memory estimation
+    est_pairwise = min(config.MAX_PAIRWISE_INTERACTIONS, len(current_features) * (len(current_features) - 1) // 2)
+    est_cross = 0
+    if htf_cols:
+        est_cross = min(config.MAX_CROSS_TIMEFRAME_INTERACTIONS, len(current_features) * len(htf_cols))
+    total_est = len(df.columns) + est_pairwise + est_cross
+    if total_est > 10000:
+        raise MemoryError(f"Estimated feature count {total_est} exceeds safety limit of 10000. Reduce interaction caps.")
+
+    df = safe_add_pairwise_interactions(df, current_features)
+
+    exclude_cols = {"ts_event", "open", "high", "low", "close", "volume", "session_id", "regime"}
+    numeric_types = (
+        pl.Float32, pl.Float64,
+        pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    )
+    exprs = []
+    for c, t in zip(df.columns, df.dtypes):
+        if c in exclude_cols:
+            continue
+        # Only apply numeric cleaning to numeric dtypes; skip HTF and raw HTF streams (preserve their NaNs)
+        if c.startswith("htf_") or c.startswith("daily_") or c.startswith("1h_"):
+            continue
+        if isinstance(t, tuple(numeric_types)) or t in numeric_types:
+            exprs.append(pl.col(c).fill_nan(config.REPLACE_INF_NAN_WITH).fill_null(config.REPLACE_INF_NAN_WITH).clip(config.CLIP_MIN, config.CLIP_MAX).alias(c))
+    if exprs:
+        df = df.with_columns(exprs)
+    return df
+
+
+================================================================================
+FILE: quant/features/htf_context.py
+================================================================================
+
+"""
+src/features/htf_context.py
+Compute high-timeframe (1h, daily) context features and join back to 5-min rows.
+Produces columns such as `htf_daily_vol_5`, `htf_daily_trend_slope_10`,
+`htf_hourly_trend_slope_10`, and `htf_hourly_trend_alignment`.
+Handles missing HTF streams gracefully.
+"""
+import polars as pl
+from config import config
+
+
+def _compute_trend_and_vol(df_agg: pl.DataFrame, ts_col: str, close_col: str, trend_window: int = 10, vol_window: int = 5):
+    """Given an aggregated HTF dataframe with `ts_col` and `close_col` compute
+    trend slope (simple finite difference) and rolling vol (std of log returns).
+    Returns a DataFrame with ts_col, trend_slope_<w>, vol_<w>.
+    """
+    if df_agg is None or df_agg.height == 0:
+        return pl.DataFrame()
+
+    s = df_agg.select([ts_col, close_col]).unique(subset=[ts_col]).sort(ts_col)
+    # compute log close
+    s = s.with_columns((pl.col(close_col).log()).alias("log_close"))
+    # forward/backward safe: compute slope = (log_close - log_close.shift(window)) / window
+    s = s.with_columns(
+        ((pl.col("log_close") - pl.col("log_close").shift(trend_window)) / trend_window).alias(f"trend_slope_{trend_window}")
+    )
+    # compute rolling std of log returns (vol)
+    ret = (pl.col(close_col).log() - pl.col(close_col).log().shift(1)).alias("log_ret")
+    s = s.with_columns(ret)
+    s = s.with_columns((pl.col("log_ret").rolling_std(window_size=vol_window)).alias(f"vol_{vol_window}"))
+    # keep only relevant columns
+    keep = [ts_col, f"trend_slope_{trend_window}", f"vol_{vol_window}"]
+    return s.select(keep)
+
+
+def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Compute HTF features and join back to 5-min DataFrame.
+
+    Expects `1h_ts_event`/`1h_close` and `daily_ts_event`/`daily_close` to be
+    present in `df` (as produced by `quant.align.align_htf_streams`).
+    """
+    if df is None or df.height == 0:
+        return df
+
+    out = df
+
+    # DAILY HTF
+    if "daily_ts_event" in df.columns and "daily_close" in df.columns:
+        daily_agg = df.select(["daily_ts_event", "daily_close"]).unique(subset=["daily_ts_event"]).sort("daily_ts_event")
+        daily_feats = _compute_trend_and_vol(daily_agg, "daily_ts_event", "daily_close",
+                                            trend_window=10, vol_window=5)
+        if daily_feats.height > 0:
+            daily_feats = daily_feats.rename({"daily_ts_event": "daily_ts_event", "trend_slope_10": "htf_daily_trend_slope_10", "vol_5": "htf_daily_vol_5"})
+            out = out.join(daily_feats, on="daily_ts_event", how="left")
+    else:
+        out = out.with_columns([
+            pl.lit(None).alias("htf_daily_trend_slope_10"),
+            pl.lit(None).alias("htf_daily_vol_5"),
+        ])
+
+    # HOURLY HTF
+    if "1h_ts_event" in df.columns and "1h_close" in df.columns:
+        hourly_agg = df.select(["1h_ts_event", "1h_close"]).unique(subset=["1h_ts_event"]).sort("1h_ts_event")
+        hourly_feats = _compute_trend_and_vol(hourly_agg, "1h_ts_event", "1h_close",
+                                             trend_window=10, vol_window=5)
+        if hourly_feats.height > 0:
+            hourly_feats = hourly_feats.rename({"1h_ts_event": "1h_ts_event", "trend_slope_10": "htf_hourly_trend_slope_10", "vol_5": "htf_hourly_vol_5"})
+            out = out.join(hourly_feats, on="1h_ts_event", how="left")
+    else:
+        out = out.with_columns([
+            pl.lit(None).alias("htf_hourly_trend_slope_10"),
+            pl.lit(None).alias("htf_hourly_vol_5"),
+        ])
+
+    # Alignment: whether hourly trend aligns with daily trend
+    if "htf_daily_trend_slope_10" in out.columns and "htf_hourly_trend_slope_10" in out.columns:
+        out = out.with_columns(
+            (pl.when((pl.col("htf_daily_trend_slope_10").is_not_null()) & (pl.col("htf_hourly_trend_slope_10").is_not_null()) &
+                     (pl.col("htf_daily_trend_slope_10").sign() == pl.col("htf_hourly_trend_slope_10").sign())
+             ).then(1.0).otherwise(0.0)).alias("htf_hourly_trend_alignment")
+        )
+    else:
+        out = out.with_columns(pl.lit(0.0).alias("htf_hourly_trend_alignment"))
+
+    # Cast numeric HTF features to Float32 for consistency
+    cast_cols = [c for c in out.columns if c.startswith(("htf_"))]
+    for c in cast_cols:
+        out = out.with_columns(pl.col(c).cast(pl.Float32))
+
+    return out
+"""
+src/features/htf_context.py
+Compute higher‑timeframe context features from aligned 1h and daily data.
+All features are past‑only, float32, clipped.
+Now uses precomputed daily_vol_5 from the daily stream.
+"""
+import polars as pl
+from config import config
+
+
+def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Add HTF state features. Expects columns:
+       1h_close, 1h_high, 1h_low, 1h_volume
+       daily_close, daily_high, daily_low, daily_volume, daily_vol_5
+    Returns df with additional columns prefixed 'htf_'.
+    """
+    # 1. Daily return (log, 1 day lag – already aligned to previous day)
+    df = df.with_columns(
+        (pl.col("daily_close") / pl.col("daily_close").shift(1)).log().alias("htf_daily_return_1")
+    )
+    # 2. Daily volatility – use precomputed daily_vol_5 from daily stream
+    #    (already aligned as previous day's volatility)
+    df = df.with_columns(
+        pl.col("daily_vol_5").alias("htf_daily_vol_5")
+    )
+    # 3. Daily trend slope (10‑day linear approximation)
+    df = df.with_columns(
+        ((pl.col("daily_close") - pl.col("daily_close").shift(10)) / 10.0 / pl.col("daily_close").shift(10).clip(config.EPS, None))
+        .alias("htf_daily_trend_slope_10")
+    )
+    # 4. Distance to daily high/low (normalized by daily high/low)
+    df = df.with_columns(
+        ((pl.col("daily_high") - pl.col("close")) / pl.col("daily_high").clip(config.EPS, None)).alias("htf_distance_to_daily_high"),
+        ((pl.col("close") - pl.col("daily_low")) / pl.col("daily_low").clip(config.EPS, None)).alias("htf_distance_to_daily_low")
+    )
+    # 5. Hourly trend alignment (sign of 1h return vs daily trend)
+    df = df.with_columns(
+        (pl.col("1h_close") / pl.col("1h_close").shift(1)).log().alias("1h_return")
+    )
+    df = df.with_columns(
+        (pl.col("1h_return") * pl.col("htf_daily_trend_slope_10").sign()).alias("htf_hourly_trend_alignment")
+    )
+    # 6. Volatility ratio (1h volatility / daily volatility)
+    df = df.with_columns(
+        pl.col("1h_return").rolling_std(window_size=4).alias("1h_vol_4")
+    )
+    df = df.with_columns(
+        (pl.col("1h_vol_4") / pl.col("htf_daily_vol_5").clip(config.EPS, None)).alias("htf_volatility_ratio")
+    )
+    # 7. Daily session phase – reuse existing feature_session_pos (already in df)
+
+    # Clean and cast all HTF columns
+    htf_cols = [c for c in df.columns if c.startswith("htf_")]
+    for col in htf_cols:
+        # Preserve NaNs for HTF columns (don't replace with 0); just cast and clip
+        df = df.with_columns(
+            pl.col(col).clip(config.CLIP_MIN, config.CLIP_MAX).cast(pl.Float32)
+        )
+    # Drop intermediate columns
+    df = df.drop(["1h_return", "1h_vol_4"])
+    return df
+
+
+================================================================================
+FILE: quant/features/target.py
+================================================================================
+
+"""
+src/features/target.py
+Construct target for horizon = TARGET_5M_HORIZON (default 5 bars).
+Binary target: 1 if forward log return > 0 else 0.
+No lookahead.
+"""
+import polars as pl
+from config import config
+
+def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Add target_sign = 1 if log(close[t+horizon]/close[t]) > 0 else 0.
+    Also keep target_5m (scaled continuous) for compatibility.
+    """
+    horizon = config.TARGET_5M_HORIZON
+    log_close = pl.col("close").log()
+    forward_ret_raw = (log_close.shift(-horizon) - log_close).alias("forward_ret_raw")
+    # Scaled continuous target (not used in classification)
+    forward_ret_scaled = forward_ret_raw * config.TARGET_SCALE_FACTOR
+    df = df.with_columns(forward_ret_scaled.alias("target_5m"))
+    df = df.with_columns(pl.col("target_5m").clip(config.CLIP_MIN, config.CLIP_MAX))
+    # Binary classification target
+    df = df.with_columns((forward_ret_raw > 0).cast(pl.Int8).alias("target_sign"))
+    return df
+
+def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
+    """Remove rows where target is null (end of dataset, horizon bars lost)."""
+    # Keep rows even if 1h target is not available yet; by default drop rows
+    # where the 5m target is missing to preserve compatibility.
+    if "target_sign" in df.columns:
+        return df.filter(pl.col("target_sign").is_not_null())
+    return df
+
+
+def add_target_1h(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Construct a 1-hour horizon target aligned to 5-minute rows.
+    Method: build a small table of unique `1h_ts_event` and its `1h_close`,
+    compute forward 1h return between consecutive 1h bars, then join back
+    to the main dataframe on `1h_ts_event` so every 5-min row inherits the
+    1h target for its current hourly bar.
+    Produces: `target_1h` (scaled continuous) and `target_sign_1h` (Int8).
+    """
+    if "1h_ts_event" not in df.columns or "1h_close" not in df.columns:
+        return df
+
+    # Extract distinct 1h bars (keep first occurrence per 1h_ts_event)
+    one_h = (
+        df.select(["1h_ts_event", "1h_close"]) 
+        .drop_nulls("1h_ts_event")
+        .unique(subset=["1h_ts_event"]) 
+        .sort("1h_ts_event")
+    )
+    if one_h.height < 2:
+        # Not enough 1h bars to form a forward target
+        df = df.with_columns(
+            pl.lit(None).alias("target_1h"),
+        )
+        df = df.with_columns(pl.lit(None).cast(pl.Int8).alias("target_sign_1h"))
+        return df
+
+    # Compute next 1h close and forward return
+    one_h = one_h.with_columns(
+        pl.col("1h_close").shift(-1).alias("1h_close_next")
+    )
+    one_h = one_h.with_columns(
+        (pl.col("1h_close_next").log() - pl.col("1h_close").log()).alias("forward_ret_1h_raw")
+    )
+    one_h = one_h.with_columns((pl.col("forward_ret_1h_raw") * config.TARGET_SCALE_FACTOR).alias("target_1h"))
+    one_h = one_h.with_columns((pl.col("forward_ret_1h_raw") > 0).cast(pl.Int8).alias("target_sign_1h"))
+
+    # Drop the last row which has no forward target
+    one_h = one_h.filter(pl.col("target_sign_1h").is_not_null())
+
+    # Join back to main df on 1h_ts_event
+    df = df.join(one_h.select(["1h_ts_event", "target_1h", "target_sign_1h"]), on="1h_ts_event", how="left")
+    return df
+
+
+def add_target_4h(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Construct a 4-hour horizon target aligned to 5-minute rows using a fixed-bar shift.
+    Assumes 5-minute bars are contiguous; 4 hours == 48 * 5min bars.
+    Produces: `target_4h` (scaled continuous) and `target_sign_4h` (Int8).
+    """
+    H_BARS = int((4 * 60) / 5)  # 48
+    if "close" not in df.columns:
+        return df
+
+    log_close = pl.col("close").log()
+    forward_ret_raw = (log_close.shift(-H_BARS) - log_close)
+    df = df.with_columns((forward_ret_raw * config.TARGET_SCALE_FACTOR).alias("target_4h"))
+    df = df.with_columns((forward_ret_raw > 0).cast(pl.Int8).alias("target_sign_4h"))
+    # Drop rows at the end where target is null is handled by downstream drop_incomplete_target
+    return df
+
+
+================================================================================
+FILE: quant/features/variance_filter.py
+================================================================================
+
+import logging
+import numpy as np
+import polars as pl
+from sklearn.feature_selection import VarianceThreshold
+
+logger = logging.getLogger(__name__)
+
+def remove_constant_features(df: pl.DataFrame, feature_cols: list, threshold: float = 1e-9) -> list:
+    if len(feature_cols) == 0:
+        return []
+    X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+    selector = VarianceThreshold(threshold=threshold)
+    selector.fit(X)
+    keep_mask = selector.get_support()
+    kept = [col for col, keep in zip(feature_cols, keep_mask) if keep]
+    removed = len(feature_cols) - len(kept)
+    if removed > 0:
+        logger.info(f"Removed {removed} constant features. Remaining: {len(kept)}")
+    return kept
+
+
+================================================================================
+FILE: quant/ingest.py
+================================================================================
+
+"""
+src/ingest.py
+Handles ingestion of three streams (5m, 1h, 1d) for a primary symbol,
+and optionally loads other symbols’ 5‑min data as cross‑asset features.
+Now with verbose prints and cache detection.
+"""
+import polars as pl
+import logging
+import psutil
+from pathlib import Path
+from config import config
+from quant.session import load_all_streams_chunked
+from quant.align import align_htf_streams
+from quant.io.canonical_parquet import write_canonical_parquet
+
+logger = logging.getLogger(__name__)
+
+def validate_memory_and_integrity(df: pl.DataFrame):
+    """Memory and OHLC integrity checks (unchanged)."""
+    logger.info("Running memory and integrity validation...")
+    if not df["ts_event"].is_sorted():
+        raise ValueError("ts_event not strictly increasing.")
+    critical_cols = ["open", "high", "low", "close", "volume", "session_id"]
+    for col in critical_cols:
+        if df[col].null_count() > 0:
+            raise ValueError(f"Nulls in column {col}.")
+    if (df["high"] < df["low"]).any():
+        raise ValueError("High < Low detected.")
+    if ((df["open"] < df["low"]) | (df["open"] > df["high"])).any():
+        raise ValueError("Open outside [Low, High].")
+    if ((df["close"] < df["low"]) | (df["close"] > df["high"])).any():
+        raise ValueError("Close outside [Low, High].")
+    est_bytes = df.estimated_size()
+    rows = df.height
+    logger.info(f"Memory usage: {est_bytes / 1024**3:.2f} GB")
+    if est_bytes > config.RAM_CAP_BYTES:
+        raise MemoryError(f"Data size {est_bytes} exceeds RAM_CAP_BYTES.")
+    avg_row_bytes = est_bytes / rows if rows > 0 else 0
+    rows_per_chunk = min(
+        config.ROWS_PER_CHUNK_MAX,
+        int((config.RAM_CAP_BYTES * config.MEMORY_SAFETY_MARGIN) / (avg_row_bytes + 1))
+    )
+    logger.info(f"Safe rows_per_chunk: {rows_per_chunk}")
+    return rows_per_chunk
+
+def load_cross_asset_features(data_glob: str, secondary_symbol: str) -> pl.DataFrame:
+    """
+    Load 5‑min resampled data for a secondary symbol and return a DataFrame
+    with columns: ts_event, {symbol}_ret_1 (lagged log return).
+    """
+    primary_path = Path(data_glob)
+    secondary_glob = str(primary_path.parent.parent / secondary_symbol / primary_path.name)
+    print(f"[INGEST] Loading cross‑asset features for {secondary_symbol} from {secondary_glob}", flush=True)
+    try:
+        streams = load_all_streams_chunked(secondary_glob)
+        df_5min = streams["5m"]
+        df_5min = df_5min.with_columns(
+            (pl.col("close") / pl.col("close").shift(1)).log().alias(f"{secondary_symbol}_ret_1")
+        )
+        df_5min = df_5min.select(["ts_event", f"{secondary_symbol}_ret_1"])
+        logger.info(f"Loaded cross‑asset features for {secondary_symbol}, {df_5min.height} rows")
+        return df_5min
+    except Exception as e:
+        logger.warning(f"Could not load cross‑asset features for {secondary_symbol}: {e}")
+        return pl.DataFrame()
+
+def load_and_clean_data(data_glob: str, cache_path: str = None, cross_asset_symbols: list = None) -> pl.DataFrame:
+    """
+    Load three streams for the primary symbol, align them, then optionally join
+    cross‑asset features from other symbols (aligned on ts_event).
+    """
+    if cache_path and Path(cache_path).exists():
+        print(f"[INGEST] Loading aligned data from cache: {cache_path}", flush=True)
+        logger.info(f"Loading aligned data from cache: {cache_path}")
+        df_aligned = pl.read_parquet(cache_path)
+        validate_memory_and_integrity(df_aligned)
+        return df_aligned
+
+    print(f"[INGEST] No cache found. Loading three streams from: {data_glob}", flush=True)
+    logger.info(f"Loading three streams from: {data_glob}")
+    streams = load_all_streams_chunked(data_glob)
+    df_5min = streams["5m"]
+    df_1h = streams["1h"]
+    df_daily = streams["1d"]
+    print("[INGEST] Aligning HTF streams...", flush=True)
+    df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
+    validate_memory_and_integrity(df_aligned)
+
+    # Add cross‑asset features if requested
+    if cross_asset_symbols:
+        for sym in cross_asset_symbols:
+            print(f"[INGEST] Adding cross‑asset features for {sym}...", flush=True)
+            df_cross = load_cross_asset_features(data_glob, sym)
+            if not df_cross.is_empty():
+                df_aligned = df_aligned.join(df_cross, on="ts_event", how="left")
+                for col in df_cross.columns:
+                    if col != "ts_event":
+                        df_aligned = df_aligned.with_columns(pl.col(col).fill_null(strategy="forward"))
+
+    if cache_path:
+        print(f"[INGEST] Caching aligned data to {cache_path}", flush=True)
+        logger.info(f"Caching aligned data to {cache_path}")
+        write_canonical_parquet(df_aligned, cache_path)
+
+    if config.MEMORY_LOG_ENABLED:
+        logger.info(f"RSS after load: {psutil.Process().memory_info().rss / 1024**3:.2f} GB")
+    return df_aligned
+
+
+================================================================================
+FILE: quant/io/__init__.py
+================================================================================
+
+
+
+
+================================================================================
+FILE: quant/io/canonical_parquet.py
+================================================================================
+
+"""
+src/io/canonical_parquet.py
+Deterministic serialization for canonical feature matrices.
+Ensures byte-level reproducibility.
+Now uses Parquet format 2.6 (2.0 is deprecated).
+"""
+import pyarrow as pa
+import pyarrow.parquet as pq
+import polars as pl
+from config import config
+import logging
+
+logger = logging.getLogger(__name__)
+
+def write_canonical_parquet(data: pl.DataFrame | pa.Table, path: str):
+    """
+    Writes a Polars DataFrame or PyArrow Table to a Parquet file with deterministic settings.
+    - Format Version: 2.6 (was 2.0, now updated)
+    - Compression: snappy
+    - Row Group Size: 65536 (from config.ROW_GROUP_SIZE)
+    - Column Ordering: Lexicographic (sorted)
+    """
+    # Convert Polars DataFrame to PyArrow Table if needed
+    if isinstance(data, pl.DataFrame):
+        table = data.to_arrow()
+    else:
+        table = data
+
+    # Enforce lexicographic column ordering for determinism
+    sorted_column_names = sorted(table.column_names)
+    table = table.select(sorted_column_names)
+
+    # Write with fixed parameters
+    try:
+        pq.write_table(
+            table,
+            path,
+            version="2.6",                         # changed from "2.0"
+            compression="snappy",
+            row_group_size=getattr(config, "ROW_GROUP_SIZE", 65536),
+            data_page_version="2.0",
+            use_deprecated_int96_timestamps=False,
+            coerce_timestamps="us"
+        )
+        logger.info(f"Successfully wrote canonical parquet to {path} "
+                    f"with {len(sorted_column_names)} columns.")
+    except Exception as e:
+        logger.error(f"Failed to write canonical parquet: {e}")
+        raise
+
+
+================================================================================
+FILE: quant/market_config.py
+================================================================================
+
+"""
+src/market_config.py
+Load market-specific configuration from YAML files and override global config values.
+"""
+import yaml
+import logging
+from pathlib import Path
+from config import config
+
+logger = logging.getLogger(__name__)
+
+def detect_symbol_from_path(data_path: str) -> str:
+    """Infer symbol from file path (e.g., futures/ES/2024.parquet -> ES)."""
+    path = Path(data_path)
+    # Look for known market names in parent directory
+    for part in path.parent.parts:
+        if part in config.MARKET_CONFIGS:
+            return part
+    # Default fallback
+    return "ES"
+
+def load_market_config(symbol: str):
+    """Load YAML config for symbol and update global config object in-place."""
+    yaml_path = config.MARKET_CONFIGS.get(symbol)
+    if not yaml_path or not Path(yaml_path).exists():
+        logger.warning(f"Market config for {symbol} not found at {yaml_path}, using global defaults.")
+        return
+    
+    with open(yaml_path, 'r') as f:
+        market_cfg = yaml.safe_load(f)
+    
+    # Override relevant global config attributes
+    overrides = {
+        "ROLL_WINDOWS": market_cfg.get("roll_windows"),
+        "ROLL_WINDOWS_1H": market_cfg.get("roll_windows_1h"),
+        "ROLL_WINDOWS_DAILY": market_cfg.get("roll_windows_daily"),
+        "REGIME_HIGH_THRESH": market_cfg.get("regime_high_thresh"),
+        "REGIME_LOW_THRESH": market_cfg.get("regime_low_thresh"),
+        "HTF_TREND_WINDOWS": market_cfg.get("htf_trend_windows"),
+        "HTF_VOLATILITY_WINDOWS": market_cfg.get("htf_volatility_windows"),
+        "SLIPPAGE_K": market_cfg.get("slippage_k"),
+        "VOL_PENALTY": market_cfg.get("vol_penalty"),
+        "COMMISSION_PER_TRADE": market_cfg.get("commission_per_trade"),
+        "MAX_LEVERAGE": market_cfg.get("max_leverage"),
+        "TARGET_VOL": market_cfg.get("target_vol"),
+    }
+    for attr, value in overrides.items():
+        if value is not None:
+            setattr(config, attr, value)
+            logger.info(f"Overrode {attr} = {value} for {symbol}")
+
+
+================================================================================
+FILE: quant/pipeline.py
+================================================================================
+
+"""
+quant/pipeline.py
+MVP pipeline entrypoint: basic I/O schema, baseline feature persistence, and a fast discovery run.
+"""
+import os
+import json
+import logging
+from pathlib import Path
+import numpy as np
+import polars as pl
+from sklearn.ensemble import ExtraTreesRegressor
+
+from config import config
+from quant.ingest import load_and_clean_data
+from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
+from quant.features.target import add_target_4h
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_dir(path: str):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def run_pipeline(data_path: str, out_manifest: str = "artifacts/manifest_mvp.json", prod_mode: bool = False,
+                 top_k: int = 20, discovery_run: bool = True, bootstrap_folds: int = 1):
+    """Run a minimal pipeline: load data, compute 20 baseline features, persist baseline matrix,
+    and optionally run a single ExtraTrees discovery to freeze top_k features.
+
+    Args:
+        data_path: glob or path to input parquet files (1-min schema)
+        out_manifest: path to write manifest JSON
+        prod_mode: if True, enable additional serialization (not implemented fully here)
+        top_k: number of features to freeze from discovery
+        discovery_run: whether to run discovery; set False to only persist baseline
+    Returns:
+        manifest dict
+    """
+    print("[PIPELINE] Loading and cleaning data...", flush=True)
+    df = load_and_clean_data(data_path)
+    print(f"[PIPELINE] rows: {df.height}", flush=True)
+
+    # Compute full baseline features
+    df = compute_baseline_features(df)
+    # Add 4-hour target (MVP objective)
+    df = add_target_4h(df)
+
+    # Select up to top_k core baseline features from YAML order
+    baseline_names = load_baseline_feature_names()
+    available = [c for c in baseline_names if c in df.columns]
+    selected = available[:top_k]
+    # If not enough, supplement with any other feature_ columns
+    if len(selected) < top_k:
+        extras = [c for c in df.columns if c.startswith("feature_") and c not in selected]
+        selected += extras[:(top_k - len(selected))]
+
+    # Persist baseline matrix (session-scoped): include metadata and selected features
+    baseline_out = config.BASELINE_FEATURES_PERSIST_PATH
+    _ensure_dir(baseline_out)
+    cols_to_write = ["ts_event", "session_id", "open", "high", "low", "close", "volume"] + selected
+    baseline_df = df.select([c for c in cols_to_write if c in df.columns])
+    baseline_df = baseline_df.with_columns([pl.col(c).cast(pl.Float32) for c in baseline_df.columns if baseline_df[c].dtype in (pl.Float64, )])
+    baseline_df.write_parquet(baseline_out)
+    print(f"[PIPELINE] Baseline matrix persisted to {baseline_out}", flush=True)
+
+    manifest = {
+        "version": "mvp-1",
+        "feature_names": selected,
+        "selection_method": "baseline_yaml_priority",
+        "baseline_matrix_path": baseline_out,
+        "prod_mode": bool(prod_mode),
+    }
+
+    # Fast discovery: ExtraTrees with optional bootstrap folds (optional)
+    if discovery_run:
+        print(f"[PIPELINE] Running ExtraTrees discovery (folds={bootstrap_folds})...", flush=True)
+        target_col = "target_sign_4h"
+        if target_col not in df.columns:
+            raise KeyError(f"Target column '{target_col}' not found in feature matrix. Run target generation first.")
+        X_all = df.select(selected).fill_null(0.0).to_numpy().astype(np.float32)
+        y_all = df.select(target_col).fill_null(0).to_numpy().astype(np.float32).ravel()
+
+        n_folds = max(1, int(bootstrap_folds))
+        acc_importances = np.zeros(len(selected), dtype=np.float64)
+        for fold in range(n_folds):
+            rng = np.random.RandomState(config.SEED + fold)
+            if n_folds == 1:
+                Xb = X_all
+                yb = y_all
+                rs = config.SEED
+            else:
+                idx = rng.choice(X_all.shape[0], size=X_all.shape[0], replace=True)
+                Xb = X_all[idx]
+                yb = y_all[idx]
+                rs = int(rng.randint(0, 2**31 - 1))
+            et = ExtraTreesRegressor(n_estimators=100, max_depth=8, random_state=rs, n_jobs=1)
+            et.fit(Xb, yb)
+            acc_importances += np.array(et.feature_importances_, dtype=np.float64)
+
+        mean_imp = acc_importances / n_folds
+        importances = dict(zip(selected, mean_imp.tolist()))
+        sorted_feats = sorted(importances.items(), key=lambda x: x[1], reverse=True)
+        frozen = [f for f, _ in sorted_feats[:top_k]]
+        manifest.update({
+            "selection_model": "ExtraTreesRegressor",
+            "selection_params": {"n_estimators": 100, "max_depth": 8, "bootstrap_folds": n_folds},
+            "frozen_features": frozen,
+        })
+        print(f"[PIPELINE] Frozen {len(frozen)} features.", flush=True)
+
+    _ensure_dir(out_manifest)
+    with open(out_manifest, 'w') as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[PIPELINE] Manifest written to {out_manifest}", flush=True)
+    return manifest
+
+
+
+================================================================================
+FILE: quant/session.py
+================================================================================
+
+"""
+src/session.py
+Implements Globex session definition, session_id, and resampling to 5m, 1h, 1d.
+Now sequential (no threads) and deterministic.
+"""
+import polars as pl
+import logging
+from datetime import time
+import pytz
+from pathlib import Path
+import tempfile
+import glob
+import shutil
+from config import config
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+TZ = pytz.timezone(config.TIMEZONE)
+SESSION_START = config.SESSION_START_LOCAL
+SESSION_END = config.SESSION_END_LOCAL
+SESSION_BREAK_START = config.SESSION_BREAK_START_LOCAL
+SESSION_BREAK_END = config.SESSION_BREAK_END_LOCAL
+
+def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
+    df = df.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).alias("ts_local")
+    )
+    session_id = pl.col("ts_local").dt.offset_by("6h").dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias("session_id"))
+    return df.drop("ts_local")
+
+def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
+    df = df.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).dt.time().alias("time_local")
+    )
+    time_local = pl.col("time_local")
+    in_session = (time_local >= SESSION_START) | (time_local < SESSION_END)
+    if SESSION_BREAK_START is not None and SESSION_BREAK_END is not None:
+        in_break = (time_local >= SESSION_BREAK_START) & (time_local < SESSION_BREAK_END)
+        in_session = in_session & ~in_break
+    df = df.filter(in_session)
+    return df.drop("time_local")
+
+def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
+    df = df.with_columns(
+        pl.col("ts_event").dt.convert_time_zone(config.TIMEZONE).alias("ts_local")
+    )
+    df = df.with_columns(
+        pl.col("ts_local").dt.truncate(every=freq).alias(f"ts_{freq}")
+    )
+    agg = df.group_by(["session_id", f"ts_{freq}"], maintain_order=True).agg([
+        pl.col("open").first().alias("open"),
+        pl.col("high").max().alias("high"),
+        pl.col("low").min().alias("low"),
+        pl.col("close").last().alias("close"),
+        pl.col("volume").sum().alias("volume"),
+        pl.len().alias("n_ticks"),
+    ])
+
+    if freq == "5m" and config.DROP_INCOMPLETE_ROWS:
+        agg = agg.filter(pl.col("n_ticks") == 5)
+    elif freq == "1h":
+        agg = agg.filter(pl.col("n_ticks") >= 45)
+    elif freq == "1d":
+        agg = agg.filter(pl.col("n_ticks") >= 360)
+
+    agg = agg.rename({f"ts_{freq}": "ts_event"})
+    agg = agg.drop("n_ticks")
+    agg = agg.sort(["session_id", "ts_event"])
+
+    if freq == "1d":
+        agg = agg.with_columns(pl.col("close").log().alias("log_close"))
+        agg = agg.with_columns(
+            (pl.col("log_close") - pl.col("log_close").shift(1)).alias("daily_log_return")
+        )
+        agg = agg.with_columns(
+            pl.col("daily_log_return").rolling_std(window_size=5).alias("daily_vol_5")
+        )
+        agg = agg.with_columns(pl.col("daily_vol_5").fill_null(strategy="forward"))
+        agg = agg.drop(["log_close", "daily_log_return"])
+
+    agg = agg.with_columns(
+        pl.col("ts_event").dt.convert_time_zone("UTC").alias("ts_event")
+    )
+    agg = agg.with_columns([
+        pl.col("open").cast(pl.Float32),
+        pl.col("high").cast(pl.Float32),
+        pl.col("low").cast(pl.Float32),
+        pl.col("close").cast(pl.Float32),
+    ])
+    return agg
+
+def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str:
+    df = pl.read_parquet(file_path)
+    if df["ts_event"].dtype != pl.Datetime:
+        df = df.with_columns(pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC")))
+    df = filter_session_hours(df)
+    if df.is_empty():
+        return None
+    df = add_session_id(df)
+    df_resampled = resample_to_frequency(df, freq)
+    if df_resampled.is_empty():
+        return None
+    out_file = Path(out_temp_dir) / f"{Path(file_path).stem}_{freq}.parquet"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    df_resampled.write_parquet(out_file)
+    return str(out_file)
+
+def process_frequency(freq: str, all_files: list) -> tuple:
+    print(f"\n[SESSION] Resampling {freq} (found {len(all_files)} files)", flush=True)
+    temp_dir = tempfile.mkdtemp(prefix=f"resampled_{freq}_")
+    temp_paths = []
+    try:
+        for f in tqdm(all_files, desc=f"Resampling {freq}", unit="file"):
+            out = process_one_file(f, temp_dir, freq)
+            if out:
+                temp_paths.append(out)
+        if not temp_paths:
+            raise ValueError(f"No data after resampling to {freq}")
+        lf = pl.scan_parquet(temp_paths[0])
+        for p in temp_paths[1:]:
+            lf = pl.concat([lf, pl.scan_parquet(p)], how="vertical")
+        lf = lf.sort(["session_id", "ts_event"])
+        # Use the streaming engine where available to keep memory usage low.
+        # `streaming=True` is deprecated; use `engine="streaming"`.
+        try:
+            df = lf.collect(engine="streaming")
+        except TypeError:
+            # Older polars versions may not support the `engine` kwarg; fall back.
+            df = lf.collect(streaming=True)
+        print(f"[SESSION] {freq} stream has {df.height} rows.", flush=True)
+        return freq, df
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+def load_all_streams_chunked(data_glob: str) -> dict:
+    all_files = sorted(glob.glob(data_glob))   # deterministic order
+    if not all_files:
+        raise FileNotFoundError(f"No parquet files found matching {data_glob}")
+    print(f"[SESSION] Found {len(all_files)} files.", flush=True)
+
+    streams = {}
+    for freq in config.RESAMPLE_FREQUENCIES:
+        _, df = process_frequency(freq, all_files)
+        streams[freq] = df
+    return streams
+
+
+================================================================================
+FILE: quant/utils/__init__.py
+================================================================================
+
+
+
+
+================================================================================
+FILE: quant/utils/check_types.py
+================================================================================
+
+# src/utils/check_types.py
+import polars as pl
+import sys
+import argparse
+from config import config
+
+def validate_dtypes(parquet_path: str):
+    """
+    Validates that all feature columns are pl.Float32.
+    Ignores non-feature columns like ts_event, session_id, etc.
+    """
+    try:
+        # Scan lazily to avoid loading data into memory
+        lf = pl.scan_parquet(parquet_path)
+        schema = lf.collect_schema()
+        
+        # Define columns that MUST be Float32
+        # Based on features generated in src/features/engine.py
+        errors = []
+        for col_name, dtype in schema.items():
+            # Check if column is a feature/interaction
+            if col_name.startswith("feature_") or col_name.startswith("int_"):
+                if dtype != pl.Float32:
+                    errors.append(f"Column '{col_name}' has incorrect type: {dtype} (Expected Float32)")
+            
+            # Special check for 'regime' if exists
+            if col_name == "regime" and dtype != pl.Int32:
+                errors.append(f"Column 'regime' has incorrect type: {dtype} (Expected Int32)")
+
+        if errors:
+            print(f"❌ Type Validation Failed for {parquet_path}:")
+            for err in errors:
+                print(f"  - {err}")
+            sys.exit(1)
+        
+        print(f"✅ Type Validation Passed: All features in {parquet_path} are Float32.")
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"Error validating file: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", required=True, help="Path to features.parquet")
+    args = parser.parse_args()
+    validate_dtypes(args.path)
+
+
+================================================================================
+FILE: quant/utils/validate_manifest.py
+================================================================================
+
+# src/utils/validate_manifest.py
+import json
+import sys
+import argparse
+from pathlib import Path
+
+def validate(manifest_path: str):
+    path = Path(manifest_path)
+    if not path.exists():
+        print(f"Error: Manifest not found at {manifest_path}")
+        sys.exit(1)
+        
+    with open(path, 'r') as f:
+        data = json.load(f)
+    
+    # Required top-level keys (updated: removed scaler_mean/scaler_scale)
+    required_keys = {
+        "feature_names", "dtypes",
+        "selection_seed", "selection_date", "selection_model",
+        "selection_params", "selected_K", "cumulative_importance",
+        "stability_stats", "baseline_feature_list", "baseline_features_hash",
+        "baseline_feature_matrix_path", "serialization_params",
+        "discovery_status", "folds", "htf_features_included"
+    }
+    
+    missing = required_keys - set(data.keys())
+    if missing:
+        print(f"Validation Failed: Missing keys: {missing}")
+        sys.exit(1)
+        
+    print(f"Manifest at {manifest_path} is structurally compliant.")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", required=True, help="Path to manifest.json")
+    args = parser.parse_args()
+    validate(args.path)
+
+
+================================================================================
+FILE: quant/walkforward.py
+================================================================================
+
+"""
+src/walkforward.py
+Walkforward with configurable model (Ridge or RandomForestClassifier).
+Predicts probability of upward move. Includes probability smoothing.
+Now with Ridge and logistic link for full compliance.
+"""
+import logging
+import numpy as np
+import polars as pl
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from scipy.special import expit
+from joblib import Parallel, delayed
+from config import config
+from quant.execution.simulator import simulate_execution_classification
+from quant.features.corr_prune import correlation_prune
+from quant.features.variance_filter import remove_constant_features
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series,
+                      test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
+    """Train either Ridge or RandomForest and return probabilities."""
+
+    # Remove constant features
+    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-9)
+    if len(feature_cols) == 0:
+        logger.warning("No non-constant features left. Returning uniform probabilities.")
+        return np.full(len(test_X), 0.5, dtype=np.float32)
+
+    X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+    y_train = train_y.to_numpy().astype(np.int8).ravel()
+    X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+
+    # Standardization (fit on train only)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    if config.MODEL_TYPE == "Ridge":
+        # Slightly stronger regularization for stability
+        ridge_params = config.RIDGE_PARAMS.copy()
+        ridge_params["alpha"] = max(ridge_params.get("alpha", 1.0), 2.0)
+
+        model = Ridge(**ridge_params)
+        model.fit(X_train_scaled, y_train)
+
+        raw_pred = model.predict(X_test_scaled)
+
+        # Clip extreme raw predictions to avoid instability
+        raw_pred = np.clip(raw_pred, -5.0, 5.0)
+
+        probs = expit(raw_pred).astype(np.float32)
+
+    elif config.MODEL_TYPE == "RandomForestClassifier":
+        model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,              # tighter depth
+            min_samples_split=20,     # stronger regularization
+            min_samples_leaf=10,
+            max_features='sqrt',
+            random_state=config.SEED,
+            n_jobs=1,
+            class_weight='balanced'
+        )
+        model.fit(X_train_scaled, y_train)
+        probs = model.predict_proba(X_test_scaled)[:, 1].astype(np.float32)
+
+    else:
+        raise ValueError(f"Unknown MODEL_TYPE: {config.MODEL_TYPE}")
+
+    # Final probability clipping to reduce overconfidence
+    probs = np.clip(probs, 0.05, 0.95)
+
+    return probs
+
+def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float = 0.1) -> np.ndarray:
+    """Exponential moving average smoothing, reset at session boundaries."""
+    if alpha <= 0:
+        return probs
+    smoothed = np.zeros_like(probs)
+    current_smooth = 0.5
+    last_session = None
+    for i, (p, sess) in enumerate(zip(probs, session_ids)):
+        if sess != last_session:
+            current_smooth = 0.5
+            last_session = sess
+        current_smooth = alpha * p + (1 - alpha) * current_smooth
+        smoothed[i] = current_smooth
+    return smoothed
+
+def compute_benchmark(df: pl.DataFrame) -> pl.Series:
+    """Naive benchmark: 20-period SMA crossover using lagged close."""
+    close = df["close"].to_numpy()
+    open_ = df["open"].to_numpy()
+    close_lagged = np.roll(close, 1)
+    close_lagged[0] = close[0]
+    sma20 = np.full(len(close), np.nan)
+    for i in range(20, len(close)):
+        sma20[i] = np.mean(close_lagged[i-20+1:i+1])
+    signal = np.where(close_lagged > sma20, 1.0, 0.0)
+    position = np.roll(signal, 1)
+    position[0] = 0.0
+    ret_exec = (close - open_) / np.maximum(open_, config.EPS)
+    pnl = position * ret_exec
+    pnl = np.nan_to_num(pnl, nan=0.0)
+    return pl.Series("benchmark_pnl", pnl).cast(pl.Float32)
+
+def process_fold(train_X: pl.DataFrame, train_y: pl.Series,
+                 test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
+    """Train, predict, smooth, then simulate execution."""
+    probs = train_and_predict(train_X, train_y, test_original, feature_cols)
+
+    if config.PROBABILITY_SMOOTHING_ALPHA > 0:
+        session_ids = test_original["session_id"].to_numpy()
+        probs = smooth_probabilities(
+            probs,
+            session_ids,
+            alpha=min(config.PROBABILITY_SMOOTHING_ALPHA, 0.2)  # cap smoothing to avoid lag overfit
+        )
+
+    result = test_original.with_columns(pl.Series("prediction_prob", probs))
+    result = result.with_columns(compute_benchmark(result))
+    return simulate_execution_classification(result)
+
+def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list,
+                    target_col: str = "target_sign") -> pl.DataFrame:
+    """Walkforward with train/test split by date."""
+    df = X.with_columns(y)
+    if target_col not in df.columns:
+        raise KeyError(f"Target column '{target_col}' not found.")
+
+    df = df.with_columns(pl.col("ts_event").dt.date().alias("date"))
+    unique_dates = sorted(df["date"].unique().to_list())
+
+    is_1h_target = target_col.endswith("_1h")
+
+    if is_1h_target:
+        if "1h_ts_event" not in df.columns:
+            raise KeyError("Missing '1h_ts_event' column required for 1h target flow.")
+
+        per1h = (
+            df.sort(["1h_ts_event", "ts_event"])
+            .groupby("1h_ts_event", maintain_order=True)
+            .agg([pl.all().last()])
+        )
+        per1h = per1h.rename({c: c.replace("_last", "") for c in per1h.columns})
+        per_df = per1h
+
+        first_train_dates = sorted(per_df["1h_ts_event"].dt.date().unique().to_list())[:config.WF_TRAIN_DAYS]
+        first_train_df = per_df.filter(pl.col("1h_ts_event").dt.date().is_in(first_train_dates))
+
+        if len(first_train_df) > 0:
+            pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
+        else:
+            pruned_features = feature_cols
+
+    else:
+        first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
+        first_train_df = df.filter(pl.col("date").is_in(first_train_dates))
+
+        if len(first_train_df) > 0:
+            pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
+        else:
+            pruned_features = feature_cols
+
+    folds = []
+
+    for i in range(0, len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
+        train_end = i + config.WF_TRAIN_DAYS
+        test_start = train_end
+        test_end = test_start + config.WF_TEST_DAYS
+
+        train_dates = unique_dates[i:train_end]
+        test_dates = unique_dates[test_start:test_end]
+
+        train_df = df.filter(pl.col("date").is_in(train_dates))
+        test_df = df.filter(pl.col("date").is_in(test_dates))
+
+        if train_df.is_empty() or test_df.is_empty():
+            continue
+
+        train_X = train_df.drop([target_col, "date"])
+        train_y = train_df[target_col]
+        test_original = test_df.drop([target_col, "date"])
+
+        folds.append((train_X, train_y, test_original, pruned_features))
+
+    if not folds:
+        raise ValueError("No folds processed.")
+
+    if config.WF_PARALLEL_FOLDS == 1:
+        results = []
+        for (train_X, train_y, test_original, feat_cols) in tqdm(folds, desc="Walkforward folds", unit="fold"):
+            res = process_fold(train_X, train_y, test_original, feat_cols)
+            results.append(res)
+    else:
+        results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')(
+            delayed(process_fold)(train_X, train_y, test_original, feat_cols)
+            for (train_X, train_y, test_original, feat_cols) in folds
+        )
+
+    final = pl.concat(results)
+    final = final.sort(["session_id", "ts_event"])
+    return final
+
