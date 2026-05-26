@@ -3,6 +3,7 @@ import sys
 import subprocess
 import logging
 from pathlib import Path
+import shutil
 import yaml
 import polars as pl
 
@@ -83,19 +84,22 @@ def process_split(train_years, test_years, files):
         logger.warning("Empty train/test split — skipping")
         return
 
-    # ✅ STEP 1: BUILD COMBINED TRAIN DATASET
-    combined_train_path = Path("artifacts") / f"train_{'_'.join(map(str, train_years))}.parquet"
-    combined_train_path.parent.mkdir(parents=True, exist_ok=True)
+    # ✅ STEP 1: PREPARE TRAIN DIRECTORY (NO CONCAT)
+    train_dir = Path("artifacts") / f"train_{'_'.join(map(str, train_years))}"
+    train_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Building TRAIN dataset for years {train_years}")
+    logger.info(f"Preparing TRAIN dataset for years {train_years}")
 
-    dfs = []
     for f in train_files:
-        logger.info(f"Adding train file: {f}")
-        dfs.append(pl.read_parquet(f))
+        logger.info(f"Linking train file: {f}")
+        dst = train_dir / f"{f.parent.name}_{f.name}"
+        if not dst.exists():
+            try:
+                os.symlink(f.resolve(), dst)
+            except Exception:
+                shutil.copy2(f, dst)
 
-    train_df = pl.concat(dfs).sort("ts_event")
-    train_df.write_parquet(combined_train_path)
+    train_glob = str(train_dir / "*.parquet")
 
     # ✅ STEP 2: DISCOVERY (TRAIN ONLY)
     manifest_path = Path("artifacts") / f"manifest_{'_'.join(map(str, train_years))}.json"
@@ -104,7 +108,7 @@ def process_split(train_years, test_years, files):
 
     subprocess.run([
         sys.executable, "-m", "quant.cli", "discover",
-        "--data", str(combined_train_path),
+        "--data", train_glob,
         "--out", str(manifest_path)
     ], check=True)
 

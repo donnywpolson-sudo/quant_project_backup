@@ -1,24 +1,30 @@
-Fix the error.
+Use the FULL combined code from my previous messages (all parts) as the input code.
 
-Goals:
-- Fully resolve error
-- Preserve behavior
+OBJECTIVE
+Strict intraday Globex 23/5 (18:00→16:00 America/New_York). Exclude 17:00–18:00 CME gap. No overnight holds. Zero leakage. Memory <16GB (target ≤14GB). seed=42. float32 only. Polars only (no pandas), pytz, chunked processing.
 
-Constraints:
-- Minimal changes only
+TASK
+Fix the error completely while preserving behavior.
+
+CONSTRAINTS
+- Minimal, surgical changes only
 - No refactor or logic changes
+- Keep variables, flow, and structure unchanged
 
-Guidelines:
-- Fix only what's required
+REQUIREMENTS
+- Resolve root cause (no symptom fixes)
+- No leakage or causal violations introduced
+- Maintain determinism and constraints above
+
+GUIDELINES
+- Fix only what is necessary
 - Keep changes localized
-- Use simplest valid fix
+- Prefer simplest valid fix
+- Add guards only if strictly required
 
-Output:
+ERROR
+<PASTE ERROR HERE>
+
+OUTPUT
 - Full updated file only
-- No explanations or extra text
-
-Code:
-<CODE>
-
-Error:
-<ERROR>
+- No explanations
