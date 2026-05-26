@@ -31,7 +31,6 @@ def get_files(data_dir, config):
     end = config.get("end_year")
 
     valid = []
-
     for f in files:
         try:
             year = int(f.stem)
@@ -48,66 +47,13 @@ def get_files(data_dir, config):
     return valid
 
 # =========================
-# CORRELATION FILTER
-# =========================
-def select_uncorrelated_markets(files, config):
-    if not config.get("use_correlation_filter", False):
-        return files
-
-    logger.info("Running correlation filtering...")
-
-    market_returns = {}
-
-    for f in files:
-        market = f.parent.name
-
-        df = pl.read_parquet(f).select("close")
-        returns = df.select(pl.col("close").pct_change()).drop_nulls()
-
-        if market not in market_returns:
-            market_returns[market] = returns
-        else:
-            market_returns[market] = pl.concat([market_returns[market], returns])
-
-    # Combine markets into one DataFrame
-    combined = []
-    for m, r in market_returns.items():
-        combined.append(r.rename({"close": m}))
-
-    df = pl.concat(combined, how="horizontal").drop_nulls()
-
-    # Compute correlation
-    corr = df.corr()
-
-    # Convert to numpy for safe indexing
-    corr_np = corr.to_numpy()
-    cols = corr.columns
-    col_index = {c: i for i, c in enumerate(cols)}
-
-    selected = []
-    threshold = config.get("correlation_threshold", 0.75)
-
-    for m in cols:
-        if all(abs(corr_np[col_index[m], col_index[s]]) < threshold for s in selected):
-            selected.append(m)
-
-    max_markets = config.get("max_markets")
-    if max_markets:
-        selected = selected[:max_markets]
-
-    logger.info(f"Selected markets: {selected}")
-
-    return [f for f in files if f.parent.name in selected]
-
-# =========================
-# CREATE WALKFORWARD WINDOWS
+# WALKFORWARD SPLITS
 # =========================
 def generate_walkforward_splits(files, config):
     train_years = config.get("training_years", 3)
     wf_years = config.get("walkforward_years", 1)
 
     years = sorted({int(f.stem) for f in files})
-
     splits = []
 
     for i in range(len(years)):
@@ -124,31 +70,58 @@ def generate_walkforward_splits(files, config):
         splits.append((train_range, test_range))
 
     logger.info(f"Generated {len(splits)} walkforward splits")
-
     return splits
 
-# =========================
-# PROCESS SPLITS
-# =========================
+
+# ✅ ✅ FIXED CORE FUNCTION
 def process_split(train_years, test_years, files):
 
-    subset = [
-        f for f in files
-        if int(f.stem) in train_years + test_years
-    ]
+    train_files = [f for f in files if int(f.stem) in train_years]
+    test_files = [f for f in files if int(f.stem) in test_years]
 
-    for f in subset:
-        logger.info(f"Processing {f}")
+    if not train_files or not test_files:
+        logger.warning("Empty train/test split — skipping")
+        return
 
-        subprocess.run([
-            sys.executable, "-m", "quant.cli", "discover",
-            "--data", str(f)
-        ])
+    # ✅ STEP 1: BUILD COMBINED TRAIN DATASET
+    combined_train_path = Path("artifacts") / f"train_{'_'.join(map(str, train_years))}.parquet"
+    combined_train_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Building TRAIN dataset for years {train_years}")
+
+    dfs = []
+    for f in train_files:
+        logger.info(f"Adding train file: {f}")
+        dfs.append(pl.read_parquet(f))
+
+    train_df = pl.concat(dfs).sort("ts_event")
+    train_df.write_parquet(combined_train_path)
+
+    # ✅ STEP 2: DISCOVERY (TRAIN ONLY)
+    manifest_path = Path("artifacts") / f"manifest_{'_'.join(map(str, train_years))}.json"
+
+    logger.info("Running feature discovery on TRAIN data...")
+
+    subprocess.run([
+        sys.executable, "-m", "quant.cli", "discover",
+        "--data", str(combined_train_path),
+        "--out", str(manifest_path)
+    ], check=True)
+
+    # ✅ STEP 3: EVALUATION (TEST ONLY)
+    for f in test_files:
+        logger.info(f"Evaluating TEST file: {f}")
+
+        out_dir = Path("artifacts") / f.parent.name / f.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         subprocess.run([
             sys.executable, "-m", "quant.cli", "run",
-            "--data", str(f)
-        ])
+            "--data", str(f),
+            "--manifest", str(manifest_path),
+            "--out", str(out_dir)
+        ], check=True)
+
 
 # =========================
 # MAIN
@@ -156,12 +129,9 @@ def process_split(train_years, test_years, files):
 if __name__ == "__main__":
 
     config = load_config()
-
     data_dir = config.get("data_dir", "data")
 
     files = get_files(data_dir, config)
-
-    files = select_uncorrelated_markets(files, config)
 
     if not files:
         logger.warning("No files found after filtering")
