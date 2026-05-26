@@ -1,3 +1,5 @@
+# quant/discovery.py
+
 """
 src/discovery.py
 Phase 1: Feature discovery using ExtraTrees with bootstrap folds, stability selection,
@@ -29,7 +31,12 @@ def check_rss(limit_bytes):
 
 def run_feature_discovery(data_path: str, manifest_out: str):
     logger.info("Phase 1: Feature Discovery")
-    df_features = pl.read_parquet(data_path)
+
+    # ✅ FIX: use streaming read instead of full materialization
+    try:
+        df_features = pl.scan_parquet(data_path).collect(engine="streaming")
+    except TypeError:
+        df_features = pl.scan_parquet(data_path).collect(streaming=True)
 
     target_col = "target_5m"
     if target_col not in df_features.columns:
@@ -127,7 +134,6 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         if cumsum >= config.CUMULATIVE_IMPORTANCE_THRESHOLD:
             break
 
-    # Fallback to ensure MIN_SELECTED_FEATURES
     if len(final_selected) < config.MIN_SELECTED_FEATURES:
         if len(selected_sorted) == 0:
             all_sorted = sorted(mean_imp.items(), key=lambda x: x[1], reverse=True)
