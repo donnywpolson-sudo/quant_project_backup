@@ -16,22 +16,16 @@ def add_regime(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFrame:
-    core = ['close', 'volume', 'feature_spread_proxy', 'feature_high_low_range_norm']
-    existing = [c for c in core if c in df.columns]
+    eps = config.EPS
     exprs = []
-    for i, a in enumerate(existing):
-        for b in existing[i + 1:]:
-            name = f'ratio_{a}_over_{b}'
-            expr = (pl.col(a) / pl.col(b).clip(config.EPS, None)).cast(pl.Float32)
-            exprs.append(expr.clip(config.CLIP_MIN, config.CLIP_MAX).alias(name))
     for col in base_features[:20]:
         if col in df.columns:
             mean = pl.col(col).rolling_mean(window_size=20)
-            std = pl.col(col).rolling_std(window_size=20)
-            z = (pl.col(col) - mean) / std.clip(config.EPS, None)
-            exprs.append(z.clip(config.CLIP_MIN, config.CLIP_MAX).alias(f'{col}_zscore'))
-    df = df.with_columns(exprs)
-    return df
+            std = pl.col(col).rolling_std(window_size=20).clip(eps, None)
+            z = (pl.col(col) - mean) / std
+            z = z.clip(-5.0, 5.0)
+            exprs.append(z.alias(f'{col}_zscore'))
+    return df.with_columns(exprs)
 
 def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
     regime = pl.col('regime')

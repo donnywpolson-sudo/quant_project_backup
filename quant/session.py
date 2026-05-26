@@ -23,14 +23,12 @@ def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     return df.drop('ts_local')
 
 def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
-    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).dt.time().alias('time_local'))
-    time_local = pl.col('time_local')
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    time_local = pl.col('ts_local').dt.time()
     in_session = (time_local >= SESSION_START) | (time_local < SESSION_END)
-    if SESSION_BREAK_START is not None and SESSION_BREAK_END is not None:
-        in_break = (time_local >= SESSION_BREAK_START) & (time_local < SESSION_BREAK_END)
-        in_session = in_session & ~in_break
-    df = df.filter(in_session)
-    return df.drop('time_local')
+    gap = (time_local >= SESSION_BREAK_START) & (time_local < SESSION_BREAK_END)
+    df = df.filter(in_session & ~gap)
+    return df.drop('ts_local')
 
 def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))

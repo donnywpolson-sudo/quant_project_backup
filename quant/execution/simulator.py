@@ -1,69 +1,25 @@
-pass
 import polars as pl
 import numpy as np
 from config import config
 
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
-    pass
-    signal_expr = pl.when(pl.col('prediction_prob').fill_null(0.5) - 0.5 > 0).then(1.0)
-    signal_expr = signal_expr.when(pl.col('prediction_prob').fill_null(0.5) - 0.5 < 0).then(-1.0).otherwise(0.0)
-    if config.HTF_TREND_ALIGNMENT:
-        if 'htf_daily_trend_slope_10' in df.columns:
-            daily_bias = pl.when(pl.col('htf_daily_trend_slope_10').abs() >= config.HTF_TREND_THRESHOLD).then(pl.col('htf_daily_trend_slope_10').sign()).otherwise(0.0)
-        elif 'daily_close' in df.columns and 'daily_open' in df.columns:
-            daily_bias = pl.when((pl.col('daily_close') - pl.col('daily_open')).abs() >= 0).then((pl.col('daily_close') - pl.col('daily_open')).sign()).otherwise(0.0)
-        else:
-            daily_bias = pl.lit(0.0)
-        if 'htf_hourly_trend_alignment' in df.columns:
-            hourly_align = pl.col('htf_hourly_trend_alignment').sign()
-        elif '1h_close' in df.columns and '1h_open' in df.columns:
-            hourly_align = (pl.col('1h_close') - pl.col('1h_open')).sign()
-        else:
-            hourly_align = pl.lit(0.0)
-        daily_bias = pl.when((daily_bias != 0.0) & (hourly_align == daily_bias)).then(daily_bias).otherwise(0.0)
-        target_raw_expr = pl.when((signal_expr == daily_bias) & (daily_bias != 0.0)).then(daily_bias).otherwise(0.0)
-    else:
-        target_raw_expr = signal_expr
-    target_series = df.select(target_raw_expr).to_series().fill_nan(0.0).fill_null(0.0)
-    target_array = target_series.to_numpy()
-    if 'feature_ewma_vol_20' not in df.columns:
-        ret = (pl.col('close') / pl.col('close').shift(1)).log()
-        vol = ret.rolling_std(window_size=20)
-    else:
-        vol = pl.col('feature_ewma_vol_20')
-    df = df.with_columns(vol.fill_null(strategy='forward').fill_null(1e-06).alias('vol'))
-    if 'feature_spread_proxy' in df.columns:
-        spread_expr = pl.col('feature_spread_proxy')
-    else:
-        spread_expr = (pl.col('high') - pl.col('low')) / pl.col('close').clip(config.EPS, None)
-    spread_series = df.select(spread_expr).to_series().fill_nan(0.0).fill_null(0.0)
-    unit_cost_array = (config.COMMISSION_PER_TRADE + config.SLIPPAGE_K * spread_series + config.VOL_PENALTY * df['vol']).to_numpy()
-    df = df.with_columns(pl.col('ts_event').rank('ordinal').over('session_id').alias('_session_rank'), pl.col('ts_event').count().over('session_id').alias('_session_len'))
-    last_bars_mask = (df['_session_rank'] > df['_session_len'] - config.FLAT_BEFORE_CLOSE_MINUTES // 5).to_numpy()
-    open_next = np.roll(df['open'].to_numpy().astype(np.float64), -1)
-    close_next = np.roll(df['close'].to_numpy().astype(np.float64), -1)
-    open_next[-1] = np.nan
-    close_next[-1] = np.nan
-    ret_exec = (close_next - open_next) / np.maximum(open_next, config.EPS)
-    ret_exec = np.nan_to_num(ret_exec, nan=0.0)
-    n = len(df)
-    positions = np.zeros(n, dtype=np.float32)
-    trade_costs = np.zeros(n, dtype=np.float32)
-    current_pos = 0.0
-    for i in range(n):
-        desired = target_array[i]
-        if last_bars_mask[i]:
-            desired = 0.0
-        delta = np.clip(desired - current_pos, -config.MAX_POS_CHANGE_PER_MIN, config.MAX_POS_CHANGE_PER_MIN)
-        new_pos = current_pos + delta
-        new_pos = np.clip(new_pos, -config.MAX_LEVERAGE, config.MAX_LEVERAGE)
-        cost = abs(new_pos - current_pos) * unit_cost_array[i]
-        trade_costs[i] = cost
-        positions[i] = new_pos
-        current_pos = new_pos
-    pnl = positions * ret_exec - trade_costs
-    pnl = np.nan_to_num(pnl, nan=0.0)
-    df = df.with_columns([pl.Series('position', positions).cast(pl.Float32), pl.Series('trade_cost', trade_costs).cast(pl.Float32), pl.Series('pnl', pnl).cast(pl.Float32)]).drop(['_session_rank', '_session_len'])
+    signal_expr = pl.when(pl.col('prediction_prob').fill_null(0.5) > 0.55).then(1.0).when(pl.col('prediction_prob').fill_null(0.5) < 0.45).then(-1.0).otherwise(0.0)
+    df = df.with_columns(signal_expr.alias('raw_signal'))
+    df = df.with_columns(pl.col('ts_event').dt.time().alias('t_local'))
+    df = df.with_columns(pl.when(pl.col('t_local') >= pl.lit(config.SESSION_END_LOCAL)).then(0.0).otherwise(pl.col('raw_signal')).alias('target_exec'))
+    df = df.drop('t_local')
+    ret = (pl.col('close') / pl.col('close').shift(1)).log()
+    vol = ret.rolling_std(window_size=20).clip(config.EPS, None)
+    df = df.with_columns(vol.fill_null(1e-06).alias('vol'))
+    spread = (pl.col('high') - pl.col('low')) / pl.col('close').clip(config.EPS, None)
+    df = df.with_columns(spread.alias('spread'))
+    unit_cost = config.COMMISSION_PER_TRADE + config.SLIPPAGE_K * pl.col('spread') + config.VOL_PENALTY * pl.col('vol')
+    open_next = pl.col('open').shift(-1)
+    close_next = pl.col('close').shift(-1)
+    ret_exec = ((close_next - open_next) / open_next.clip(config.EPS, None)).fill_null(0)
+    df = df.with_columns([unit_cost.alias('cost'), ret_exec.alias('ret_exec')])
+    df = df.with_columns((pl.col('target_exec') * pl.col('ret_exec') - pl.col('cost')).fill_nan(0).alias('pnl'))
+    df = df.with_columns(pl.col('target_exec').alias('position'))
     return df
 
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:
