@@ -1,0 +1,29 @@
+Use the FULL combined code from my previous messages (all parts) as the input code.
+
+OBJECTIVE
+Optimize this quant model for robustness/generalization and reduced overfitting, with minimal, surgical changes only. Preserve all logic, variables, and flow (no refactor/redesign).
+
+SESSION
+Strict intraday Globex 23/5 (18:00→16:00 ET). Exclude 17:00–18:00 gap. No overnight holds.
+
+REQUIREMENTS
+Zero leakage (strictly causal features, correct target alignment, no forward data)
+Improve stability of signals (reduce noise/outlier sensitivity, avoid regime-specific behavior)
+Keep structure unchanged (only small fixes: normalization, clipping, regularization, guards)
+
+CONSTRAINTS
+Memory <16GB (target ≤14GB), chunked/lazy processing
+Deterministic (seed=42 everywhere)
+float32 only (no upcasting)
+Polars only (no pandas), pytz for timezones
+
+STABILITY
+Safe numerics (no div-by-zero, bounded transforms)
+No leakage via scaling/rolling windows
+Correct timestamps + session boundaries throughout
+
+OUTPUT
+Full updated file only
+No explanations in-line with the code
+No fluff, no comments, no docstrings, no decorative separators, no emojis, no extra text beyond what is required
+Add a short, concise summary (plain English) at the very end describing what was changed and how it improves robustness/generalization
