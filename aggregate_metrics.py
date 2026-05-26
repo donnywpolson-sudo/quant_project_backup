@@ -100,25 +100,19 @@ def load_all_backtests() -> dict:
             year = parts[2]
             try:
                 df = pl.read_parquet(parquet_file)
-                print(f'Columns in {market}/{year}: {df.columns[:10]}...')
                 if 'ts_event' not in df.columns:
-                    print(f"Warning: {parquet_file} missing 'ts_event', skipping.")
                     continue
                 cols_to_keep = ['ts_event']
                 for col in essential_cols:
                     if col in df.columns:
                         cols_to_keep.append(col)
-                    else:
-                        print(f"Warning: {market}/{year} missing column '{col}'")
                 cols_to_keep = list(dict.fromkeys(cols_to_keep))
                 if 'pnl' not in cols_to_keep:
-                    print(f"Warning: {market}/{year} has no 'pnl' column, skipping.")
                     continue
                 df = df.select(cols_to_keep).sort('ts_event')
                 results_by_market.setdefault(market, []).append((year, df))
-                print(f'Loaded {market}/{year}: {df.height} rows, columns: {df.columns}')
-            except Exception as e:
-                print(f'Error loading {parquet_file}: {e}')
+            except Exception:
+                pass
     return results_by_market
 
 def aggregate_market(market: str, dfs: list) -> pl.DataFrame:
@@ -149,10 +143,8 @@ def main():
         sys.exit(0)
     all_pnl_series = []
     for market, year_dfs in results.items():
-        print(f'\n--- Aggregating {market} ---')
         combined_df = aggregate_market(market, year_dfs)
         if combined_df.is_empty():
-            print(f'  No data for {market}, skipping.')
             continue
         pnl_series = combined_df['pnl']
         positions_series = combined_df['position'] if 'position' in combined_df.columns else None

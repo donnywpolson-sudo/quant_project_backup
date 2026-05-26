@@ -82,9 +82,7 @@ def process_frequency(freq: str, all_files: list) -> tuple:
                 temp_paths.append(out)
         if not temp_paths:
             raise ValueError(f'No data after resampling to {freq}')
-        lf = pl.scan_parquet(temp_paths[0])
-        for p in temp_paths[1:]:
-            lf = pl.concat([lf, pl.scan_parquet(p)], how='vertical')
+        lf = pl.scan_parquet(temp_paths)
         lf = lf.sort(['session_id', 'ts_event'])
         try:
             df = lf.collect(engine='streaming')

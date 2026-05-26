@@ -1,7 +1,7 @@
 from pathlib import Path
 
 ROOT = Path(".")
-OUT_DIR = ROOT / "agent_prompts"
+OUT_DIR = ROOT / "debugging"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 EXT = {".py", ".yml", ".yaml", ".json"}

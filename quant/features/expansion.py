@@ -1,4 +1,3 @@
-pass
 import polars as pl
 import numpy as np
 import logging
@@ -46,7 +45,6 @@ def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_regime_all_interactions(df: pl.DataFrame, baseline_cols: list) -> pl.DataFrame:
-    pass
     regime = pl.col('regime')
     subset = [c for c in baseline_cols if any((x in c for x in ('vol', 'ret_1', 'momentum', 'spread')))]
     exprs = []
@@ -171,16 +169,11 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_acceleration(df)
     df = add_vwap_deviation(df)
     df = add_regime_all_interactions(df, baseline_feature_cols)
-    current_features = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
-    htf_cols = [c for c in df.columns if c.startswith(('htf_',))]
-    est_pairwise = min(config.MAX_PAIRWISE_INTERACTIONS, len(current_features) * (len(current_features) - 1) // 2)
-    est_cross = 0
-    if htf_cols:
-        est_cross = min(config.MAX_CROSS_TIMEFRAME_INTERACTIONS, len(current_features) * len(htf_cols))
-    total_est = len(df.columns) + est_pairwise + est_cross
-    if total_est > 10000:
-        raise MemoryError(f'Estimated feature count {total_est} exceeds safety limit of 10000. Reduce interaction caps.')
-    df = safe_add_pairwise_interactions(df, current_features)
+
+    if df.height <= 300000:
+        current_features = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
+        df = safe_add_pairwise_interactions(df, current_features)
+
     exclude_cols = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
     numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
     exprs = []

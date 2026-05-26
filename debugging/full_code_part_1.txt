@@ -1,142 +1,5 @@
 
 ================================================================================
-FILE: agent_prompts/#0_fluff_remover.py
-================================================================================
-
-import ast
-from pathlib import Path
-import re
-
-def remove_docstrings(source):
-    parsed = ast.parse(source)
-    for node in ast.walk(parsed):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
-            if node.body and isinstance(node.body[0], ast.Expr):
-                if isinstance(node.body[0].value, ast.Str):
-                    node.body[0] = ast.Pass()
-    return ast.unparse(parsed)
-
-def clean_file(path):
-    text = Path(path).read_text()
-    text = remove_docstrings(text)
-    text = re.sub('#.*={3,}.*', '', text)
-    text = re.sub('#.*-{3,}.*', '', text)
-    text = re.sub('# *✅.*', '', text)
-    text = re.sub('\\n{3,}', '\n\n', text)
-    Path(path).write_text(text)
-
-def clean_repo(root='./'):
-    for file in Path(root).rglob('*.py'):
-        clean_file(file)
-if __name__ == '__main__':
-    clean_repo()
-
-
-================================================================================
-FILE: agent_prompts/#3_run.py
-================================================================================
-
-import os
-import sys
-import subprocess
-import logging
-from pathlib import Path
-import shutil
-import yaml
-import polars as pl
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger('QuantRunner')
-
-def load_config():
-    config_path = Path(__file__).parent / 'config.yaml'
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        logger.info(f'Loaded config')
-        return config
-    return {}
-
-def get_files(data_dir, config):
-    files = list(Path(data_dir).rglob('*.parquet'))
-    start = config.get('start_year')
-    end = config.get('end_year')
-    allowed_markets = set(config.get('markets', []))
-    valid = []
-    for f in files:
-        try:
-            year = int(f.stem)
-        except:
-            continue
-        if start and year < start:
-            continue
-        if end and year > end:
-            continue
-        if allowed_markets and f.parent.name not in allowed_markets:
-            continue
-        valid.append(f)
-    max_files = config.get('max_files')
-    if max_files:
-        valid = sorted(valid)[:max_files]
-    return valid
-
-def generate_walkforward_splits(files, config):
-    train_years = config.get('training_years', 3)
-    wf_years = config.get('walkforward_years', 1)
-    years = sorted({int(f.stem) for f in files})
-    splits = []
-    for i in range(len(years)):
-        train_start = i
-        train_end = i + train_years
-        test_end = train_end + wf_years
-        if test_end > len(years):
-            break
-        train_range = years[train_start:train_end]
-        test_range = years[train_end:test_end]
-        splits.append((train_range, test_range))
-    logger.info(f'Generated {len(splits)} walkforward splits')
-    return splits
-
-def process_split(train_years, test_years, files):
-    train_files = [f for f in files if int(f.stem) in train_years]
-    test_files = [f for f in files if int(f.stem) in test_years]
-    if not train_files or not test_files:
-        logger.warning('Empty train/test split — skipping')
-        return
-    train_dir = Path('artifacts') / f'train_{'_'.join(map(str, train_years))}'
-    train_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f'Preparing TRAIN dataset for years {train_years}')
-    for f in train_files:
-        logger.info(f'Linking train file: {f}')
-        dst = train_dir / f'{f.parent.name}_{f.name}'
-        if not dst.exists():
-            try:
-                os.symlink(f.resolve(), dst)
-            except Exception:
-                shutil.copy2(f, dst)
-    train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('artifacts') / f'manifest_{'_'.join(map(str, train_years))}.json'
-    logger.info('Running feature discovery on TRAIN data...')
-    subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
-    for f in test_files:
-        logger.info(f'Evaluating TEST file: {f}')
-        out_dir = Path('artifacts') / f.parent.name / f.stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
-if __name__ == '__main__':
-    config = load_config()
-    data_dir = config.get('data_dir', 'data')
-    files = get_files(data_dir, config)
-    if not files:
-        logger.warning('No files found after filtering')
-        sys.exit(0)
-    splits = generate_walkforward_splits(files, config)
-    for i, (train, test) in enumerate(splits, 1):
-        logger.info(f'[Split {i}] Train: {train} | Test: {test}')
-        process_split(train, test, files)
-    logger.info('Done')
-
-
-================================================================================
 FILE: aggregate_metrics.py
 ================================================================================
 
@@ -242,25 +105,19 @@ def load_all_backtests() -> dict:
             year = parts[2]
             try:
                 df = pl.read_parquet(parquet_file)
-                print(f'Columns in {market}/{year}: {df.columns[:10]}...')
                 if 'ts_event' not in df.columns:
-                    print(f"Warning: {parquet_file} missing 'ts_event', skipping.")
                     continue
                 cols_to_keep = ['ts_event']
                 for col in essential_cols:
                     if col in df.columns:
                         cols_to_keep.append(col)
-                    else:
-                        print(f"Warning: {market}/{year} missing column '{col}'")
                 cols_to_keep = list(dict.fromkeys(cols_to_keep))
                 if 'pnl' not in cols_to_keep:
-                    print(f"Warning: {market}/{year} has no 'pnl' column, skipping.")
                     continue
                 df = df.select(cols_to_keep).sort('ts_event')
                 results_by_market.setdefault(market, []).append((year, df))
-                print(f'Loaded {market}/{year}: {df.height} rows, columns: {df.columns}')
-            except Exception as e:
-                print(f'Error loading {parquet_file}: {e}')
+            except Exception:
+                pass
     return results_by_market
 
 def aggregate_market(market: str, dfs: list) -> pl.DataFrame:
@@ -291,10 +148,8 @@ def main():
         sys.exit(0)
     all_pnl_series = []
     for market, year_dfs in results.items():
-        print(f'\n--- Aggregating {market} ---')
         combined_df = aggregate_market(market, year_dfs)
         if combined_df.is_empty():
-            print(f'  No data for {market}, skipping.')
             continue
         pnl_series = combined_df['pnl']
         positions_series = combined_df['position'] if 'position' in combined_df.columns else None
@@ -1200,6 +1055,143 @@ skip_completed: true
 
 
 ================================================================================
+FILE: debugging/#0_fluff_remover.py
+================================================================================
+
+import ast
+from pathlib import Path
+import re
+
+def remove_docstrings(source):
+    parsed = ast.parse(source)
+    for node in ast.walk(parsed):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+            if node.body and isinstance(node.body[0], ast.Expr):
+                if isinstance(node.body[0].value, ast.Str):
+                    node.body[0] = ast.Pass()
+    return ast.unparse(parsed)
+
+def clean_file(path):
+    text = Path(path).read_text()
+    text = remove_docstrings(text)
+    text = re.sub('#.*={3,}.*', '', text)
+    text = re.sub('#.*-{3,}.*', '', text)
+    text = re.sub('# *✅.*', '', text)
+    text = re.sub('\\n{3,}', '\n\n', text)
+    Path(path).write_text(text)
+
+def clean_repo(root='./'):
+    for file in Path(root).rglob('*.py'):
+        clean_file(file)
+if __name__ == '__main__':
+    clean_repo()
+
+
+================================================================================
+FILE: debugging/#3_run.py
+================================================================================
+
+import os
+import sys
+import subprocess
+import logging
+from pathlib import Path
+import shutil
+import yaml
+import polars as pl
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger('QuantRunner')
+
+def load_config():
+    config_path = Path(__file__).parent / 'config.yaml'
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        logger.info(f'Loaded config')
+        return config
+    return {}
+
+def get_files(data_dir, config):
+    files = list(Path(data_dir).rglob('*.parquet'))
+    start = config.get('start_year')
+    end = config.get('end_year')
+    allowed_markets = set(config.get('markets', []))
+    valid = []
+    for f in files:
+        try:
+            year = int(f.stem)
+        except:
+            continue
+        if start and year < start:
+            continue
+        if end and year > end:
+            continue
+        if allowed_markets and f.parent.name not in allowed_markets:
+            continue
+        valid.append(f)
+    max_files = config.get('max_files')
+    if max_files:
+        valid = sorted(valid)[:max_files]
+    return valid
+
+def generate_walkforward_splits(files, config):
+    train_years = config.get('training_years', 3)
+    wf_years = config.get('walkforward_years', 1)
+    years = sorted({int(f.stem) for f in files})
+    splits = []
+    for i in range(len(years)):
+        train_start = i
+        train_end = i + train_years
+        test_end = train_end + wf_years
+        if test_end > len(years):
+            break
+        train_range = years[train_start:train_end]
+        test_range = years[train_end:test_end]
+        splits.append((train_range, test_range))
+    logger.info(f'Generated {len(splits)} walkforward splits')
+    return splits
+
+def process_split(train_years, test_years, files):
+    train_files = [f for f in files if int(f.stem) in train_years]
+    test_files = [f for f in files if int(f.stem) in test_years]
+    if not train_files or not test_files:
+        logger.warning('Empty train/test split — skipping')
+        return
+    train_dir = Path('artifacts') / f'train_{'_'.join(map(str, train_years))}'
+    train_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f'Preparing TRAIN dataset for years {train_years}')
+    for f in train_files:
+        logger.info(f'Linking train file: {f}')
+        dst = train_dir / f'{f.parent.name}_{f.name}'
+        if not dst.exists():
+            try:
+                os.symlink(f.resolve(), dst)
+            except Exception:
+                shutil.copy2(f, dst)
+    train_glob = str(train_dir / '*.parquet')
+    manifest_path = Path('artifacts') / f'manifest_{'_'.join(map(str, train_years))}.json'
+    logger.info('Running feature discovery on TRAIN data...')
+    subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
+    for f in test_files:
+        logger.info(f'Evaluating TEST file: {f}')
+        out_dir = Path('artifacts') / f.parent.name / f.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
+if __name__ == '__main__':
+    config = load_config()
+    data_dir = config.get('data_dir', 'data')
+    files = get_files(data_dir, config)
+    if not files:
+        logger.warning('No files found after filtering')
+        sys.exit(0)
+    splits = generate_walkforward_splits(files, config)
+    for i, (train, test) in enumerate(splits, 1):
+        logger.info(f'[Split {i}] Train: {train} | Test: {test}')
+        process_split(train, test, files)
+    logger.info('Done')
+
+
+================================================================================
 FILE: quant/__init__.py
 ================================================================================
 
@@ -1870,7 +1862,6 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 FILE: quant/features/expansion.py
 ================================================================================
 
-pass
 import polars as pl
 import numpy as np
 import logging
@@ -1918,7 +1909,6 @@ def add_regime_conditioned_transforms(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def add_regime_all_interactions(df: pl.DataFrame, baseline_cols: list) -> pl.DataFrame:
-    pass
     regime = pl.col('regime')
     subset = [c for c in baseline_cols if any((x in c for x in ('vol', 'ret_1', 'momentum', 'spread')))]
     exprs = []
@@ -2043,16 +2033,11 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_acceleration(df)
     df = add_vwap_deviation(df)
     df = add_regime_all_interactions(df, baseline_feature_cols)
-    current_features = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
-    htf_cols = [c for c in df.columns if c.startswith(('htf_',))]
-    est_pairwise = min(config.MAX_PAIRWISE_INTERACTIONS, len(current_features) * (len(current_features) - 1) // 2)
-    est_cross = 0
-    if htf_cols:
-        est_cross = min(config.MAX_CROSS_TIMEFRAME_INTERACTIONS, len(current_features) * len(htf_cols))
-    total_est = len(df.columns) + est_pairwise + est_cross
-    if total_est > 10000:
-        raise MemoryError(f'Estimated feature count {total_est} exceeds safety limit of 10000. Reduce interaction caps.')
-    df = safe_add_pairwise_interactions(df, current_features)
+
+    if df.height <= 300000:
+        current_features = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
+        df = safe_add_pairwise_interactions(df, current_features)
+
     exclude_cols = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
     numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
     exprs = []
