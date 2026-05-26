@@ -53,6 +53,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         logger.info(f"Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days ({cutoff_date} onwards)")
     df_features = df_features.drop("date")
 
+    # ✅ CRITICAL FIX: hard cap rows to prevent OOM / SIGTERM
+    if df_features.height > 200_000:
+        logger.info(f"Capping discovery rows from {df_features.height} to 200000 for memory safety")
+        df_features = df_features.tail(200_000)
+
     # --- Feature columns (all except metadata and target) ---
     exclude_cols = {
         "ts_event", "open", "high", "low", "close", "volume",
@@ -61,6 +66,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     feature_cols = [c for c in df_features.columns if c not in exclude_cols and not c.startswith("_")]
     feature_cols = [c for c in feature_cols if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)]
 
+    # ✅ FIX: ensure memory-safe conversion
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
 

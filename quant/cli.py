@@ -1,3 +1,5 @@
+# quant/cli.py
+
 """
 src/cli.py
 Entrypoint for the Deterministic Quant Pipeline.
@@ -12,6 +14,7 @@ import psutil
 from pathlib import Path
 import polars as pl
 import json
+import hashlib
 
 from config import config
 from quant.ingest import load_and_clean_data
@@ -57,6 +60,12 @@ def prune_features_by_manifest(df, manifest_path, target_col):
     return df.select(keep)
 
 
+def _stable_data_tag(data_arg: str) -> str:
+    """Create a deterministic, collision-safe tag for cache files."""
+    h = hashlib.sha256(data_arg.encode()).hexdigest()[:12]
+    return h
+
+
 # =========================
 # MAIN
 # =========================
@@ -93,7 +102,8 @@ def main():
         cache_dir = Path(args.out).parent
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        data_tag = Path(args.data).stem
+        # ✅ FIX: stable hash instead of wildcard stem
+        data_tag = _stable_data_tag(args.data)
 
         aligned_cache = cache_dir / f"aligned_data_{data_tag}.parquet"
 
@@ -125,7 +135,8 @@ def main():
 
         cache_dir = Path(args.manifest).parent
 
-        data_tag = Path(args.data).stem
+        # ✅ FIX: stable hash instead of wildcard stem
+        data_tag = _stable_data_tag(args.data)
 
         aligned_cache = cache_dir / f"aligned_data_{data_tag}.parquet"
         feature_cache = cache_dir / f"full_feature_matrix_{data_tag}.parquet"
