@@ -1,0 +1,50 @@
+# =========================
+# MARKET SELECTION
+# =========================
+
+all_markets:
+  - ES
+  - NQ
+  - YM
+  - RTY
+  - CL
+  - GC
+  - SI
+  - HG
+  - ZN
+  - ZB
+  - 6E
+  - 6J
+
+# Leave empty = auto-select via correlation filtering
+markets: []
+
+# Correlation filtering
+use_correlation_filter: true
+correlation_threshold: 0.75
+max_markets: 5
+
+# =========================
+# TIME RANGE
+# =========================
+
+data_start_year: 2010
+data_end_year: 2026
+
+start_year: 2018
+end_year: 2023
+
+# =========================
+# WALKFORWARD SETTINGS
+# =========================
+
+training_years: 3
+walkforward_years: 1
+rolling: true   # enable rolling windows
+
+# =========================
+# PERFORMANCE
+# =========================
+
+max_files: 20
+skip_completed: true
