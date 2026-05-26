@@ -169,11 +169,9 @@ def expand_features(df: pl.DataFrame, baseline_feature_cols: list) -> pl.DataFra
     df = add_acceleration(df)
     df = add_vwap_deviation(df)
     df = add_regime_all_interactions(df, baseline_feature_cols)
-
     if df.height <= 300000:
         current_features = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
         df = safe_add_pairwise_interactions(df, current_features)
-
     exclude_cols = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
     numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
     exprs = []
