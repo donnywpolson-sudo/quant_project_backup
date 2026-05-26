@@ -1,10 +1,24 @@
-Improve this quant model.
+Optimize this quant model.
+
+Goals:
+- Improve robustness/generalization
+- Reduce overfitting
+- Preserve logic and structure
 
 Constraints:
-- Minimal changes only
-- Reduce overfitting, improve robustness
-- Keep logic and structure
-- Output full file only
+- Minimal, surgical changes only
+- No refactor or redesign
+- Keep variables and flow unchanged
+- No new deps unless essential
+
+Guidelines:
+- Prefer small fixes (regularization, normalization, stability)
+- Reduce overfitting sources (leakage, unstable signals)
+- Add checks only if necessary
+
+Output:
+- Full updated file only
+- No explanations or extra text
 
 Code:
 <CODE>

@@ -1,9 +1,21 @@
 Fix the error.
 
+Goals:
+- Fully resolve error
+- Preserve behavior
+
 Constraints:
 - Minimal changes only
-- Do not refactor
-- Output full file only
+- No refactor or logic changes
+
+Guidelines:
+- Fix only what's required
+- Keep changes localized
+- Use simplest valid fix
+
+Output:
+- Full updated file only
+- No explanations or extra text
 
 Code:
 <CODE>
