@@ -3,7 +3,6 @@ import numpy as np
 import polars as pl
 from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 from scipy.special import expit
 from joblib import Parallel, delayed
 from config import config
@@ -26,15 +25,18 @@ def robust_scale(X_train, X_test):
     iqr = np.clip(q3 - q1, 1e-06, None)
     X_train = (X_train - med) / iqr
     X_test = (X_test - med) / iqr
-    return (X_train, X_test)
+    return (X_train.astype(np.float32), X_test.astype(np.float32))
+
+def stabilize_targets(y):
+    y = safe_replace(y)
+    return np.clip(y, -1, 1)
 
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
     feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-09)
     if len(feature_cols) == 0:
-        logger.warning('No non-constant features left. Returning uniform probabilities.')
         return np.full(len(test_X), 0.5, dtype=np.float32)
     X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
-    y_train = train_y.to_numpy().astype(np.int8).ravel()
+    y_train = stabilize_targets(train_y.to_numpy().astype(np.float32).ravel())
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     X_train = safe_replace(safe_clip(X_train))
     X_test = safe_replace(safe_clip(X_test))
@@ -43,42 +45,42 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
     X_test = safe_clip(X_test, -5.0, 5.0)
     if config.MODEL_TYPE == 'Ridge':
         ridge_params = config.RIDGE_PARAMS.copy()
-        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 10.0)
+        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 20.0)
         model = Ridge(**ridge_params)
         model.fit(X_train, y_train)
         raw_pred = model.predict(X_test)
-        raw_pred = safe_clip(raw_pred, -3.0, 3.0)
+        raw_pred = safe_clip(raw_pred, -2.5, 2.5)
         probs = expit(raw_pred).astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
-        model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, min_samples_leaf=25, max_features=0.4, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
-        model.fit(X_train, y_train)
+        model = RandomForestClassifier(n_estimators=200, max_depth=4, min_samples_split=100, min_samples_leaf=50, max_features=0.3, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
+        model.fit(X_train, (y_train > 0).astype(np.int8))
         probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
-    probs = safe_clip(probs, 0.1, 0.9)
+    probs = safe_clip(probs, 0.15, 0.85)
     return probs.astype(np.float32)
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.1) -> np.ndarray:
     if alpha <= 0:
-        return probs
-    alpha = min(max(alpha, 0.0), 0.2)
+        return probs.astype(np.float32)
+    alpha = min(max(alpha, 0.05), 0.15)
     smoothed = np.zeros_like(probs, dtype=np.float32)
-    current_smooth = 0.5
+    current = 0.5
     last_session = None
     for i in range(len(probs)):
         p = float(probs[i])
         sess = session_ids[i]
         if sess != last_session:
-            current_smooth = 0.5
+            current = 0.5
             last_session = sess
-        p = min(max(p, 0.05), 0.95)
-        current_smooth = alpha * p + (1 - alpha) * current_smooth
-        smoothed[i] = current_smooth
+        p = min(max(p, 0.1), 0.9)
+        current = alpha * p + (1 - alpha) * current
+        smoothed[i] = current
     return smoothed.astype(np.float32)
 
 def compute_benchmark(df: pl.DataFrame) -> pl.Series:
-    close = df['close'].to_numpy()
-    open_ = df['open'].to_numpy()
+    close = df['close'].to_numpy().astype(np.float32)
+    open_ = df['open'].to_numpy().astype(np.float32)
     close_lagged = np.roll(close, 1)
     close_lagged[0] = close[0]
     sma20 = np.full(len(close), np.nan, dtype=np.float32)
@@ -88,16 +90,14 @@ def compute_benchmark(df: pl.DataFrame) -> pl.Series:
     position = np.roll(signal, 1)
     position[0] = 0.0
     ret_exec = (close - open_) / np.maximum(open_, config.EPS)
-    ret_exec = safe_replace(ret_exec).astype(np.float32)
-    pnl = position * ret_exec
-    pnl = safe_replace(pnl).astype(np.float32)
-    return pl.Series('benchmark_pnl', pnl, dtype=pl.Float32)
+    pnl = position * safe_replace(ret_exec)
+    return pl.Series('benchmark_pnl', safe_replace(pnl).astype(np.float32), dtype=pl.Float32)
 
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     probs = train_and_predict(train_X, train_y, test_original, feature_cols)
     if config.PROBABILITY_SMOOTHING_ALPHA > 0:
         session_ids = test_original['session_id'].to_numpy()
-        probs = smooth_probabilities(probs, session_ids, alpha=min(config.PROBABILITY_SMOOTHING_ALPHA, 0.15))
+        probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
     result = test_original.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
     return simulate_execution_classification(result)
@@ -111,7 +111,7 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
     first_train_df = df.filter(pl.col('date').is_in(first_train_dates))
     if len(first_train_df) > 0:
-        pruned_features = correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.95))
+        pruned_features = correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.9))
     else:
         pruned_features = feature_cols
     folds = []
@@ -134,8 +134,7 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if config.WF_PARALLEL_FOLDS == 1:
         results = []
         for train_X, train_y, test_original, feat_cols in tqdm(folds, desc='Walkforward folds', unit='fold'):
-            res = process_fold(train_X, train_y, test_original, feat_cols)
-            results.append(res)
+            results.append(process_fold(train_X, train_y, test_original, feat_cols))
     else:
         results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')((delayed(process_fold)(train_X, train_y, test_original, feat_cols) for train_X, train_y, test_original, feat_cols in folds))
     final = pl.concat(results)

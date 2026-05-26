@@ -191,7 +191,6 @@ if __name__ == '__main__':
 FILE: quant/walkforward.py
 ================================================================================
 
-pass
 import logging
 import numpy as np
 import polars as pl
@@ -213,8 +212,16 @@ def safe_clip(X, min_val=-10.0, max_val=10.0):
 def safe_replace(X):
     return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+def robust_scale(X_train, X_test):
+    med = np.median(X_train, axis=0)
+    q1 = np.percentile(X_train, 25, axis=0)
+    q3 = np.percentile(X_train, 75, axis=0)
+    iqr = np.clip(q3 - q1, 1e-06, None)
+    X_train = (X_train - med) / iqr
+    X_test = (X_test - med) / iqr
+    return (X_train, X_test)
+
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
-    pass
     feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-09)
     if len(feature_cols) == 0:
         logger.warning('No non-constant features left. Returning uniform probabilities.')
@@ -224,69 +231,67 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     X_train = safe_replace(safe_clip(X_train))
     X_test = safe_replace(safe_clip(X_test))
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    X_train_scaled = safe_clip(X_train_scaled, -5.0, 5.0)
-    X_test_scaled = safe_clip(X_test_scaled, -5.0, 5.0)
+    X_train, X_test = robust_scale(X_train, X_test)
+    X_train = safe_clip(X_train, -5.0, 5.0)
+    X_test = safe_clip(X_test, -5.0, 5.0)
     if config.MODEL_TYPE == 'Ridge':
         ridge_params = config.RIDGE_PARAMS.copy()
-        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 5.0)
+        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 10.0)
         model = Ridge(**ridge_params)
-        model.fit(X_train_scaled, y_train)
-        raw_pred = model.predict(X_test_scaled)
-        raw_pred = safe_clip(raw_pred, -4.0, 4.0)
+        model.fit(X_train, y_train)
+        raw_pred = model.predict(X_test)
+        raw_pred = safe_clip(raw_pred, -3.0, 3.0)
         probs = expit(raw_pred).astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
-        model = RandomForestClassifier(n_estimators=120, max_depth=4, min_samples_split=30, min_samples_leaf=15, max_features=0.5, random_state=config.SEED, n_jobs=1, class_weight='balanced')
-        model.fit(X_train_scaled, y_train)
-        probs = model.predict_proba(X_test_scaled)[:, 1].astype(np.float32)
+        model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, min_samples_leaf=25, max_features=0.4, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
+        model.fit(X_train, y_train)
+        probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
     probs = safe_clip(probs, 0.1, 0.9)
-    return probs
+    return probs.astype(np.float32)
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.1) -> np.ndarray:
-    pass
     if alpha <= 0:
         return probs
-    smoothed = np.zeros_like(probs)
+    alpha = min(max(alpha, 0.0), 0.2)
+    smoothed = np.zeros_like(probs, dtype=np.float32)
     current_smooth = 0.5
     last_session = None
-    for i, (p, sess) in enumerate(zip(probs, session_ids)):
+    for i in range(len(probs)):
+        p = float(probs[i])
+        sess = session_ids[i]
         if sess != last_session:
             current_smooth = 0.5
             last_session = sess
         p = min(max(p, 0.05), 0.95)
         current_smooth = alpha * p + (1 - alpha) * current_smooth
         smoothed[i] = current_smooth
-    return smoothed
+    return smoothed.astype(np.float32)
 
 def compute_benchmark(df: pl.DataFrame) -> pl.Series:
-    pass
     close = df['close'].to_numpy()
     open_ = df['open'].to_numpy()
     close_lagged = np.roll(close, 1)
     close_lagged[0] = close[0]
-    sma20 = np.full(len(close), np.nan)
+    sma20 = np.full(len(close), np.nan, dtype=np.float32)
     for i in range(20, len(close)):
-        sma20[i] = np.mean(close_lagged[i - 20 + 1:i + 1])
-    signal = np.where(close_lagged > sma20, 1.0, 0.0)
+        sma20[i] = np.mean(close_lagged[i - 19:i + 1])
+    signal = np.where(close_lagged > sma20, 1.0, 0.0).astype(np.float32)
     position = np.roll(signal, 1)
     position[0] = 0.0
     ret_exec = (close - open_) / np.maximum(open_, config.EPS)
-    ret_exec = safe_replace(ret_exec)
+    ret_exec = safe_replace(ret_exec).astype(np.float32)
     pnl = position * ret_exec
-    pnl = safe_replace(pnl)
-    return pl.Series('benchmark_pnl', pnl).cast(pl.Float32)
+    pnl = safe_replace(pnl).astype(np.float32)
+    return pl.Series('benchmark_pnl', pnl, dtype=pl.Float32)
 
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
-    pass
     probs = train_and_predict(train_X, train_y, test_original, feature_cols)
     if config.PROBABILITY_SMOOTHING_ALPHA > 0:
         session_ids = test_original['session_id'].to_numpy()
         probs = smooth_probabilities(probs, session_ids, alpha=min(config.PROBABILITY_SMOOTHING_ALPHA, 0.15))
-    result = test_original.with_columns(pl.Series('prediction_prob', probs))
+    result = test_original.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
     return simulate_execution_classification(result)
 
@@ -299,7 +304,7 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
     first_train_df = df.filter(pl.col('date').is_in(first_train_dates))
     if len(first_train_df) > 0:
-        pruned_features = correlation_prune(first_train_df, feature_cols, threshold=config.CORR_THRESHOLD)
+        pruned_features = correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.95))
     else:
         pruned_features = feature_cols
     folds = []

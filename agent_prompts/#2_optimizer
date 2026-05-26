@@ -22,8 +22,24 @@ Safe numerics (no div-by-zero, bounded transforms)
 No leakage via scaling/rolling windows
 Correct timestamps + session boundaries throughout
 
-OUTPUT
-Full updated file only
-No explanations in-line with the code
-No fluff, no comments, no docstrings, no decorative separators, no emojis, no extra text beyond what is required
-Add a short, concise summary (plain English) at the very end describing what was changed and how it improves robustness/generalization
+MULTI-FILE OUTPUT RULES
+If the code spans multiple modules/files:
+- Output EACH file separately
+- Clearly label each file with its filename before the code block
+- Each file must be independently copy-pasteable
+- Preserve original file structure and boundaries
+- Do NOT merge files into one
+
+OUTPUT FORMAT
+File: <filename_1>
+<full updated code>
+
+File: <filename_2>
+<full updated code>
+
+(repeat as needed for all files)
+
+No explanations inside code
+No comments, no docstrings, no fluff
+
+At the very end (outside code), include a short concise summary describing what improvements were made and how they improve robustness/generalization
