@@ -1,13 +1,54 @@
-DeepSeek → build everything (data → model → backtest)
+DeepSeek → Compress → Claude → ChatGPT → (optional Claude)
 
-↓ (compress system into bullet logic)
+Compress this trading system into minimal form.
 
-Claude → run 1-pass critique (minimal prompt)
+Use this format:
 
-↓ (copy output)
+DATA:
+FEATURES:
+LABEL:
+LOGIC:
+BACKTEST:
+VALIDATION:
+OPT:
+RISK:
 
-ChatGPT → patch / improve system
+Rules:
+- remove all code
+- keep only core logic and assumptions
+- be concise (1–2 lines per section)
 
-↓ (optional)
+System:
+[PASTE YOUR FULL SYSTEM]
 
-Claude → final sanity check
+
+Act as a senior quant reviewer.
+
+Find:
+- leakage
+- overfitting
+- unrealistic assumptions
+- backtest flaws
+
+Be concise.
+
+Output:
+- 5 flaws
+- 3 risks
+- overfitting: low/med/high + why
+- 2 failure modes
+- 3 fixes
+
+System:
+[PASTE COMPRESSED OUTPUT]
+
+
+Fix this trading system based on the critique below.
+
+Return improved system ONLY in compressed format.
+
+Critique:
+[PASTE CLAUDE OUTPUT]
+
+Original system:
+[PASTE COMPRESSED SYSTEM]
