@@ -1,0 +1,22 @@
+Act as a senior quant reviewer.
+
+Goal: find critical flaws in this trading system.
+
+Focus ONLY on:
+1. leakage / lookahead
+2. overfitting
+3. bad assumptions
+4. backtest flaws
+5. real-world failure modes
+
+Be concise and critical.
+
+Output format (strict):
+- Top 5 critical flaws (1–2 lines each)
+- 3 hidden risks (1 line each)
+- Overfitting risk: low / medium / high + why (2 lines)
+- 2 real-world failure scenarios (1–2 lines each)
+- 3 fixes (short, concrete)
+
+System:
+[PASTE MINIMAL CODE OR LOGIC]

@@ -1,0 +1,13 @@
+DeepSeek → build everything (data → model → backtest)
+
+↓ (compress system into bullet logic)
+
+Claude → run 1-pass critique (minimal prompt)
+
+↓ (copy output)
+
+ChatGPT → patch / improve system
+
+↓ (optional)
+
+Claude → final sanity check
