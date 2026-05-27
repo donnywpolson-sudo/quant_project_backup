@@ -3,9 +3,18 @@ from config import config
 
 def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
     horizon = config.TARGET_5M_HORIZON
-    log_close = pl.col('close').log()
-    forward_ret_raw = log_close.shift(-horizon) - log_close
-    df = df.with_columns([(forward_ret_raw * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_5m'), (forward_ret_raw > 0).cast(pl.Int8).alias('target_sign')])
+    # Execution-aligned target: enter at open[t+1], exit at close[t+1]
+    # This is the exact return the simulator realizes (before costs).
+    # Previously used close-to-close log return, which included the
+    # un-capturable close[t] -> open[t+1] gap — a structural mismatch
+    # between what the model predicted and what the execution engine traded.
+    close_next = pl.col('close').shift(-horizon)
+    open_next = pl.col('open').shift(-horizon)
+    forward_ret_raw = (close_next - open_next) / open_next.clip(config.EPS, None)
+    df = df.with_columns([
+        (forward_ret_raw * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_5m'),
+        (forward_ret_raw > 0).cast(pl.Int8).alias('target_sign')
+    ])
     return df
 
 def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:

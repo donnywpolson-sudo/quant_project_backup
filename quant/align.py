@@ -39,6 +39,9 @@ def align_htf_streams(
     # Daily bars: SHIFT TIMESTAMP FORWARD by 1 day so that a 5-min bar
     # at e.g. 10:30 AM on day D matches the daily bar at midnight (D-1)+1d = midnight D
     # which represents the COMPLETED prior day's data.
+    # Forward-fill after the join handles the boundary: the first few 5-min bars
+    # of a session may fall before the shifted daily timestamp; they legitimately
+    # carry forward the most recent completed daily bar (from the prior session).
     if df_daily is not None and (not df_daily.is_empty()):
         df_daily = df_daily.sort('ts_event')
         # Shift daily timestamps forward by 1 day so backward join yields prior day
@@ -51,5 +54,14 @@ def align_htf_streams(
         if renames_daily:
             df_daily = df_daily.rename(renames_daily)
         df_5min = df_5min.join_asof(df_daily, on='ts_event', strategy='backward')
+        # Forward- and backward-fill daily columns to cover boundary bars:
+        # - bars that fall between the shifted daily timestamp and the next daily bar
+        #   need forward_fill to carry the prior completed day's data forward
+        # - bars at the very start of the series (before any match) need backward_fill
+        daily_cols = [c for c in df_5min.columns if c.startswith('daily_')]
+        if daily_cols:
+            df_5min = df_5min.with_columns(
+                [pl.col(c).forward_fill().backward_fill() for c in daily_cols]
+            )
 
     return df_5min
