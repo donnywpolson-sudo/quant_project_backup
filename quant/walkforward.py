@@ -5,7 +5,7 @@ from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestClassifier
 from scipy.special import expit
 from joblib import Parallel, delayed
-from config import config
+from quant.config import config
 from quant.execution.simulator import simulate_execution_classification
 from quant.features.corr_prune import correlation_prune
 from quant.features.variance_filter import remove_constant_features
@@ -49,7 +49,7 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
     X_test = safe_clip(X_test, -4.0, 4.0)
     if config.MODEL_TYPE == 'Ridge':
         ridge_params = config.RIDGE_PARAMS.copy()
-        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 50.0)
+        ridge_params['alpha'] = ridge_params.get('alpha', 1.0)
         model = Ridge(**ridge_params)
         model.fit(X_train, y_train)
         raw_pred = model.predict(X_test)

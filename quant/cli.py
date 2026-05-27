@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import json
 import hashlib
-from config import config
+from quant.config import config
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
 from quant.discovery import run_feature_discovery

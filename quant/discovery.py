@@ -10,7 +10,7 @@ import psutil
 import hashlib
 from datetime import datetime
 from sklearn.ensemble import ExtraTreesRegressor
-from config import config
+from quant.config import config
 from tqdm import tqdm
 logger = logging.getLogger(__name__)
 

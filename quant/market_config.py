@@ -2,7 +2,7 @@ pass
 import yaml
 import logging
 from pathlib import Path
-from config import config
+from quant.config import config
 logger = logging.getLogger(__name__)
 
 def detect_symbol_from_path(data_path: str) -> str:

@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import glob
 import shutil
-from config import config
+from quant.config import config
 from tqdm import tqdm
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TIMEZONE)

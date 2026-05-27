@@ -1,5 +1,5 @@
 import polars as pl
-from config import config
+from quant.config import config
 
 def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
     horizon = config.TARGET_5M_HORIZON
@@ -18,8 +18,13 @@ def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
-    if 'target_5m' in df.columns:
-        return df.filter(pl.col('target_5m').is_not_null())
+    filter_expr = None
+    for target_col in ('target_5m', 'target_4h', 'target_1h'):
+        if target_col in df.columns:
+            col_filter = pl.col(target_col).is_not_null()
+            filter_expr = col_filter if filter_expr is None else filter_expr & col_filter
+    if filter_expr is not None:
+        return df.filter(filter_expr)
     return df
 
 def add_target_1h(df: pl.DataFrame) -> pl.DataFrame:

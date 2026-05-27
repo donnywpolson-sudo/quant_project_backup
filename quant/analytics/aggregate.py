@@ -15,7 +15,7 @@ def compute_pro_metrics(
     positions_series: pl.Series = None,
     benchmark_series: pl.Series = None
 ) -> dict:
-    pnl = pnl_series.to_numpy().astype(np.float64)
+    pnl = pnl_series.to_numpy().astype(np.float32)
     eps = 1e-12
 
     # --- Core PnL metrics ---
@@ -109,7 +109,7 @@ def compute_pro_metrics(
     benchmark_maxdd = None
     correlation = None
     if benchmark_series is not None:
-        bench = benchmark_series.to_numpy().astype(np.float64)
+        bench = benchmark_series.to_numpy().astype(np.float32)
         bench_avg = float(bench.mean())
         bench_std = float(bench.std())
         if bench_std > eps:

@@ -9,7 +9,7 @@ def correlation_prune(df: pl.DataFrame, feature_cols: list, threshold: float=0.9
     if df.height == 0 or len(feature_cols) == 0:
         return feature_cols
     logger.info(f'Running correlation pruning on {len(feature_cols)} features (threshold={threshold})...')
-    X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float64)
+    X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     with np.errstate(divide='ignore', invalid='ignore'):
         corr = np.corrcoef(X, rowvar=False)
     keep = []

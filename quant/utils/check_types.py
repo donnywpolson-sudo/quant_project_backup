@@ -1,7 +1,7 @@
 import polars as pl
 import sys
 import argparse
-from config import config
+from quant.config import config
 
 def validate_dtypes(parquet_path: str):
     pass
