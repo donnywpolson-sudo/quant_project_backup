@@ -64,7 +64,6 @@ def calculate_metrics(file_path: str):
         print(f'Benchmark Sharpe:     {benchmark_sharpe:12.3f}')
         print(f'Benchmark MaxDD:      {benchmark_maxdd:12.4f}')
     print('=' * 50)
-
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: python -m src.analytics <path_to_backtest_results.parquet>')
