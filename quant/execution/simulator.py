@@ -181,11 +181,14 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #     are all consolidated into a single cost rate applied to
     #     absolute position changes (entry + exit friction).
     # ------------------------------------------------------------------------
+    # TX_COST_PER_ROUNDTURN (1.5 bps) covers the full round-trip (entry + exit).
+    # unit_cost is charged per position change, and a round-trip has two
+    # position changes (enter and exit), so we divide by 2 to avoid double-charging.
     unit_cost = (
         config.COMMISSION_PER_TRADE
         + config.SLIPPAGE_K * pl.col('spread')
         + config.VOL_PENALTY * pl.col('vol')
-        + config.TX_COST_PER_ROUNDTURN
+        + config.TX_COST_PER_ROUNDTURN / 2.0
     ).clip(0.0, 0.01)
     df = df.with_columns(unit_cost.alias('unit_cost'))
 

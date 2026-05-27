@@ -32,13 +32,42 @@ def calculate_metrics(file_path: str):
         turnover = position_changes / avg_position if avg_position > 0 else 0.0
     else:
         turnover = 0.0
+
+    # --- Hit Rate (from positions vs forward returns) ---
+    hit_rate = 0.0
+    if 'position' in df.columns and 'ret_exec' in df.columns:
+        pos = df['position'].to_numpy()
+        ret_exec = df['ret_exec'].to_numpy()
+        # Fraction of non-zero position bars where
+        # sign(position) == sign(ret_exec)
+        nonzero = pos != 0
+        if nonzero.sum() > 0:
+            correct = (np.sign(pos[nonzero]) == np.sign(ret_exec[nonzero])).sum()
+            hit_rate = correct / nonzero.sum()
+
+    # --- Spearman IC: prediction_prob vs realized forward return ---
+    spearman_ic = None
+    if 'prediction_prob' in df.columns and 'ret_exec' in df.columns:
+        from scipy.stats import spearmanr as _spearmanr
+        try:
+            pred = df['prediction_prob'].to_numpy().astype(np.float64)
+            targ = df['ret_exec'].to_numpy().astype(np.float64)
+            mask = np.isfinite(pred) & np.isfinite(targ)
+            if mask.sum() >= 3:
+                ic_val, _ = _spearmanr(pred[mask], targ[mask])
+                spearman_ic = round(float(ic_val), 4)
+        except Exception:
+            pass
+
+    # --- Legacy Prediction-Target correlation (kept for backward compat) ---
     corr = 0.0
     if 'prediction' in df.columns and 'target_5m' in df.columns:
-        pred = df['prediction'].to_numpy()
+        pred_old = df['prediction'].to_numpy()
         target = df['target_5m'].to_numpy()
-        mask = ~(np.isnan(pred) | np.isnan(target))
+        mask = ~(np.isnan(pred_old) | np.isnan(target))
         if mask.sum() > 1:
-            corr = np.corrcoef(pred[mask], target[mask])[0, 1]
+            corr = np.corrcoef(pred_old[mask], target[mask])[0, 1]
+
     benchmark_sharpe = None
     benchmark_maxdd = None
     if 'benchmark_pnl' in df.columns:
@@ -62,6 +91,11 @@ def calculate_metrics(file_path: str):
     print(f'Max Drawdown:         {max_drawdown:12.4f}')
     print(f'Turnover:             {turnover:12.4f}')
     print(f'Prediction-Target Corr:{corr:12.4f}')
+    print(f'Hit Rate (bar-level): {hit_rate:12.4f}')
+    if spearman_ic is not None:
+        print(f'Spearman IC:           {spearman_ic:12.4f}')
+    else:
+        print(f'Spearman IC:           {"N/A":>12}')
     if benchmark_sharpe is not None:
         print(f'Benchmark Sharpe:     {benchmark_sharpe:12.3f}')
         print(f'Benchmark MaxDD:      {benchmark_maxdd:12.4f}')

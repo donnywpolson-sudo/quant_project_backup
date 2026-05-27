@@ -2,6 +2,7 @@ import json
 import polars as pl
 import numpy as np
 from pathlib import Path
+from scipy.stats import spearmanr
 
 # Number of 5-minute bars in a trading year (~252 days * ~23.5 hours of continuous futures)
 # ES trades ~23 hours/day = 276 bars/day * 252 = 69,552
@@ -10,10 +11,38 @@ ANNUAL_FACTOR = 66528
 RISK_FREE_RATE = 0.0
 
 
+def compute_ic(predictions: pl.Series, targets: pl.Series) -> dict:
+    """Compute Information Coefficient using Spearman rank correlation.
+
+    Args:
+        predictions: Model prediction probabilities (or any continuous signal).
+        targets: Realized forward returns or target labels.
+
+    Returns:
+        dict with 'spearman_ic' (float) rounded to 4 decimals, or None if
+        the computation fails (e.g., constant arrays).
+    """
+    try:
+        pred = predictions.to_numpy().astype(np.float64)
+        targ = targets.to_numpy().astype(np.float64)
+        mask = np.isfinite(pred) & np.isfinite(targ)
+        if mask.sum() < 3:
+            return {'spearman_ic': None}
+        corr, pvalue = spearmanr(pred[mask], targ[mask])
+        return {
+            'spearman_ic': round(float(corr), 4),
+            'spearman_ic_pvalue': round(float(pvalue), 6),
+        }
+    except Exception:
+        return {'spearman_ic': None}
+
+
 def compute_pro_metrics(
     pnl_series: pl.Series,
     positions_series: pl.Series = None,
-    benchmark_series: pl.Series = None
+    benchmark_series: pl.Series = None,
+    predictions_series: pl.Series = None,
+    targets_series: pl.Series = None,
 ) -> dict:
     pnl = pnl_series.to_numpy().astype(np.float32)
     eps = 1e-12
@@ -128,6 +157,11 @@ def compute_pro_metrics(
             except Exception:
                 correlation = 0.0
 
+    # --- Information Coefficient ---
+    ic_result = {}
+    if predictions_series is not None and targets_series is not None:
+        ic_result = compute_ic(predictions_series, targets_series)
+
     return {
         'total_pnl': round(total_pnl, 6),
         'total_return_percent': round(total_return_pct, 4),
@@ -143,6 +177,8 @@ def compute_pro_metrics(
         'number_of_trades': int(trades),
         'avg_holding_bars': round(avg_holding_bars, 1),
         'turnover': round(turnover, 4),
+        'spearman_ic': ic_result.get('spearman_ic'),
+        'spearman_ic_pvalue': ic_result.get('spearman_ic_pvalue'),
         'benchmark_sharpe': round(benchmark_sharpe, 3) if benchmark_sharpe is not None else None,
         'benchmark_max_drawdown': round(benchmark_maxdd, 6) if benchmark_maxdd is not None else None,
         'correlation_with_benchmark': round(correlation, 4) if correlation is not None else None,
@@ -160,7 +196,8 @@ def load_all_backtests(artifacts_root='artifacts') -> dict:
             if 'pnl' not in df.columns or 'ts_event' not in df.columns:
                 continue
             keep = ['ts_event']
-            for col in ['pnl', 'position', 'benchmark_pnl']:
+            for col in ['pnl', 'position', 'benchmark_pnl',
+                        'prediction_prob', 'ret_exec']:
                 if col in df.columns:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
@@ -177,10 +214,14 @@ def aggregate_market(dfs: list) -> pl.DataFrame:
 def compute_year_breakdown(year_dfs: list) -> list:
     breakdown = []
     for year, df in year_dfs:
+        predictions = df['prediction_prob'] if 'prediction_prob' in df.columns else None
+        targets = df['ret_exec'] if 'ret_exec' in df.columns else None
         metrics = compute_pro_metrics(
             df['pnl'],
             df['position'] if 'position' in df.columns else None,
-            df['benchmark_pnl'] if 'benchmark_pnl' in df.columns else None
+            df['benchmark_pnl'] if 'benchmark_pnl' in df.columns else None,
+            predictions_series=predictions,
+            targets_series=targets,
         )
         metrics['year'] = year
         breakdown.append(metrics)
@@ -200,10 +241,14 @@ def run_aggregation(artifacts_root='artifacts'):
         combined = aggregate_market(year_dfs)
         if combined.is_empty():
             continue
+        predictions = combined['prediction_prob'] if 'prediction_prob' in combined.columns else None
+        targets = combined['ret_exec'] if 'ret_exec' in combined.columns else None
         metrics = compute_pro_metrics(
             combined['pnl'],
             combined['position'] if 'position' in combined.columns else None,
-            combined['benchmark_pnl'] if 'benchmark_pnl' in combined.columns else None
+            combined['benchmark_pnl'] if 'benchmark_pnl' in combined.columns else None,
+            predictions_series=predictions,
+            targets_series=targets,
         )
         metrics.update({
             'market': market,
@@ -214,7 +259,8 @@ def run_aggregation(artifacts_root='artifacts'):
         out = output_dir / f'{market}_metrics.json'
         with open(out, 'w') as f:
             json.dump(metrics, f, indent=2)
-        print(f"Saved {out} | Sharpe={metrics['sharpe_annualized']} | PnL={metrics['total_pnl']}")
+        ic_str = f"IC={metrics['spearman_ic']}" if metrics.get('spearman_ic') is not None else "IC=N/A"
+        print(f"Saved {out} | Sharpe={metrics['sharpe_annualized']} | HitRate={metrics['win_rate']} | {ic_str} | PnL={metrics['total_pnl']}")
         all_series.append(combined['pnl'])
     if len(all_series) > 1:
         combined = None
