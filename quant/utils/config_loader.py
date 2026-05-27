@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import time
@@ -24,6 +25,31 @@ import yaml
 from quant.config import config
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Thread-limiting environment variables — must be set BEFORE any numeric
+# library (numpy, scipy, polars, etc.) is imported.  Executes at module
+# import time so that anything importing config_loader (e.g. run.py) gets the
+# enforcement automatically.
+# ---------------------------------------------------------------------------
+def _enforce_single_threaded() -> None:
+    """Force known threading env vars to '1' so heavy numeric libs stay
+    single-threaded.  Uses direct assignment (os.environ[key] = …) to
+    override any pre-existing values."""
+    _THREAD_VARS = {
+        'OMP_NUM_THREADS': '1',
+        'OPENBLAS_NUM_THREADS': '1',
+        'MKL_NUM_THREADS': '1',
+        'POLARS_MAX_THREADS': '1',
+    }
+    for var, val in _THREAD_VARS.items():
+        os.environ[var] = val
+    logger.debug('Thread-limiting environment variables enforced: %s',
+                 list(_THREAD_VARS.keys()))
+
+
+_enforce_single_threaded()
 
 _LOADED = False
 
@@ -130,6 +156,9 @@ _DEFAULTS = {
     'CORRELATION_THRESHOLD': 0.75,
     'MAX_FILES': 20,
     'SKIP_COMPLETED': True,
+    # -- pipeline toggles (A/B test) ------------------------------------------
+    'ENABLE_DISCOVERY': True,
+    'ENABLE_EXPANSION': True,
     'ROLLING_WF': True,
     'DATA_START_YEAR': 2010,
     'DATA_END_YEAR': 2026,
@@ -364,6 +393,10 @@ def load_config(config_path: str | Path = None) -> SimpleNamespace:
     _apply_flat(cfg, 'data_end_year', 'DATA_END_YEAR')
     _apply_flat(cfg, 'start_year', 'START_YEAR')
     _apply_flat(cfg, 'end_year', 'END_YEAR')
+
+    # -- pipeline toggles --------------------------------------------------
+    _apply_flat(cfg, 'enable_discovery', 'ENABLE_DISCOVERY')
+    _apply_flat(cfg, 'enable_expansion', 'ENABLE_EXPANSION')
 
     # training_years / walkforward_years / rolling at top-level (legacy)
     if 'training_years' in cfg and 'walkforward' not in cfg:

@@ -93,12 +93,18 @@ def main():
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
         print('[CLI] Applying manifest...', flush=True)
-        df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+        if config.ENABLE_DISCOVERY:
+            df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+        else:
+            print('[CLI] Discovery disabled — skipping manifest pruning, using baseline features only.', flush=True)
+            df_pruned = df_features
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
         X = df_pruned.drop(target_col)
-        feature_cols = [c for c in X.columns if c not in {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}]
+        _exclude = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime', 'date', 'benchmark_pnl'}
+        _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
+        feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
         result_df = run_walkforward(X, y, feature_cols, target_col)
         os.makedirs(args.out, exist_ok=True)

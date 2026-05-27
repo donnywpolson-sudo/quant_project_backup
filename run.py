@@ -81,8 +81,22 @@ def process_split(train_years, test_years, files):
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('artifacts') / f"manifest_{'_'.join(map(str, train_years))}.json"
-    logger.info('Running feature discovery on TRAIN data...')
-    subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
+    if config.get('enable_discovery', True):
+        logger.info('Running feature discovery on TRAIN data...')
+        subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
+    else:
+        logger.info('Discovery disabled — generating placeholder manifest from baseline features.')
+        import json
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        placeholder = {
+            'version': '1.0',
+            'feature_names': [],
+            'selection_seed': config.get('preprocessing', {}).get('seed', 42),
+            'selection_date': 'placeholder',
+            'discovery_status': 'disabled',
+        }
+        with open(manifest_path, 'w') as f:
+            json.dump(placeholder, f)
     for f in test_files:
         logger.info(f'Evaluating TEST file: {f}')
         out_dir = Path('artifacts') / f.parent.name / f.stem

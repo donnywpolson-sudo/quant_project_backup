@@ -19,6 +19,12 @@
 # ===================================================================
 
 # =========================
+# PIPELINE TOGGLES — A/B test controls
+# =========================
+enable_discovery: true
+enable_expansion: true
+
+# =========================
 # UNIVERSE / MARKET SELECTION
 # =========================
 all_markets:
@@ -37,6 +43,11 @@ all_markets:
 
 markets:
   - ES
+
+# Legacy top-level keys for run.py compatibility
+training_years: 1
+walkforward_years: 1
+rolling: true
 
 use_correlation_filter: false
 correlation_threshold: 0.75
