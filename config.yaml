@@ -36,6 +36,11 @@ features:
   max_cross_timeframe_interactions: 50
   # Keep other settings as-is, but verify you aren't doing 500 interactions
 
+# Execution: realistic friction parameters.
+# Set all costs to 0 to simulate a frictionless environment.
+execution:
+  tx_cost_per_roundturn: 0.00015  # 1.5 bps per round-turn (entry + exit)
+
 # Walkforward: Standard window, but fewer markets = much faster iterations
 walkforward:
   wf_train_days: 60

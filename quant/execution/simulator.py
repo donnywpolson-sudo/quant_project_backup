@@ -12,10 +12,6 @@ import numpy as np
 import polars as pl
 from quant.config import config
 
-
-# Fixed transaction cost: 1.5 basis points (0.00015) per round-turn
-TX_COST_PER_ROUNDTURN = 0.00015
-
 # Fixed contract size multiplier for position sizing
 FIXED_CONTRACT_SIZE = 1.0
 
@@ -180,14 +176,16 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(spread.alias('spread'))
 
     # ------------------------------------------------------------------------
-    # 10. Per-bar cost: 1.5 bps applied to position CHANGE (round-turn cost)
-    #     First compute position changes, then apply cost per round-turn.
-    #     unit_cost is per-bar but only charged when position changes.
+    # 10. Unified per-bar cost charged on position CHANGE (turnover).
+    #     Commission, slippage, vol penalty, and tx_cost_per_roundturn
+    #     are all consolidated into a single cost rate applied to
+    #     absolute position changes (entry + exit friction).
     # ------------------------------------------------------------------------
     unit_cost = (
         config.COMMISSION_PER_TRADE
         + config.SLIPPAGE_K * pl.col('spread')
         + config.VOL_PENALTY * pl.col('vol')
+        + config.TX_COST_PER_ROUNDTURN
     ).clip(0.0, 0.01)
     df = df.with_columns(unit_cost.alias('unit_cost'))
 
@@ -218,21 +216,13 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pos_change.fill_null(0.0).alias('pos_change'))
 
     # ------------------------------------------------------------------------
-    # 14. Transaction cost in pnl terms: pos_change * TX_COST_PER_ROUNDTURN
-    #     This is the friction per trade (entry + exit combined as 1.5 bps)
-    # ------------------------------------------------------------------------
-    tx_cost = pl.col('pos_change') * TX_COST_PER_ROUNDTURN
-    df = df.with_columns(tx_cost.alias('tx_cost'))
-
-    # ------------------------------------------------------------------------
-    # 15. PnL: position * forward return - transaction costs.
+    # 14. PnL: position * forward return - unified transaction costs.
     #     position is from t-1 signal, ret_exec is t->t+1 return.
-    #     This is a standard t+1 execution model.
-    #     Additional per-bar micro cost (commission, slippage proportional to
-    #     position) subtracted.
+    #     Friction (commission, slippage, vol penalty, tx_cost) is charged
+    #     on position changes (turnover) only, not on held position.
     # ------------------------------------------------------------------------
-    pnl = pl.col('position') * pl.col('ret_exec') - pl.col('tx_cost')
-    pnl = pnl - pl.col('unit_cost') * pl.col('position').abs()
+    pnl = pl.col('position') * pl.col('ret_exec')
+    pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
     pnl = pnl.fill_nan(0.0).clip(-0.05, 0.05)
     df = df.with_columns(pnl.alias('pnl'))
 
