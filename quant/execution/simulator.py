@@ -44,9 +44,9 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
 
     # ------------------------------------------------------------------------
     # 2. HTF Directional Bias: gate trades against HTF hourly trend alignment.
-    #    If htf_hourly_trend_alignment > 0  -> bias long  (suppress shorts)
-    #    If htf_hourly_trend_alignment < 0  -> bias short (suppress longs)
-    #    Threshold from config.HTF_TREND_THRESHOLD controls the neutral zone.
+    #    Long only if htf_hourly_trend_alignment > 0 (suppress longs otherwise)
+    #    Short only if htf_hourly_trend_alignment < 0 (suppress shorts otherwise)
+    #    Strict zero-boundary gating — no neutral zone threshold.
     # ------------------------------------------------------------------------
     col_names = df.columns
     if 'htf_hourly_trend_alignment' in col_names:
@@ -55,13 +55,12 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
             .fill_null(0.0)
             .cast(pl.Float32)
         )
-        threshold = pl.lit(config.HTF_TREND_THRESHOLD, dtype=pl.Float32)
         target = pl.col('target_exec')
 
         target_gated = (
-            pl.when((target > 0.0) & (htf_align <= threshold))
+            pl.when((target > 0.0) & (htf_align <= 0.0))
             .then(pl.lit(0.0, dtype=pl.Float32))
-            .when((target < 0.0) & (htf_align >= -threshold))
+            .when((target < 0.0) & (htf_align >= 0.0))
             .then(pl.lit(0.0, dtype=pl.Float32))
             .otherwise(target)
         )

@@ -63,7 +63,7 @@ def compute_pro_metrics(
     turnover = 0.0
 
     if positions_series is not None and len(positions_series) > 0:
-        positions = positions_series.to_numpy()
+        positions = positions_series.to_numpy().astype(np.float32)
         # Turnover: sum of absolute position changes divided by total bars
         # This measures how many times the position turns over relative to the sample
         pos_changes = np.abs(np.diff(positions, prepend=0))
@@ -92,7 +92,7 @@ def compute_pro_metrics(
         if current_pos != 0:
             trade_pnl.append(cum_pnl_local[-1] - cum_pnl_local[entry_bar])
 
-        trade_pnl = np.array(trade_pnl)
+        trade_pnl = np.array(trade_pnl, dtype=np.float32)
         if len(trade_pnl) > 0:
             gains = trade_pnl[trade_pnl > 0]
             losses = trade_pnl[trade_pnl < 0]
