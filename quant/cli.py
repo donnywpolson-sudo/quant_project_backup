@@ -9,14 +9,13 @@ import polars as pl
 import json
 import hashlib
 from quant.config import config
+from quant.utils.config_loader import load_config
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
 from quant.discovery import run_feature_discovery
 from quant.walkforward import run_walkforward
 from quant.io.canonical_parquet import write_canonical_parquet
 from quant.analytics import calculate_metrics, run_aggregation
-random.seed(config.SEED)
-np.random.seed(config.SEED)
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
@@ -54,6 +53,9 @@ def main():
     aggregate_parser = subparsers.add_parser('aggregate')
     aggregate_parser.add_argument('--artifacts', default='artifacts')
     args = parser.parse_args()
+    load_config()  # populate config namespace from config.yaml
+    random.seed(config.SEED)
+    np.random.seed(config.SEED)
     check_memory_safety()
     if args.command in ('discover', 'run'):
         from quant.market_config import detect_symbol_from_path, load_market_config

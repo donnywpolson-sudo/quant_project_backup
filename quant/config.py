@@ -1,74 +1,19 @@
-from datetime import time
+"""
+config.py — Global configuration namespace.
+
+Creates a shared SimpleNamespace that is populated at runtime by
+``quant.utils.config_loader.load_config()`` which reads ``config.yaml``.
+
+All other modules import ``config`` from here, ensuring a single
+source of truth for every parameter.
+
+Usage:
+    from quant.config import config
+    print(config.SEED)
+    print(config.BOOTSTRAP_FOLDS)
+"""
+
 from types import SimpleNamespace
+
+# The *only* line — all values are set by config_loader.load_config().
 config = SimpleNamespace()
-config.DATA_GLOB = 'data/futures/*.parquet'
-config.MANIFEST_PATH = 'artifacts/manifest.json'
-config.BASELINE_FEATURES_FILE = 'config/baseline_features.yaml'
-config.BASELINE_FEATURES_PERSIST_PATH = 'artifacts/baseline_feature_matrix.parquet'
-config.TRADES_OUT = 'artifacts/trades.csv'
-config.LOG_DIR = 'logs/'
-config.RAM_CAP_BYTES = 14 * 1024 ** 3
-config.RSS_STOP_BYTES = 13.5 * 1024 ** 3
-config.ROWS_PER_CHUNK_MAX = 5000000
-config.MEMORY_SAFETY_MARGIN = 0.95
-config.TIMEZONE = 'America/New_York'
-config.SESSION_START_LOCAL = time(18, 0)
-config.SESSION_END_LOCAL = time(16, 0)
-config.SESSION_BREAK_START_LOCAL = time(17, 0)
-config.SESSION_BREAK_END_LOCAL = time(18, 0)
-config.RESAMPLE_FREQUENCIES = ['5m', '1h', '1d']
-config.DROP_INCOMPLETE_ROWS = True
-config.ROLL_WINDOWS = [5, 10, 20, 50]
-config.ROLL_WINDOWS_1H = [2, 4, 6, 12]
-config.ROLL_WINDOWS_DAILY = [5, 10, 20]
-config.ROLL_WINDOW_MIN_ROWS = 20
-config.FEATURE_TRANSFORMS = ['lags', 'ratios', 'z_scores', 'pairwise_products_limited', 'cross_timeframe_ratios']
-config.MAX_PAIRWISE_INTERACTIONS = 500
-config.MAX_CROSS_TIMEFRAME_INTERACTIONS = 200
-config.HTF_TREND_WINDOWS = [5, 10, 20]
-config.HTF_VOLATILITY_WINDOWS = [5, 10, 20]
-config.HTF_ALIGNMENT_FILTER = True
-config.HTF_TREND_THRESHOLD = 0.1
-config.VOL_MEDIAN_WINDOW = 20
-config.VOL_SMOOTH_WINDOW = 5
-config.REGIME_HIGH_THRESH = 0.6
-config.REGIME_LOW_THRESH = 0.4
-config.REGIME_MISSING_DEFAULT = 0.0
-config.TARGET_5M_HORIZON = 1
-config.TARGET_SCALE_FACTOR = 100.0
-config.DISCOVERY_WINDOW_DAYS = 60
-config.BOOTSTRAP_FOLDS = 30
-config.EXTRA_TREES_PARAMS = {'random_state': 42, 'n_jobs': 1, 'n_estimators': 100, 'max_depth': 8, 'max_features': 0.3, 'bootstrap': False}
-config.SELECTION_FREQ_THRESHOLD = 0.75
-config.SIGN_CONSISTENCY_THRESHOLD = 0.8
-config.CUMULATIVE_IMPORTANCE_THRESHOLD = 0.95
-config.MIN_SELECTED_FEATURES = 10
-config.MAX_SELECTED_FEATURES = 1000
-config.WF_TRAIN_DAYS = 60
-config.WF_TEST_DAYS = 1
-config.WF_STEP_DAYS = 1
-config.RIDGE_PARAMS = {'alpha': 1.0, 'solver': 'cholesky', 'fit_intercept': True, 'random_state': 42}
-config.MODEL_TYPE = 'Ridge'
-config.PROBABILITY_SMOOTHING_ALPHA = 0.1
-config.CORR_THRESHOLD = 0.95
-config.WF_PARALLEL_FOLDS = 1
-config.EXECUTE_AT = 'open[t+1]'
-config.SLIPPAGE_K = 0.001
-config.VOL_PENALTY = 0.005
-config.COMMISSION_PER_TRADE = 2e-05
-config.TARGET_VOL = 0.01
-config.MAX_LEVERAGE = 3.0
-config.MAX_POS_CHANGE_PER_MIN = 0.1
-config.FLAT_BEFORE_CLOSE_MINUTES = 5
-config.HTF_TREND_ALIGNMENT = True
-config.HTF_VOL_SCALING = True
-config.HTF_VOL_WINDOW = 10
-config.REMOVE_PREDICTION_BIAS = False
-config.SEED = 42
-config.CLIP_MIN = -10.0
-config.CLIP_MAX = 10.0
-config.EPS = 1e-09
-config.REPLACE_INF_NAN_WITH = 0.0
-config.ROW_GROUP_SIZE = 65536
-config.MEMORY_LOG_ENABLED = True
-config.MARKET_CONFIGS = {'ES': 'config/markets/ES.yaml', 'CL': 'config/markets/CL.yaml', 'ZB': 'config/markets/ZB.yaml'}

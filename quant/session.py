@@ -1,4 +1,3 @@
-pass
 import polars as pl
 import logging
 from datetime import time
@@ -8,7 +7,11 @@ import tempfile
 import glob
 import shutil
 from quant.config import config
+from quant.utils.config_loader import load_config
 from tqdm import tqdm
+
+load_config()  # ensure config is populated (idempotent)
+
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone(config.TIMEZONE)
 SESSION_START = config.SESSION_START_LOCAL
