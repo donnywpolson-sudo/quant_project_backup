@@ -8,7 +8,7 @@ from quant.features.engine import generate_features
 
 def make_synthetic_with_trend():
     start_dt = datetime(2026, 1, 1, 18, 0)
-    end_dt = datetime(2026, 1, 11, 16, 0)
+    end_dt = datetime(2026, 2, 1, 16, 0)
     ts = []
     cur = start_dt
     while cur < end_dt:
