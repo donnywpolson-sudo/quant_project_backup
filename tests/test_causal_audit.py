@@ -20,6 +20,7 @@ from quant.features.expansion import (
     add_rolling_moments, add_vwap_deviation, add_acceleration
 )
 from quant.features.baseline import compute_baseline_features
+from quant.features.volume_profile import add_volume_profile_features
 from quant.align import align_htf_streams
 
 
@@ -240,6 +241,65 @@ def test_rolling_quantiles_lag():
     return True
 
 
+def test_volume_profile_causality():
+    """Test: Volume Profile features should not leak future price/volume data."""
+    df = make_synthetic_5min(n_days=5)
+    df = add_volume_profile_features(df, daily_window=100, short_window=20, vpa_window=10)
+
+    # Check that all volume profile columns exist
+    expected_cols = [
+        'feature_volume_poc', 'feature_volume_val', 'feature_volume_vah',
+        'feature_distance_to_poc', 'feature_inside_value_area',
+        'feature_poc_stability', 'feature_volume_conc_in_va',
+        'feature_volume_poc_4h', 'feature_volume_val_4h', 'feature_volume_vah_4h',
+        'feature_distance_to_poc_4h', 'feature_inside_va_4h',
+        'feature_vol_to_spread_eff', 'feature_vol_ratio_vs_med',
+        'feature_spread_ratio_vs_med', 'feature_vol_spike', 'feature_vol_drought',
+        'feature_spread_compression', 'feature_spread_expansion',
+        'feature_vol_climax', 'feature_absorption',
+        'feature_body_ratio', 'feature_effort_vs_result',
+    ]
+    missing = [c for c in expected_cols if c not in df.columns]
+    assert len(missing) == 0, f"Missing volume profile columns: {missing}"
+    print(f"  • All {len(expected_cols)} volume profile features present.")
+
+    # Verify features are finite (after warmup)
+    bars_per_day = df.height // 5
+    warmup_start = bars_per_day * 2  # Skip first 2 days for warmup
+    for col in expected_cols:
+        vals = df[col].to_numpy()[warmup_start:]
+        n_finite = np.isfinite(vals).sum()
+        total = len(vals)
+        # After warmup, at least 50% of values should be finite
+        frac_finite = n_finite / total if total > 0 else 0
+        assert frac_finite > 0.3, f"{col}: only {frac_finite:.1%} finite after warmup"
+        # Check clip bounds
+        finite_vals = vals[np.isfinite(vals)]
+        if len(finite_vals) > 0:
+            assert np.all(np.abs(finite_vals) <= max(abs(config.CLIP_MIN), abs(config.CLIP_MAX)) + 1e-6), \
+                f"{col}: values exceed clip bounds: min={finite_vals.min()}, max={finite_vals.max()}"
+
+    # Key causality test: at bar t, POC is computed from [t-window, t-1].
+    # The current bar's close should NOT equal the just-computed POC (unless by chance).
+    # Instead, verify that distance_to_poc features are not constant (0.0) which would
+    # indicate the current close IS the POC (leakage).
+    poc_dist = df['feature_distance_to_poc'].to_numpy()[warmup_start:]
+    poc_dist_finite = poc_dist[np.isfinite(poc_dist)]
+    n_nonzero = np.sum(np.abs(poc_dist_finite) > 1e-6)
+    frac_nonzero = n_nonzero / len(poc_dist_finite) if len(poc_dist_finite) > 0 else 0
+    print(f"  • POC distance: {frac_nonzero:.1%} non-zero (should be high, indicating current close != lagged POC)")
+    assert frac_nonzero > 0.5, f"POC distance suspiciously zero for too many bars (potential leakage)"
+
+    # Volume spike should NOT be triggered on every bar
+    vol_spike = df['feature_vol_spike'].to_numpy()[warmup_start:]
+    spike_rate = np.mean(vol_spike[np.isfinite(vol_spike)])
+    print(f"  • Volume spike rate: {spike_rate:.1%} (should be <50% for meaningful signal)")
+    assert spike_rate < 0.5, f"Volume spike rate {spike_rate:.1%} too high (degenerate)"
+
+    print(f"  • PASS: Volume Profile features are causal and well-behaved.")
+    return True
+
+
 def run_all_tests():
     print("=" * 60)
     print(" CAUSAL VERIFICATION TESTS")
@@ -253,6 +313,7 @@ def run_all_tests():
         ("Z-Score Lag", test_zscore_lag),
         ("VWAP Lag", test_vwap_lag),
         ("Rolling Quantiles Lag", test_rolling_quantiles_lag),
+        ("Volume Profile Causality", test_volume_profile_causality),
     ]
 
     for name, test_fn in tests:

@@ -5,6 +5,7 @@ from config import config
 from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
 from quant.features.expansion import expand_features, add_cross_timeframe_interactions
 from quant.features.htf_context import add_htf_context_features
+from quant.features.volume_profile import add_volume_profile_features
 from quant.features.target import add_target_5m, drop_incomplete_target
 from quant.features.target import add_target_1h, add_target_4h
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     baseline_names = load_baseline_feature_names()
     baseline_cols = [c for c in baseline_names if c in df.columns]
     df = add_htf_context_features(df)
+    df = add_volume_profile_features(df)
     df = expand_features(df, baseline_cols)
     htf_cols = [c for c in df.columns if c.startswith('htf_')]
     ltf_candidate = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_')) and (not c.startswith(('1h_', 'daily_')))]

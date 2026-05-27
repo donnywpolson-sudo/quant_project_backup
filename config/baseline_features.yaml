@@ -40,3 +40,29 @@ baseline_features:
   - feature_ratio_template
   - feature_pca_comp_1
   - feature_pca_comp_2
+  # Volume Profile (horizontal) - daily window
+  - feature_volume_poc
+  - feature_volume_val
+  - feature_volume_vah
+  - feature_distance_to_poc
+  - feature_inside_value_area
+  - feature_poc_stability
+  - feature_volume_conc_in_va
+  # Volume Profile (horizontal) - 4h window
+  - feature_volume_poc_4h
+  - feature_volume_val_4h
+  - feature_volume_vah_4h
+  - feature_distance_to_poc_4h
+  - feature_inside_va_4h
+  # VPA (vertical volume analysis) - effort vs. result
+  - feature_vol_to_spread_eff
+  - feature_vol_ratio_vs_med
+  - feature_spread_ratio_vs_med
+  - feature_vol_spike
+  - feature_vol_drought
+  - feature_spread_compression
+  - feature_spread_expansion
+  - feature_vol_climax
+  - feature_absorption
+  - feature_body_ratio
+  - feature_effort_vs_result
