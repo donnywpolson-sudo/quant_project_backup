@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 import shutil
 import yaml
-import polars as pl
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')
 
@@ -14,7 +13,7 @@ def load_config():
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        logger.info(f'Loaded config')
+        logger.info('Loaded config')
         return config
     return {}
 
@@ -27,7 +26,7 @@ def get_files(data_dir, config):
     for f in files:
         try:
             year = int(f.stem)
-        except:
+        except Exception:
             continue
         if start and year < start:
             continue
@@ -36,9 +35,10 @@ def get_files(data_dir, config):
         if allowed_markets and f.parent.name not in allowed_markets:
             continue
         valid.append(f)
+    valid = sorted(valid, key=lambda x: (x.parent.name, x.stem))
     max_files = config.get('max_files')
     if max_files:
-        valid = sorted(valid)[:max_files]
+        valid = valid[:max_files]
     return valid
 
 def generate_walkforward_splits(files, config):
@@ -68,13 +68,17 @@ def process_split(train_years, test_years, files):
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f'Preparing TRAIN dataset for years {train_years}')
     for f in train_files:
-        logger.info(f'Linking train file: {f}')
         dst = train_dir / f'{f.parent.name}_{f.name}'
-        if not dst.exists():
+        if dst.exists():
+            continue
+        logger.info(f'Linking train file: {f}')
+        if os.name != 'nt':
             try:
                 os.symlink(f.resolve(), dst)
+                continue
             except Exception:
-                shutil.copy2(f, dst)
+                pass
+        shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('artifacts') / f'manifest_{'_'.join(map(str, train_years))}.json'
     logger.info('Running feature discovery on TRAIN data...')
@@ -93,6 +97,6 @@ if __name__ == '__main__':
         sys.exit(0)
     splits = generate_walkforward_splits(files, config)
     for i, (train, test) in enumerate(splits, 1):
-        logger.info(f'[Split {i}] Train: {train} | Test: {test}')
+        logger.info(f'[Split {i}] Train({len(train)}): {train} | Test({len(test)}): {test}')
         process_split(train, test, files)
     logger.info('Done')

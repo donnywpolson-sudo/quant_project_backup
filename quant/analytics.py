@@ -1,10 +1,9 @@
-pass
 import sys
 import polars as pl
 import numpy as np
+from quant.analytics.aggregate import run_aggregation
 
 def calculate_metrics(file_path: str):
-    pass
     try:
         df = pl.read_parquet(file_path)
     except Exception as e:
@@ -54,17 +53,18 @@ def calculate_metrics(file_path: str):
     print('\n' + '=' * 50)
     print('            PERFORMANCE REPORT')
     print('=' * 50)
-    print(f'Total PnL:            {total_pnl:>12.4f}')
-    print(f'Avg PnL per bar:      {avg_pnl:>12.6f}')
-    print(f'Std PnL per bar:      {std_pnl:>12.6f}')
-    print(f'Sharpe (ann.):        {sharpe:>12.3f}')
-    print(f'Max Drawdown:         {max_drawdown:>12.4f}')
-    print(f'Turnover:             {turnover:>12.4f}')
-    print(f'Prediction-Target Corr:{corr:>12.4f}')
+    print(f'Total PnL:            {total_pnl:12.4f}')
+    print(f'Avg PnL per bar:      {avg_pnl:12.6f}')
+    print(f'Std PnL per bar:      {std_pnl:12.6f}')
+    print(f'Sharpe (ann.):        {sharpe:12.3f}')
+    print(f'Max Drawdown:         {max_drawdown:12.4f}')
+    print(f'Turnover:             {turnover:12.4f}')
+    print(f'Prediction-Target Corr:{corr:12.4f}')
     if benchmark_sharpe is not None:
-        print(f'Benchmark Sharpe:     {benchmark_sharpe:>12.3f}')
-        print(f'Benchmark MaxDD:      {benchmark_maxdd:>12.4f}')
+        print(f'Benchmark Sharpe:     {benchmark_sharpe:12.3f}')
+        print(f'Benchmark MaxDD:      {benchmark_maxdd:12.4f}')
     print('=' * 50)
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: python -m src.analytics <path_to_backtest_results.parquet>')

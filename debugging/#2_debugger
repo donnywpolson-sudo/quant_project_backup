@@ -7,47 +7,55 @@ TASK
 Fix the error completely while preserving behavior.
 
 CONSTRAINTS
-Minimal, surgical changes only
-No refactor or logic changes
-Keep variables, flow, and structure unchanged
+- Minimal, surgical changes only
+- No refactor or logic changes
+- Keep variables, flow, and structure unchanged
+- Polars only (no pandas)
+- Maintain float32 where used
+- Preserve timezone correctness (America/New_York)
 
 REQUIREMENTS
-Resolve root cause (no symptom fixes)
-No leakage or causal violations introduced
-Maintain determinism and constraints above
+- Resolve root cause (no symptom fixes)
+- No data leakage or causal violations introduced
+- Maintain determinism (seed=42 unchanged)
+- Ensure memory constraints are not exceeded
 
 GUIDELINES
-Fix only what is necessary
-Keep changes localized
-Prefer simplest valid fix
-Add guards only if strictly required
+- Fix only what is strictly necessary
+- Keep changes localized
+- Prefer the simplest valid fix
+- Add guards only if strictly required
+- Do not rename variables or change structure unless required to fix the error
 
 MULTI-FILE OUTPUT RULES
-If the code spans multiple modules/files:
+If code spans multiple files:
 - Output EACH file separately
 - Clearly label each file with its filename before the code block
 - Each file must be independently copy-pasteable
-- Preserve original file structure and boundaries
-- Do NOT merge files into one
+- Preserve original file boundaries
+- Do NOT merge files
 
 CRITICAL
-Never merge modules into one file
-Do not omit any affected file
-If a fix touches multiple files, output all of them
+- Never merge modules into one file
+- Do not omit any affected file
+- Output FULL files, not diffs
+- Do not ask clarification questions
+- Do not defer work — complete the fix in this response
 
 ERROR
-<PASTE FULL ERROR HERE>
+<PASTE FULL TRACEBACK HERE>
 
 OUTPUT FORMAT
+
 File: <filename_1>
 <full updated code>
 
 File: <filename_2>
 <full updated code>
 
-(repeat as needed for all files)
+(repeat as needed)
 
-No explanations inside code
-No comments, no docstrings, no fluff, no decorative separators, no emojis
+(no comments inside code)
 
-At the very end (outside code), include a short concise summary describing what was fixed and how it resolves the issue
+FINAL SUMMARY (outside code):
+Briefly describe the root cause and why the fix resolves it.

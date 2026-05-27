@@ -1089,13 +1089,12 @@ def run_aggregation(artifacts_root='artifacts'):
 FILE: quant/analytics.py
 ================================================================================
 
-pass
 import sys
 import polars as pl
 import numpy as np
+from quant.aggregate import run_aggregation
 
 def calculate_metrics(file_path: str):
-    pass
     try:
         df = pl.read_parquet(file_path)
     except Exception as e:
@@ -1145,16 +1144,16 @@ def calculate_metrics(file_path: str):
     print('\n' + '=' * 50)
     print('            PERFORMANCE REPORT')
     print('=' * 50)
-    print(f'Total PnL:            {total_pnl:>12.4f}')
-    print(f'Avg PnL per bar:      {avg_pnl:>12.6f}')
-    print(f'Std PnL per bar:      {std_pnl:>12.6f}')
-    print(f'Sharpe (ann.):        {sharpe:>12.3f}')
-    print(f'Max Drawdown:         {max_drawdown:>12.4f}')
-    print(f'Turnover:             {turnover:>12.4f}')
-    print(f'Prediction-Target Corr:{corr:>12.4f}')
+    print(f'Total PnL:            {total_pnl:12.4f}')
+    print(f'Avg PnL per bar:      {avg_pnl:12.6f}')
+    print(f'Std PnL per bar:      {std_pnl:12.6f}')
+    print(f'Sharpe (ann.):        {sharpe:12.3f}')
+    print(f'Max Drawdown:         {max_drawdown:12.4f}')
+    print(f'Turnover:             {turnover:12.4f}')
+    print(f'Prediction-Target Corr:{corr:12.4f}')
     if benchmark_sharpe is not None:
-        print(f'Benchmark Sharpe:     {benchmark_sharpe:>12.3f}')
-        print(f'Benchmark MaxDD:      {benchmark_maxdd:>12.4f}')
+        print(f'Benchmark Sharpe:     {benchmark_sharpe:12.3f}')
+        print(f'Benchmark MaxDD:      {benchmark_maxdd:12.4f}')
     print('=' * 50)
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -1184,7 +1183,7 @@ from quant.discovery import run_feature_discovery
 from quant.walkforward import run_walkforward
 from quant.io.canonical_parquet import write_canonical_parquet
 from quant.analytics import calculate_metrics
-from quant.analytics.aggregate import run_aggregation
+from quant.analytics import run_aggregation
 random.seed(config.SEED)
 np.random.seed(config.SEED)
 logger = logging.getLogger(__name__)
@@ -1438,26 +1437,28 @@ FILE: quant/execution/simulator.py
 ================================================================================
 
 import polars as pl
-import numpy as np
 from config import config
 
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
-    signal_expr = pl.when(pl.col('prediction_prob').fill_null(0.5) > 0.55).then(1.0).when(pl.col('prediction_prob').fill_null(0.5) < 0.45).then(-1.0).otherwise(0.0)
+    signal_expr = pl.when(pl.col('prediction_prob').fill_null(0.5) > 0.6).then(1.0).when(pl.col('prediction_prob').fill_null(0.5) < 0.4).then(-1.0).otherwise(0.0)
     df = df.with_columns(signal_expr.alias('raw_signal'))
-    df = df.with_columns(pl.col('ts_event').dt.time().alias('t_local'))
-    df = df.with_columns(pl.when(pl.col('t_local') >= pl.lit(config.SESSION_END_LOCAL)).then(0.0).otherwise(pl.col('raw_signal')).alias('target_exec'))
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).dt.time().alias('t_local'))
+    df = df.with_columns(pl.when((pl.col('t_local') >= pl.lit(config.SESSION_END_LOCAL)) | (pl.col('t_local') < pl.lit(config.SESSION_START_LOCAL))).then(0.0).otherwise(pl.col('raw_signal')).alias('target_exec'))
     df = df.drop('t_local')
-    ret = (pl.col('close') / pl.col('close').shift(1)).log()
+    ret = (pl.col('close') / pl.col('close').shift(1).clip(config.EPS, None)).log()
     vol = ret.rolling_std(window_size=20).clip(config.EPS, None)
     df = df.with_columns(vol.fill_null(1e-06).alias('vol'))
     spread = (pl.col('high') - pl.col('low')) / pl.col('close').clip(config.EPS, None)
+    spread = spread.clip(0.0, 0.05)
     df = df.with_columns(spread.alias('spread'))
-    unit_cost = config.COMMISSION_PER_TRADE + config.SLIPPAGE_K * pl.col('spread') + config.VOL_PENALTY * pl.col('vol')
+    unit_cost = (config.COMMISSION_PER_TRADE + config.SLIPPAGE_K * pl.col('spread') + config.VOL_PENALTY * pl.col('vol')).clip(0.0, 0.01)
     open_next = pl.col('open').shift(-1)
     close_next = pl.col('close').shift(-1)
-    ret_exec = ((close_next - open_next) / open_next.clip(config.EPS, None)).fill_null(0)
+    ret_exec = ((close_next - open_next) / open_next.clip(config.EPS, None)).fill_null(0.0)
+    ret_exec = ret_exec.clip(-0.02, 0.02)
     df = df.with_columns([unit_cost.alias('cost'), ret_exec.alias('ret_exec')])
-    df = df.with_columns((pl.col('target_exec') * pl.col('ret_exec') - pl.col('cost')).fill_nan(0).alias('pnl'))
+    pnl = (pl.col('target_exec') * pl.col('ret_exec') - pl.col('cost')).fill_nan(0.0).clip(-0.05, 0.05)
+    df = df.with_columns(pnl.alias('pnl'))
     df = df.with_columns(pl.col('target_exec').alias('position'))
     return df
 
@@ -1610,10 +1611,10 @@ def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFra
     exprs = []
     for col in base_features[:20]:
         if col in df.columns:
-            mean = pl.col(col).rolling_mean(window_size=20)
-            std = pl.col(col).rolling_std(window_size=20).clip(eps, None)
+            mean = pl.col(col).rolling_mean(window_size=30)
+            std = pl.col(col).rolling_std(window_size=30).clip(eps, None)
             z = (pl.col(col) - mean) / std
-            z = z.clip(-5.0, 5.0)
+            z = z.clip(-3.5, 3.5)
             exprs.append(z.alias(f'{col}_zscore'))
     return df.with_columns(exprs)
 
@@ -2358,35 +2359,35 @@ def robust_scale(X_train, X_test):
 
 def stabilize_targets(y):
     y = safe_replace(y)
-    return np.clip(y, -1, 1)
+    return np.clip(y, -1.0, 1.0)
 
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
-    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-09)
+    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-08)
     if len(feature_cols) == 0:
         return np.full(len(test_X), 0.5, dtype=np.float32)
     X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y_train = stabilize_targets(train_y.to_numpy().astype(np.float32).ravel())
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
-    X_train = safe_replace(safe_clip(X_train))
-    X_test = safe_replace(safe_clip(X_test))
+    X_train = safe_replace(safe_clip(X_train, -8.0, 8.0))
+    X_test = safe_replace(safe_clip(X_test, -8.0, 8.0))
     X_train, X_test = robust_scale(X_train, X_test)
-    X_train = safe_clip(X_train, -5.0, 5.0)
-    X_test = safe_clip(X_test, -5.0, 5.0)
+    X_train = safe_clip(X_train, -4.0, 4.0)
+    X_test = safe_clip(X_test, -4.0, 4.0)
     if config.MODEL_TYPE == 'Ridge':
         ridge_params = config.RIDGE_PARAMS.copy()
-        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 20.0)
+        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 50.0)
         model = Ridge(**ridge_params)
         model.fit(X_train, y_train)
         raw_pred = model.predict(X_test)
-        raw_pred = safe_clip(raw_pred, -2.5, 2.5)
+        raw_pred = safe_clip(raw_pred, -2.0, 2.0)
         probs = expit(raw_pred).astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
-        model = RandomForestClassifier(n_estimators=200, max_depth=4, min_samples_split=100, min_samples_leaf=50, max_features=0.3, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
+        model = RandomForestClassifier(n_estimators=200, max_depth=3, min_samples_split=200, min_samples_leaf=100, max_features=0.2, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
         model.fit(X_train, (y_train > 0).astype(np.int8))
         probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
-    probs = safe_clip(probs, 0.15, 0.85)
+    probs = safe_clip(probs, 0.2, 0.8)
     return probs.astype(np.float32)
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.1) -> np.ndarray:

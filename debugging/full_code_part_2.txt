@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 import shutil
 import yaml
-import polars as pl
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')
 
@@ -19,7 +18,7 @@ def load_config():
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        logger.info(f'Loaded config')
+        logger.info('Loaded config')
         return config
     return {}
 
@@ -32,7 +31,7 @@ def get_files(data_dir, config):
     for f in files:
         try:
             year = int(f.stem)
-        except:
+        except Exception:
             continue
         if start and year < start:
             continue
@@ -41,9 +40,10 @@ def get_files(data_dir, config):
         if allowed_markets and f.parent.name not in allowed_markets:
             continue
         valid.append(f)
+    valid = sorted(valid, key=lambda x: (x.parent.name, x.stem))
     max_files = config.get('max_files')
     if max_files:
-        valid = sorted(valid)[:max_files]
+        valid = valid[:max_files]
     return valid
 
 def generate_walkforward_splits(files, config):
@@ -73,13 +73,17 @@ def process_split(train_years, test_years, files):
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f'Preparing TRAIN dataset for years {train_years}')
     for f in train_files:
-        logger.info(f'Linking train file: {f}')
         dst = train_dir / f'{f.parent.name}_{f.name}'
-        if not dst.exists():
+        if dst.exists():
+            continue
+        logger.info(f'Linking train file: {f}')
+        if os.name != 'nt':
             try:
                 os.symlink(f.resolve(), dst)
+                continue
             except Exception:
-                shutil.copy2(f, dst)
+                pass
+        shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('artifacts') / f'manifest_{'_'.join(map(str, train_years))}.json'
     logger.info('Running feature discovery on TRAIN data...')
@@ -98,7 +102,7 @@ if __name__ == '__main__':
         sys.exit(0)
     splits = generate_walkforward_splits(files, config)
     for i, (train, test) in enumerate(splits, 1):
-        logger.info(f'[Split {i}] Train: {train} | Test: {test}')
+        logger.info(f'[Split {i}] Train({len(train)}): {train} | Test({len(test)}): {test}')
         process_split(train, test, files)
     logger.info('Done')
 
@@ -109,21 +113,14 @@ FILE: tests/test_alignment.py
 
 import polars as pl
 import pytest
-import tempfile
-from pathlib import Path
-import pytz
 from datetime import datetime, timedelta
 from quant.session import add_session_id, filter_session_hours, resample_to_frequency
 from quant.align import align_htf_streams
-TZ = pytz.timezone('America/New_York')
 
-def make_synthetic_1min(session_start_et, session_end_et, daily_close_prev, daily_close_curr):
-    pass
-    start_dt = datetime.combine(session_start_et.date(), session_start_et.time())
-    end_dt = datetime.combine(session_end_et.date(), session_end_et.time())
+def make_synthetic_1min(session_start_et, session_end_et):
     ts = []
-    current = start_dt
-    while current < end_dt:
+    current = session_start_et
+    while current < session_end_et:
         ts.append(current)
         current += timedelta(minutes=1)
     df = pl.DataFrame({'ts_event': ts, 'open': 100.0, 'high': 101.0, 'low': 99.0, 'close': 100.0, 'volume': 1000})
@@ -133,34 +130,31 @@ def make_synthetic_1min(session_start_et, session_end_et, daily_close_prev, dail
     return df
 
 def test_daily_alignment_first_bar():
-    pass
     start_day0 = datetime(2026, 1, 6, 18, 0)
     end_day0 = datetime(2026, 1, 7, 16, 0)
     start_day1 = datetime(2026, 1, 7, 18, 0)
     end_day1 = datetime(2026, 1, 8, 16, 0)
-    df0 = make_synthetic_1min(start_day0, end_day0, None, None)
-    df1 = make_synthetic_1min(start_day1, end_day1, None, None)
-    df_all = pl.concat([df0, df1])
+    df_all = pl.concat([make_synthetic_1min(start_day0, end_day0), make_synthetic_1min(start_day1, end_day1)])
     df_daily = resample_to_frequency(df_all, '1d')
     df_5min = resample_to_frequency(df_all, '5m')
     df_aligned = align_htf_streams(df_5min, pl.DataFrame(), df_daily)
-    first_bar_second_session = df_aligned.filter(pl.col('ts_event').dt.hour() == 18, pl.col('ts_event').dt.minute() == 0, pl.col('ts_event').dt.date() == datetime(2026, 1, 7).date()).head(1)
-    assert not first_bar_second_session.is_empty()
-    daily_close = first_bar_second_session['daily_close'][0]
-    assert daily_close is not None
-    daily_vol = first_bar_second_session['daily_vol_5'][0]
-    assert daily_vol is not None
+    target = df_aligned.filter((pl.col('ts_event').dt.hour() == 18) & (pl.col('ts_event').dt.minute() == 0) & (pl.col('ts_event').dt.date() == datetime(2026, 1, 7).date()))
+    assert not target.is_empty()
+    daily_close = target['daily_close'][0]
+    daily_vol = target['daily_vol_5'][0]
+    assert daily_close is not None and daily_close > 0
+    assert daily_vol is not None and daily_vol > 0
+    session_vals = df_aligned.filter(pl.col('ts_event').dt.date() == datetime(2026, 1, 7).date())['daily_close']
+    assert session_vals.n_unique() == 1
 
-def test_filter_session_hours_excludes_cme_settlement_gap():
+def test_filter_session_hours_excludes_gap():
     ts = [datetime(2026, 1, 7, 16, 30), datetime(2026, 1, 7, 17, 30), datetime(2026, 1, 7, 18, 30)]
-    df = pl.DataFrame({'ts_event': ts, 'open': [100.0, 100.0, 100.0], 'high': [101.0, 101.0, 101.0], 'low': [99.0, 99.0, 99.0], 'close': [100.0, 100.0, 100.0], 'volume': [1000, 1000, 1000]})
+    df = pl.DataFrame({'ts_event': ts, 'open': [100.0] * 3, 'high': [101.0] * 3, 'low': [99.0] * 3, 'close': [100.0] * 3, 'volume': [1000] * 3})
     df = df.with_columns(pl.col('ts_event').dt.replace_time_zone('America/New_York').dt.convert_time_zone('UTC'))
     df = filter_session_hours(df)
     local_hours = df['ts_event'].dt.convert_time_zone('America/New_York').dt.hour().to_list()
     assert 17 not in local_hours
     assert 18 in local_hours
-if __name__ == '__main__':
-    pytest.main([__file__])
 
 
 ================================================================================
@@ -171,50 +165,40 @@ import polars as pl
 import numpy as np
 import tempfile
 from pathlib import Path
-from datetime import datetime
-from config import config
+from datetime import datetime, timedelta
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
-from quant.features.htf_context import add_htf_context_features
 
 def make_synthetic_with_trend():
-    pass
     start_dt = datetime(2026, 1, 1, 18, 0)
     end_dt = datetime(2026, 1, 11, 16, 0)
     ts = []
     cur = start_dt
-    from datetime import timedelta
     while cur < end_dt:
         ts.append(cur)
         cur += timedelta(minutes=1)
     df = pl.DataFrame({'ts_event': ts})
     df = df.with_columns(pl.col('ts_event').dt.replace_time_zone('America/New_York').dt.convert_time_zone('UTC'))
-    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone('America/New_York').dt.hour().alias('hour'))
-    df = df.filter((pl.col('hour') >= 18) | (pl.col('hour') < 16))
-    df = df.drop('hour').sort('ts_event')
     n = df.height
-    base_price = 100.0 + np.arange(n) * 0.01
-    np.random.seed(42)
-    noise = np.random.normal(loc=0.0, scale=0.05, size=n)
-    base_price = base_price + noise
-    df = df.with_columns([pl.Series('open', base_price), pl.Series('high', base_price + 0.2), pl.Series('low', base_price - 0.2), pl.Series('close', base_price + 0.1), pl.Series('volume', np.full(n, 1000))])
+    base = 100 + np.arange(n) * 0.01
+    noise = np.random.normal(0, 0.05, n)
+    price = base + noise
+    df = df.with_columns([pl.Series('open', price), pl.Series('high', price + 0.2), pl.Series('low', price - 0.2), pl.Series('close', price + 0.1), pl.Series('volume', np.full(n, 1000))])
     return df
 
 def test_htf_features_synthetic():
     with tempfile.TemporaryDirectory() as tmpdir:
-        data_path = Path(tmpdir) / 'synthetic.parquet'
+        path = Path(tmpdir) / 'synthetic.parquet'
         df_raw = make_synthetic_with_trend()
-        df_raw.write_parquet(data_path)
-        df_aligned = load_and_clean_data(str(data_path))
-        df_features = generate_features(df_aligned)
-        daily_vol = df_features['htf_daily_vol_5']
-        daily_trend = df_features['htf_daily_trend_slope_10']
-        assert (daily_vol.drop_nulls() > 0).any()
-        assert (daily_trend.drop_nulls() > 0).any()
-        print('Daily vol (first non-null):', daily_vol.drop_nulls().head(1)[0])
-        print('Daily trend slope (first non-null):', daily_trend.drop_nulls().head(1)[0])
-if __name__ == '__main__':
-    test_htf_features_synthetic()
+        df_raw.write_parquet(path)
+        df = load_and_clean_data(str(path))
+        df_feat = generate_features(df)
+        daily_vol = df_feat['htf_daily_vol_5'].drop_nulls()
+        daily_trend = df_feat['htf_daily_trend_slope_10'].drop_nulls()
+        assert daily_vol.len() > 0
+        assert (daily_vol > 0).any()
+        assert daily_trend.len() > 0
+        assert daily_trend.mean() > 0
 
 
 ================================================================================
@@ -228,7 +212,7 @@ import polars as pl
 import numpy as np
 from quant.session import load_all_streams_chunked
 
-def make_small_synthetic(start_dt: datetime, end_dt: datetime) -> pl.DataFrame:
+def make_small_synthetic(start_dt, end_dt):
     ts = []
     cur = start_dt
     while cur < end_dt:
@@ -237,22 +221,24 @@ def make_small_synthetic(start_dt: datetime, end_dt: datetime) -> pl.DataFrame:
     df = pl.DataFrame({'ts_event': ts})
     df = df.with_columns(pl.col('ts_event').dt.replace_time_zone('America/New_York').dt.convert_time_zone('UTC'))
     n = df.height
-    prices = 100.0 + np.arange(n) * 0.01
-    df = df.with_columns([pl.Series('open', prices).cast(pl.Float32), pl.Series('high', [p + 0.2 for p in prices]).cast(pl.Float32), pl.Series('low', [p - 0.2 for p in prices]).cast(pl.Float32), pl.Series('close', [p + 0.1 for p in prices]).cast(pl.Float32), pl.Series('volume', [1000] * n).cast(pl.Int64)])
+    prices = 100 + np.arange(n) * 0.01
+    df = df.with_columns([pl.Series('open', prices).cast(pl.Float32), pl.Series('high', prices + 0.2).cast(pl.Float32), pl.Series('low', prices - 0.2).cast(pl.Float32), pl.Series('close', prices + 0.1).cast(pl.Float32), pl.Series('volume', [1000] * n).cast(pl.Int64)])
     return df
 
 def test_streaming_resample_produces_htf():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'synth.parquet'
-        start = datetime(2026, 1, 1, 18, 0)
-        end = datetime(2026, 1, 4, 16, 0)
-        df = make_small_synthetic(start, end)
+        df = make_small_synthetic(datetime(2026, 1, 1, 18, 0), datetime(2026, 1, 4, 16, 0))
         df.write_parquet(path)
         streams = load_all_streams_chunked(str(path.parent / '*.parquet'))
-        assert '5m' in streams and '1h' in streams and ('1d' in streams)
+        assert '5m' in streams
+        assert '1h' in streams
+        assert '1d' in streams
         df_1h = streams['1h']
         df_1d = streams['1d']
         assert df_1h.height > 0
         assert df_1d.height > 0
+        assert df_1h['ts_event'].is_sorted().all()
+        assert df_1d['ts_event'].is_sorted().all()
         assert 'daily_vol_5' in df_1d.columns
 

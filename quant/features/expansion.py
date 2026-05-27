@@ -20,10 +20,10 @@ def add_ratios_and_z_scores(df: pl.DataFrame, base_features: list) -> pl.DataFra
     exprs = []
     for col in base_features[:20]:
         if col in df.columns:
-            mean = pl.col(col).rolling_mean(window_size=20)
-            std = pl.col(col).rolling_std(window_size=20).clip(eps, None)
+            mean = pl.col(col).rolling_mean(window_size=30)
+            std = pl.col(col).rolling_std(window_size=30).clip(eps, None)
             z = (pl.col(col) - mean) / std
-            z = z.clip(-5.0, 5.0)
+            z = z.clip(-3.5, 3.5)
             exprs.append(z.alias(f'{col}_zscore'))
     return df.with_columns(exprs)
 

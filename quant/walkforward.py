@@ -29,35 +29,35 @@ def robust_scale(X_train, X_test):
 
 def stabilize_targets(y):
     y = safe_replace(y)
-    return np.clip(y, -1, 1)
+    return np.clip(y, -1.0, 1.0)
 
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
-    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-09)
+    feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-08)
     if len(feature_cols) == 0:
         return np.full(len(test_X), 0.5, dtype=np.float32)
     X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y_train = stabilize_targets(train_y.to_numpy().astype(np.float32).ravel())
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
-    X_train = safe_replace(safe_clip(X_train))
-    X_test = safe_replace(safe_clip(X_test))
+    X_train = safe_replace(safe_clip(X_train, -8.0, 8.0))
+    X_test = safe_replace(safe_clip(X_test, -8.0, 8.0))
     X_train, X_test = robust_scale(X_train, X_test)
-    X_train = safe_clip(X_train, -5.0, 5.0)
-    X_test = safe_clip(X_test, -5.0, 5.0)
+    X_train = safe_clip(X_train, -4.0, 4.0)
+    X_test = safe_clip(X_test, -4.0, 4.0)
     if config.MODEL_TYPE == 'Ridge':
         ridge_params = config.RIDGE_PARAMS.copy()
-        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 20.0)
+        ridge_params['alpha'] = max(ridge_params.get('alpha', 1.0), 50.0)
         model = Ridge(**ridge_params)
         model.fit(X_train, y_train)
         raw_pred = model.predict(X_test)
-        raw_pred = safe_clip(raw_pred, -2.5, 2.5)
+        raw_pred = safe_clip(raw_pred, -2.0, 2.0)
         probs = expit(raw_pred).astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
-        model = RandomForestClassifier(n_estimators=200, max_depth=4, min_samples_split=100, min_samples_leaf=50, max_features=0.3, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
+        model = RandomForestClassifier(n_estimators=200, max_depth=3, min_samples_split=200, min_samples_leaf=100, max_features=0.2, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
         model.fit(X_train, (y_train > 0).astype(np.int8))
         probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
-    probs = safe_clip(probs, 0.15, 0.85)
+    probs = safe_clip(probs, 0.2, 0.8)
     return probs.astype(np.float32)
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.1) -> np.ndarray:
