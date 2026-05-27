@@ -24,7 +24,7 @@ def compute_baseline_features(df: pl.DataFrame) -> pl.DataFrame:
     tr = pl.max_horizontal(high - low, (high - prev_close).abs(), (low - prev_close).abs())
     exprs.append(tr.clip(config.CLIP_MIN, config.CLIP_MAX).alias('feature_true_range'))
     ret_1 = (close / close.shift(1).clip(eps, None)).log()
-    vol = ret_1.rolling_std(window_size=20).clip(eps, None)
+    vol = ret_1.rolling_std(window_size=20, min_periods=5).clip(eps, None)
     exprs.append(vol.alias('feature_ewma_vol_20'))
     spread_proxy = (high - low) / close.clip(eps, None)
     exprs.append(spread_proxy.alias('feature_spread_proxy'))

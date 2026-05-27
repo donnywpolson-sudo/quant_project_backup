@@ -23,8 +23,12 @@ def robust_scale(X_train, X_test):
     q1 = np.percentile(X_train, 25, axis=0)
     q3 = np.percentile(X_train, 75, axis=0)
     iqr = np.clip(q3 - q1, 1e-06, None)
-    X_train = (X_train - med) / iqr
-    X_test = (X_test - med) / iqr
+    iqr = np.clip(iqr, 0.01, None)
+    scale = np.where(iqr > 0, 1.0 / iqr, 1.0)
+    X_train = (X_train - med) * scale
+    X_test = (X_test - med) * scale
+    X_train = np.clip(X_train, -10.0, 10.0)
+    X_test = np.clip(X_test, -10.0, 10.0)
     return (X_train.astype(np.float32), X_test.astype(np.float32))
 
 def stabilize_targets(y):
@@ -57,13 +61,13 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
         probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
-    probs = safe_clip(probs, 0.2, 0.8)
+    probs = safe_clip(probs, 0.3, 0.7)
     return probs.astype(np.float32)
 
-def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.1) -> np.ndarray:
+def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.3) -> np.ndarray:
     if alpha <= 0:
         return probs.astype(np.float32)
-    alpha = min(max(alpha, 0.05), 0.15)
+    alpha = min(max(alpha, 0.2), 0.5)
     smoothed = np.zeros_like(probs, dtype=np.float32)
     current = 0.5
     last_session = None

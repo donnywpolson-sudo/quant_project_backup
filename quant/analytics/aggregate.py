@@ -126,7 +126,7 @@ def run_aggregation(artifacts_root='artifacts'):
         out = output_dir / f'{market}_metrics.json'
         with open(out, 'w') as f:
             json.dump(metrics, f, indent=2)
-        print(f'Saved {out} | Sharpe={metrics['sharpe_annualized']} | PnL={metrics['total_pnl']}')
+        print("Saved " + str(out) + " | Sharpe=" + str(metrics['sharpe_annualized']) + " | PnL=" + str(metrics['total_pnl']))
         all_series.append(combined['pnl'])
     if len(all_series) > 1:
         combined = None
@@ -143,4 +143,4 @@ def run_aggregation(artifacts_root='artifacts'):
         out = output_dir / 'all_markets.json'
         with open(out, 'w') as f:
             json.dump(total_metrics, f, indent=2)
-        print(f'Saved combined report | Sharpe={total_metrics['sharpe_annualized']}')
+        print("Saved combined report | Sharpe=" + str(total_metrics['sharpe_annualized']))

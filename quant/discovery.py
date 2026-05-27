@@ -51,7 +51,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     importances_list = []
     signs_list = []
     for fold_idx in tqdm(range(n_folds), desc='Bootstrap folds', unit='fold'):
-        print(f'Fold {fold_idx + 1} started at {datetime.now().strftime('%H:%M:%S')}', flush=True)
+        print("Fold " + str(fold_idx + 1) + " started at " + datetime.now().strftime('%H:%M:%S'), flush=True)
         if check_rss(rss_stop):
             raise MemoryError(f'RSS stop limit exceeded in fold {fold_idx}')
         n_samples = X.shape[0]

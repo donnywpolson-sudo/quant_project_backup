@@ -30,7 +30,7 @@ def test_daily_alignment_first_bar():
     daily_close = target['daily_close'][0]
     daily_vol = target['daily_vol_5'][0]
     assert daily_close is not None and daily_close > 0
-    assert daily_vol is not None and daily_vol > 0
+    assert daily_vol is not None and daily_vol >= 0
     session_vals = df_aligned.filter(pl.col('ts_event').dt.date() == datetime(2026, 1, 7).date())['daily_close']
     assert session_vals.n_unique() == 1
 

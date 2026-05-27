@@ -5,7 +5,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     signal_expr = pl.when(pl.col('prediction_prob').fill_null(0.5) > 0.6).then(1.0).when(pl.col('prediction_prob').fill_null(0.5) < 0.4).then(-1.0).otherwise(0.0)
     df = df.with_columns(signal_expr.alias('raw_signal'))
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).dt.time().alias('t_local'))
-    df = df.with_columns(pl.when((pl.col('t_local') >= pl.lit(config.SESSION_END_LOCAL)) | (pl.col('t_local') < pl.lit(config.SESSION_START_LOCAL))).then(0.0).otherwise(pl.col('raw_signal')).alias('target_exec'))
+    df = df.with_columns(pl.when((pl.col('t_local') >= pl.lit(config.SESSION_BREAK_START_LOCAL)) & (pl.col('t_local') < pl.lit(config.SESSION_BREAK_END_LOCAL))).then(0.0).otherwise(pl.col('raw_signal')).alias('target_exec'))
     df = df.drop('t_local')
     ret = (pl.col('close') / pl.col('close').shift(1).clip(config.EPS, None)).log()
     vol = ret.rolling_std(window_size=20).clip(config.EPS, None)

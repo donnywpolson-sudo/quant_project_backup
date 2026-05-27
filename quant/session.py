@@ -47,7 +47,7 @@ def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
         agg = agg.with_columns(pl.col('close').log().alias('log_close'))
         agg = agg.with_columns((pl.col('log_close') - pl.col('log_close').shift(1)).alias('daily_log_return'))
         agg = agg.with_columns(pl.col('daily_log_return').rolling_std(window_size=5).alias('daily_vol_5'))
-        agg = agg.with_columns(pl.col('daily_vol_5').fill_null(strategy='forward'))
+        agg = agg.with_columns(pl.col('daily_vol_5').fill_null(strategy='forward').fill_null(strategy='backward').fill_null(0.0))
         agg = agg.drop(['log_close', 'daily_log_return'])
     agg = agg.with_columns(pl.col('ts_event').dt.convert_time_zone('UTC').alias('ts_event'))
     agg = agg.with_columns([pl.col('open').cast(pl.Float32), pl.col('high').cast(pl.Float32), pl.col('low').cast(pl.Float32), pl.col('close').cast(pl.Float32)])

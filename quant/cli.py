@@ -14,8 +14,7 @@ from quant.features.engine import generate_features
 from quant.discovery import run_feature_discovery
 from quant.walkforward import run_walkforward
 from quant.io.canonical_parquet import write_canonical_parquet
-from quant.analytics import calculate_metrics
-from quant.analytics import run_aggregation
+from quant.analytics import calculate_metrics, run_aggregation
 random.seed(config.SEED)
 np.random.seed(config.SEED)
 logger = logging.getLogger(__name__)

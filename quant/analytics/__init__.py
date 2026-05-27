@@ -1,7 +1,9 @@
 import sys
 import polars as pl
 import numpy as np
-from quant.analytics.aggregate import run_aggregation
+
+from .aggregate import run_aggregation
+
 
 def calculate_metrics(file_path: str):
     try:
@@ -64,6 +66,8 @@ def calculate_metrics(file_path: str):
         print(f'Benchmark Sharpe:     {benchmark_sharpe:12.3f}')
         print(f'Benchmark MaxDD:      {benchmark_maxdd:12.4f}')
     print('=' * 50)
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: python -m src.analytics <path_to_backtest_results.parquet>')

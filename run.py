@@ -64,7 +64,7 @@ def process_split(train_years, test_years, files):
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
-    train_dir = Path('artifacts') / f'train_{'_'.join(map(str, train_years))}'
+    train_dir = Path('artifacts') / f"train_{'_'.join(map(str, train_years))}"
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f'Preparing TRAIN dataset for years {train_years}')
     for f in train_files:
@@ -80,7 +80,7 @@ def process_split(train_years, test_years, files):
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('artifacts') / f'manifest_{'_'.join(map(str, train_years))}.json'
+    manifest_path = Path('artifacts') / f"manifest_{'_'.join(map(str, train_years))}.json"
     logger.info('Running feature discovery on TRAIN data...')
     subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
     for f in test_files:

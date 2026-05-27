@@ -31,6 +31,6 @@ def test_streaming_resample_produces_htf():
         df_1d = streams['1d']
         assert df_1h.height > 0
         assert df_1d.height > 0
-        assert df_1h['ts_event'].is_sorted().all()
-        assert df_1d['ts_event'].is_sorted().all()
+        assert df_1h['ts_event'].is_sorted()
+        assert df_1d['ts_event'].is_sorted()
         assert 'daily_vol_5' in df_1d.columns

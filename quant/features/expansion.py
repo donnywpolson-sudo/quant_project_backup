@@ -7,11 +7,11 @@ logger = logging.getLogger(__name__)
 
 def add_regime(df: pl.DataFrame) -> pl.DataFrame:
     ret = (pl.col('close') / pl.col('close').shift(1)).log().cast(pl.Float32)
-    vol20 = ret.rolling_std(window_size=20)
-    med_vol = vol20.rolling_median(window_size=config.VOL_MEDIAN_WINDOW)
-    smooth_vol = med_vol.rolling_mean(window_size=config.VOL_SMOOTH_WINDOW)
+    vol20 = ret.rolling_std(window_size=20, min_periods=5)
+    med_vol = vol20.rolling_median(window_size=config.VOL_MEDIAN_WINDOW, min_periods=5)
+    smooth_vol = med_vol.rolling_mean(window_size=config.VOL_SMOOTH_WINDOW, min_periods=5)
     regime = pl.when(smooth_vol >= config.REGIME_HIGH_THRESH).then(1.0).when(smooth_vol <= config.REGIME_LOW_THRESH).then(0.0).otherwise(None)
-    regime = regime.fill_null(strategy='forward').fill_null(config.REGIME_MISSING_DEFAULT)
+    regime = regime.fill_null(config.REGIME_MISSING_DEFAULT)
     df = df.with_columns(regime.cast(pl.Float32).alias('regime'))
     return df
 
@@ -130,9 +130,9 @@ def add_rolling_moments(df: pl.DataFrame, window: int=20) -> pl.DataFrame:
     var = (sum_x2 - w * mean * mean) / (w - 1)
     std = var.sqrt()
     m3 = sum_x3 - 3 * mean * sum_x2 + 2 * w * mean * mean * mean
-    skew = pl.when(w > 2).then(m3 / (w - 1) / (std.pow(3) + config.EPS) * (pl.lit(w) / (pl.lit(w) - 2))).otherwise(pl.lit(0.0))
+    skew = pl.when((w > 2) & (std.abs() > config.EPS)).then(m3 / (w - 1) / (std.pow(3) + config.EPS) * (pl.lit(w) / pl.lit(w - 2))).otherwise(pl.lit(0.0))
     m4 = sum_x4 - 4 * mean * sum_x3 + 6 * mean * mean * sum_x2 - 3 * w * mean * mean * mean * mean
-    kurt = m4 / (w * (var * var + config.EPS)) - 3.0
+    kurt = pl.when((w > 3) & (var.abs() > config.EPS)).then(m4 / (w * (var * var + config.EPS)) - 3.0).otherwise(pl.lit(0.0))
     skew = skew.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
     kurt = kurt.fill_nan(0.0).fill_null(0.0).clip(config.CLIP_MIN, config.CLIP_MAX)
     df = df.with_columns([skew.cast(pl.Float32).alias(f'feature_ret_skew_{window}'), kurt.cast(pl.Float32).alias(f'feature_ret_kurt_{window}')])
