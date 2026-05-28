@@ -3,6 +3,10 @@
 # Optimized for speed, signal detection, and memory efficiency.
 # ===================================================================
 
+# Walkforward split years (top-level, used by run.py for year-based splitting)
+training_years: 1
+walkforward_years: 1
+
 # Reduce to 3 uncorrelated asset classes to test for regime-agnostic alpha
 markets:
   - ES  # Equity Index
