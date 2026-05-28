@@ -13,12 +13,12 @@ def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
         return df
 
     eps = config.EPS
-    date_col = pl.col('ts_event').dt.date()
+    session_col = pl.col('session_id')
 
     # --- Expanding intraday high/low (strictly causal: shift(1) excludes current bar) ---
     df = df.with_columns([
-        pl.col('high').shift(1).cum_max().over(date_col).alias('_daily_high_expanding'),
-        pl.col('low').shift(1).cum_min().over(date_col).alias('_daily_low_expanding'),
+        pl.col('high').shift(1).cum_max().over(session_col).alias('_daily_high_expanding'),
+        pl.col('low').shift(1).cum_min().over(session_col).alias('_daily_low_expanding'),
     ])
 
     # Distance to expanding daily high/low (causal: uses only bars before current)
@@ -32,8 +32,8 @@ def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
     # Previous two completed days' closes:
     # _prev_day_close = yesterday's final close (constant across all bars of today)
     # _two_days_ago_close = day-before-yesterday's final close
-    prev_day = pl.col('close').last().over(date_col).shift(1).forward_fill().over(date_col)
-    two_ago = pl.col('close').last().over(date_col).shift(2).forward_fill().over(date_col)
+    prev_day = pl.col('close').last().over(pl.col('session_id')).shift(1).forward_fill().over(pl.col('session_id'))
+    two_ago = pl.col('close').last().over(pl.col('session_id')).shift(2).forward_fill().over(pl.col('session_id'))
     df = df.with_columns([
         prev_day.alias('_prev_day_close'),
         two_ago.alias('_two_days_ago_close'),

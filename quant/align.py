@@ -61,7 +61,7 @@ def align_htf_streams(
         daily_cols = [c for c in df_5min.columns if c.startswith('daily_')]
         if daily_cols:
             df_5min = df_5min.with_columns(
-                [pl.col(c).forward_fill().backward_fill() for c in daily_cols]
+                [pl.col(c).forward_fill().over('session_id').backward_fill().over('session_id') for c in daily_cols]
             )
 
     return df_5min

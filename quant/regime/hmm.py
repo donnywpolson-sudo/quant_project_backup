@@ -525,7 +525,7 @@ def _zscore_standardize(features: np.ndarray, window: int = 60,
     # For the first min_samples, forward-fill with the first valid value
     for t in range(n_samples):
         start = max(0, t - window + 1)
-        end = t + 1
+        end = t
         seg = features[start:end]
 
         if seg.shape[0] < min_samples:

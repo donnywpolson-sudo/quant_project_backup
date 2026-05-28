@@ -169,8 +169,9 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #    than using fixed 0.6/0.4 cutoffs that suppress signal dispersion.
     # ------------------------------------------------------------------------
     prob = pl.col('prediction_prob').fill_null(0.5)
-    prob_mean = prob.rolling_mean(window_size=1000, min_periods=50)
-    prob_std = prob.rolling_std(window_size=1000, min_periods=50).clip(1e-06, None)
+    prob_lagged = prob.shift(1)
+    prob_mean = prob_lagged.rolling_mean(window_size=1000, min_periods=50)
+    prob_std = prob_lagged.rolling_std(window_size=1000, min_periods=50).clip(1e-06, None)
     z_score = ((prob - prob_mean) / prob_std).fill_null(0.0)
 
     z_thresh = pl.lit(config.Z_SCORE_ENTRY_THRESHOLD, dtype=pl.Float32)
@@ -285,7 +286,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #    regimes. Falls back to FIXED_CONTRACT_SIZE when ATR is unavailable.
     # ------------------------------------------------------------------------
     bar_range = (pl.col('high') - pl.col('low')).clip(eps, None)
-    atr14 = bar_range.rolling_mean(window_size=14, min_periods=5).clip(eps, None)
+    atr14 = bar_range.shift(1).rolling_mean(window_size=14, min_periods=5).clip(eps, None)
 
     volatility_size = (
         pl.lit(config.TARGET_RISK_PER_TRADE, dtype=pl.Float32) / atr14
@@ -330,14 +331,14 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Notional clip: |target_exec| <= MAX_LEVERAGE (equity-normalized)
-    open_next_expr = pl.col('open').shift(-1).clip(config.EPS, None)
+    open_current = pl.col('open').clip(config.EPS, None)
     equity = 1.0
     max_notional = equity * config.MAX_LEVERAGE
     df = df.with_columns(
         pl.col('target_exec')
         .clip(
-            pl.lit(-max_notional, dtype=pl.Float32) / (open_next_expr * pl.lit(contract_multiplier, dtype=pl.Float32)),
-            pl.lit(max_notional, dtype=pl.Float32) / (open_next_expr * pl.lit(contract_multiplier, dtype=pl.Float32))
+            pl.lit(-max_notional, dtype=pl.Float32) / (open_current * pl.lit(contract_multiplier, dtype=pl.Float32)),
+            pl.lit(max_notional, dtype=pl.Float32) / (open_current * pl.lit(contract_multiplier, dtype=pl.Float32))
         )
         .alias('target_exec')
     )
@@ -426,11 +427,10 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     eps = config.EPS
 
     # ------------------------------------------------------------------------
-    # Execution return: buy/sell at bar t+1 open, exit at bar t+1 close
+    # Execution return: signal[t-1] executed at open[t] earns return[t].
+    # return[t] = (close[t] - open[t]) / open[t]
     # ------------------------------------------------------------------------
-    open_next = pl.col('open').shift(-1)
-    close_next = pl.col('close').shift(-1)
-    ret_exec = ((close_next - open_next) / open_next.clip(eps, None)).fill_null(0.0)
+    ret_exec = ((pl.col('close') - pl.col('open')) / pl.col('open').clip(eps, None)).fill_null(0.0)
     ret_exec = ret_exec.clip(-0.02, 0.02)
     df = df.with_columns(ret_exec.alias('ret_exec'))
 
@@ -482,16 +482,11 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     #     - transaction costs + round-turn settlement on flatting
     #     + intrabar PnL (stop/take-profit fills within the bar).
     # ------------------------------------------------------------------------
-    entry_price = pl.col('open').shift(-1)
-    prior_position = pl.col('position').shift(1).fill_null(0.0)
-    position_went_flat = (prior_position.abs() > config.EPS) & (pl.col('position').abs() <= config.EPS)
+    entry_price = pl.col('open')
 
     pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
-    pnl = pl.when(position_went_flat)\
-        .then(pnl - pl.lit(config.TX_COST_PER_ROUNDTURN, dtype=pl.Float32) * prior_position.abs())\
-        .otherwise(pnl)
     pnl = pnl.fill_nan(0.0)
     pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl.clip(-pnl_clip, pnl_clip)
