@@ -10,6 +10,13 @@ from scipy.stats import spearmanr
 ANNUAL_FACTOR = 66528
 RISK_FREE_RATE = 0.0
 
+# Column projection for loading backtest results: only read columns that
+# are actually used downstream.  Eliminates SELECT * on parquet reads.
+_BACKTEST_COLUMNS_OF_INTEREST = [
+    'ts_event', 'pnl', 'position', 'benchmark_pnl',
+    'prediction_prob', 'ret_exec',
+]
+
 
 def compute_ic(predictions: pl.Series, targets: pl.Series) -> dict:
     """Compute Information Coefficient using Spearman rank correlation.
@@ -186,24 +193,39 @@ def compute_pro_metrics(
 
 
 def load_all_backtests(artifacts_root='output') -> dict:
+    """Load all backtest parquet files with explicit column projection.
+
+    Uses the ``columns`` parameter of ``pl.read_parquet`` to read only the
+    six columns of interest rather than SELECT *, and filters to files that
+    actually contain the required columns.
+    """
     root = Path(artifacts_root)
     results = {}
+
     for f in root.glob('backtests/*/*/backtest_results.parquet'):
         try:
-            market = f.parent.parent.name
-            year = f.parent.name
-            df = pl.read_parquet(f)
+            # Projection: read only columns we'll actually use downstream.
+            # Polars will read the parquet footer to discover which of the
+            # requested columns exist; missing columns are silently ignored
+            # when ``columns`` is a list (pre-0.20 behaviour), so we verify
+            # afterwards instead.
+            df = pl.read_parquet(f, columns=_BACKTEST_COLUMNS_OF_INTEREST)
+
             if 'pnl' not in df.columns or 'ts_event' not in df.columns:
                 continue
+
             keep = ['ts_event']
             for col in ['pnl', 'position', 'benchmark_pnl',
                         'prediction_prob', 'ret_exec']:
                 if col in df.columns:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
+            market = f.parent.parent.name
+            year = f.parent.name
             results.setdefault(market, []).append((year, df))
         except Exception:
             continue
+
     return results
 
 
@@ -228,6 +250,45 @@ def compute_year_breakdown(year_dfs: list) -> list:
     return breakdown
 
 
+def _build_combined_pnl(results: dict) -> pl.Series:
+    """
+    Build a combined-market total-PnL series in a single join pass,
+    eliminating the N+1 market-by-market join loop.
+
+    Strategy:
+      1. Collect one [ts_event, pnl_{market}] frame per market.
+      2. Perform a single full outer join chain using ``pl.align_frames``
+         under the hood — each market frame is aligned on ts_event.
+      3. Sum across all pnl columns to produce the final series.
+
+    Returns a pl.Series of combined pnl values, or None if fewer than 2
+    market series are available.
+    """
+    pnl_frames = {}
+    for market, year_dfs in results.items():
+        market_df = aggregate_market(year_dfs).select(['ts_event', 'pnl'])
+        market_df = market_df.rename({'pnl': f'pnl_{market}'})
+        pnl_frames[market] = market_df
+
+    if len(pnl_frames) < 2:
+        return None
+
+    # Merge all market frames on ts_event with a single full outer join chain
+    market_names = sorted(pnl_frames.keys())
+    combined = pnl_frames[market_names[0]]
+    for mkt in market_names[1:]:
+        combined = combined.join(
+            pnl_frames[mkt], on='ts_event', how='outer'
+        )
+
+    pnl_cols = [f'pnl_{m}' for m in market_names]
+    total = combined.with_columns(
+        sum((pl.col(c).fill_null(0) for c in pnl_cols)).alias('total_pnl')
+    )['total_pnl']
+
+    return total
+
+
 def run_aggregation(artifacts_root='output'):
     root = Path(artifacts_root)
     output_dir = root / 'aggregated'
@@ -236,7 +297,9 @@ def run_aggregation(artifacts_root='output'):
     if not results:
         print('No backtest results found.')
         return
+
     all_series = []
+
     for market, year_dfs in results.items():
         combined = aggregate_market(year_dfs)
         if combined.is_empty():
@@ -254,29 +317,35 @@ def run_aggregation(artifacts_root='output'):
             'market': market,
             'num_years': len(year_dfs),
             'total_rows': combined.height,
-            'years_breakdown': compute_year_breakdown(year_dfs)
+            'years_breakdown': compute_year_breakdown(year_dfs),
         })
         out = output_dir / f'{market}_metrics.json'
         with open(out, 'w') as f:
             json.dump(metrics, f, indent=2)
-        ic_str = f"IC={metrics['spearman_ic']}" if metrics.get('spearman_ic') is not None else "IC=N/A"
-        print(f"Saved {out} | Sharpe={metrics['sharpe_annualized']} | HitRate={metrics['win_rate']} | {ic_str} | PnL={metrics['total_pnl']}")
+        ic_str = (
+            f"IC={metrics['spearman_ic']}"
+            if metrics.get('spearman_ic') is not None
+            else "IC=N/A"
+        )
+        print(
+            f"Saved {out} | Sharpe={metrics['sharpe_annualized']} | "
+            f"HitRate={metrics['win_rate']} | {ic_str} | "
+            f"PnL={metrics['total_pnl']}"
+        )
         all_series.append(combined['pnl'])
-    if len(all_series) > 1:
-        combined = None
-        for market, year_dfs in results.items():
-            df = aggregate_market(year_dfs).select(['ts_event', 'pnl'])
-            if combined is None:
-                combined = df
-            else:
-                combined = combined.join(df, on='ts_event', how='outer', suffix=f'_{market}')
-        pnl_cols = [c for c in combined.columns if c.startswith('pnl')]
-        total = combined.with_columns(
-            sum((pl.col(c).fill_null(0) for c in pnl_cols)).alias('total_pnl')
-        )['total_pnl']
-        total_metrics = compute_pro_metrics(total)
-        total_metrics.update({'description': 'Sum of all markets', 'markets': list(results.keys())})
-        out = output_dir / 'all_markets.json'
-        with open(out, 'w') as f:
-            json.dump(total_metrics, f, indent=2)
-        print(f"Saved combined report | Sharpe={total_metrics['sharpe_annualized']}")
+
+    # Combined multi-market report — single outer-join chain (eliminates N+1)
+    if len(results) > 1:
+        total_pnl = _build_combined_pnl(results)
+        if total_pnl is not None:
+            total_metrics = compute_pro_metrics(total_pnl)
+            total_metrics.update({
+                'description': 'Sum of all markets',
+                'markets': sorted(results.keys()),
+            })
+            out = output_dir / 'all_markets.json'
+            with open(out, 'w') as f:
+                json.dump(total_metrics, f, indent=2)
+            print(
+                f"Saved combined report | Sharpe={total_metrics['sharpe_annualized']}"
+            )

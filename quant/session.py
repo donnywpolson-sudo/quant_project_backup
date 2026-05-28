@@ -18,11 +18,18 @@ SESSION_END = config.SESSION_END_LOCAL
 SESSION_BREAK_START = config.SESSION_BREAK_START_LOCAL
 SESSION_BREAK_END = config.SESSION_BREAK_END_LOCAL
 
+# Column projection: only read the 6 columns needed for resampling.
+# This eliminates SELECT * from raw parquet reads, minimizing I/O and
+# memory transfer before the processing pipeline even starts.
+_OHLCV_PROJECTION = ['ts_event', 'open', 'high', 'low', 'close', 'volume']
+
+
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
     session_id = pl.col('ts_local').dt.offset_by('6h').dt.date().cast(pl.String)
     df = df.with_columns(session_id.alias('session_id'))
     return df.drop('ts_local')
+
 
 def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
@@ -32,10 +39,18 @@ def filter_session_hours(df: pl.DataFrame) -> pl.DataFrame:
     df = df.filter(in_session & ~gap)
     return df.drop('ts_local')
 
+
 def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
     df = df.with_columns(pl.col('ts_local').dt.truncate(every=freq).alias(f'ts_{freq}'))
-    agg = df.group_by(['session_id', f'ts_{freq}'], maintain_order=True).agg([pl.col('open').first().alias('open'), pl.col('high').max().alias('high'), pl.col('low').min().alias('low'), pl.col('close').last().alias('close'), pl.col('volume').sum().alias('volume'), pl.len().alias('n_ticks')])
+    agg = df.group_by(['session_id', f'ts_{freq}'], maintain_order=True).agg([
+        pl.col('open').first().alias('open'),
+        pl.col('high').max().alias('high'),
+        pl.col('low').min().alias('low'),
+        pl.col('close').last().alias('close'),
+        pl.col('volume').sum().alias('volume'),
+        pl.len().alias('n_ticks'),
+    ])
     if freq == '5m' and config.DROP_INCOMPLETE_ROWS:
         agg = agg.filter(pl.col('n_ticks') == 5)
     elif freq == '1h':
@@ -52,11 +67,18 @@ def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
         agg = agg.with_columns(pl.col('daily_vol_5').fill_null(strategy='forward').fill_null(strategy='backward').fill_null(0.0))
         agg = agg.drop(['log_close', 'daily_log_return'])
     agg = agg.with_columns(pl.col('ts_event').dt.convert_time_zone('UTC').alias('ts_event'))
-    agg = agg.with_columns([pl.col('open').cast(pl.Float32), pl.col('high').cast(pl.Float32), pl.col('low').cast(pl.Float32), pl.col('close').cast(pl.Float32)])
+    agg = agg.with_columns([
+        pl.col('open').cast(pl.Float32),
+        pl.col('high').cast(pl.Float32),
+        pl.col('low').cast(pl.Float32),
+        pl.col('close').cast(pl.Float32),
+    ])
     return agg
 
-def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str:
-    df = pl.read_parquet(file_path)
+
+def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str | None:
+    """Read only the 6 OHLCV columns needed for resampling (eliminates SELECT *)."""
+    df = pl.read_parquet(file_path, columns=_OHLCV_PROJECTION)
     if df['ts_event'].dtype != pl.Datetime:
         df = df.with_columns(pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC')))
     df = filter_session_hours(df)
@@ -70,6 +92,7 @@ def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str:
     out_file.parent.mkdir(parents=True, exist_ok=True)
     df_resampled.write_parquet(out_file)
     return str(out_file)
+
 
 def process_frequency(freq: str, all_files: list) -> tuple:
     print(f'\n[SESSION] Resampling {freq} (found {len(all_files)} files)', flush=True)
@@ -92,6 +115,7 @@ def process_frequency(freq: str, all_files: list) -> tuple:
         return (freq, df)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 def load_all_streams_chunked(data_glob: str) -> dict:
     all_files = sorted(glob.glob(data_glob))
