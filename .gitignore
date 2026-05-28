@@ -10,7 +10,7 @@ __pycache__/
 .ruff_cache/
 
 # Project Data (Do not sync these)
-artifacts/
+output/cache/
 futures/
 
 # Secrets and Settings

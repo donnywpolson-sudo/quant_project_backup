@@ -45,13 +45,13 @@ def main():
     subparsers = parser.add_subparsers(dest='command', required=True)
     discover_parser = subparsers.add_parser('discover')
     discover_parser.add_argument('--data', required=True)
-    discover_parser.add_argument('--out', default='artifacts/manifest.json')
+    discover_parser.add_argument('--out', default='output/manifests/manifest.json')
     run_parser = subparsers.add_parser('run')
     run_parser.add_argument('--data', required=True)
-    run_parser.add_argument('--manifest', default='artifacts/manifest.json')
+    run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_parser.add_argument('--out', required=True)
     aggregate_parser = subparsers.add_parser('aggregate')
-    aggregate_parser.add_argument('--artifacts', default='artifacts')
+    aggregate_parser.add_argument('--artifacts', default='output')
     args = parser.parse_args()
     load_config()  # populate config namespace from config.yaml
     random.seed(config.SEED)
@@ -63,7 +63,7 @@ def main():
         load_market_config(symbol)
     if args.command == 'discover':
         print('\n[CLI] === PHASE 1: FEATURE DISCOVERY ===', flush=True)
-        cache_dir = Path(args.out).parent
+        cache_dir = Path('output/cache')
         cache_dir.mkdir(parents=True, exist_ok=True)
         data_tag = _stable_data_tag(args.data)
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
@@ -80,7 +80,7 @@ def main():
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'
-        cache_dir = Path(args.manifest).parent
+        cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data)
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'

@@ -185,10 +185,10 @@ def compute_pro_metrics(
     }
 
 
-def load_all_backtests(artifacts_root='artifacts') -> dict:
+def load_all_backtests(artifacts_root='output') -> dict:
     root = Path(artifacts_root)
     results = {}
-    for f in root.glob('*/*/backtest_results.parquet'):
+    for f in root.glob('backtests/*/*/backtest_results.parquet'):
         try:
             market = f.parent.parent.name
             year = f.parent.name
@@ -228,7 +228,7 @@ def compute_year_breakdown(year_dfs: list) -> list:
     return breakdown
 
 
-def run_aggregation(artifacts_root='artifacts'):
+def run_aggregation(artifacts_root='output'):
     root = Path(artifacts_root)
     output_dir = root / 'aggregated'
     output_dir.mkdir(parents=True, exist_ok=True)
