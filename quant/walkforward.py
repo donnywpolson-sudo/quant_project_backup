@@ -1,4 +1,8 @@
 import logging
+import json
+import os
+from typing import Optional, Tuple
+
 import numpy as np
 import polars as pl
 from sklearn.linear_model import Ridge
@@ -10,6 +14,7 @@ from quant.execution.simulator import simulate_execution_classification
 from quant.features.corr_prune import correlation_prune
 from quant.features.variance_filter import remove_constant_features
 from tqdm import tqdm
+
 logger = logging.getLogger(__name__)
 
 def safe_clip(X, min_val=-10.0, max_val=10.0):
@@ -105,6 +110,310 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
     result = test_original.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
     return simulate_execution_classification(result)
+
+# ============================================================================
+# HMM Regime-Aware Walkforward
+# ============================================================================
+
+def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
+    """
+    Resample 5-minute data to 1-hour frequency for HMM detection layer.
+    Preserves session_id grouping and uses only OHLCV columns.
+    """
+    from quant.session import add_session_id
+
+    df = df_5min.select(['ts_event', 'open', 'high', 'low', 'close', 'volume'])
+    df = df.with_columns(
+        pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local')
+    )
+    df = df.with_columns(
+        pl.col('ts_local').dt.truncate('1h').alias('ts_hour')
+    )
+    # Add session_id for proper grouping
+    session_id = pl.col('ts_local').dt.offset_by('6h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+
+    agg = df.group_by(['session_id', 'ts_hour'], maintain_order=True).agg([
+        pl.col('open').first().alias('open'),
+        pl.col('high').max().alias('high'),
+        pl.col('low').min().alias('low'),
+        pl.col('close').last().alias('close'),
+        pl.col('volume').sum().alias('volume'),
+        pl.len().alias('n_ticks'),
+    ])
+    # Filter incomplete hours (< 10 ticks)
+    agg = agg.filter(pl.col('n_ticks') >= 10)
+    agg = agg.rename({'ts_hour': 'ts_event'})
+    agg = agg.drop('n_ticks')
+    agg = agg.with_columns(
+        pl.col('ts_event').dt.convert_time_zone('UTC').alias('ts_event')
+    )
+    agg = agg.with_columns([
+        pl.col('open').cast(pl.Float32),
+        pl.col('high').cast(pl.Float32),
+        pl.col('low').cast(pl.Float32),
+        pl.col('close').cast(pl.Float32),
+    ])
+    agg = agg.sort(['session_id', 'ts_event'])
+    return agg
+
+
+def process_fold_with_hmm(
+    train_X: pl.DataFrame,
+    train_y: pl.Series,
+    test_original: pl.DataFrame,
+    feature_cols: list,
+    hmm_filter: Optional["HMMRegimeFilter"] = None,
+    df_1h_test: Optional[pl.DataFrame] = None,
+    fold_idx: int = 0,
+    hmm_retrain_interval: int = 5,
+) -> Tuple[pl.DataFrame, Optional["HMMRegimeFilter"]]:
+    """
+    Process a single walkforward fold with HMM regime gating.
+
+    Steps:
+      1. Train ML model and generate base predictions.
+      2. Execute base strategy (computation is side-effect-free PnL).
+      3. Apply HMM regime filter if active (gate trades by regime).
+      4. Recompute PnL after gating.
+
+    Args:
+        train_X, train_y, test_original, feature_cols: Standard fold data.
+        hmm_filter: Existing HMMRegimeFilter instance (None on first call).
+        df_1h_test: 1H resampled test data for this fold.
+        fold_idx: Zero-based fold index (for retrain scheduling).
+        hmm_retrain_interval: Retrain HMM every N folds.
+
+    Returns:
+        (result_df, updated_hmm_filter): The executed DataFrame and filter.
+    """
+    from quant.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter
+
+    # --- Base execution (no HMM) ---
+    probs = train_and_predict(train_X, train_y, test_original, feature_cols)
+    if config.PROBABILITY_SMOOTHING_ALPHA > 0:
+        session_ids = test_original['session_id'].to_numpy()
+        probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
+
+    result = test_original.with_columns(
+        pl.Series('prediction_prob', probs).cast(pl.Float32)
+    )
+    result = result.with_columns(compute_benchmark(result))
+    result = simulate_execution_classification(result)
+
+    # --- HMM Regime Gating ---
+    if hmm_filter is None:
+        hmm_filter = HMMRegimeFilter()
+
+    if df_1h_test is not None and df_1h_test.height > 0:
+        should_retrain = (fold_idx > 0 and fold_idx % hmm_retrain_interval == 0)
+
+        # Build 1H train data from train_X if retraining
+        df_1h_train = None
+        if should_retrain:
+            df_1h_train = _resample_to_1h(train_X)
+
+        result, hmm_filter = apply_hmm_filter(
+            df_5min_base=result,
+            df_1h_train=df_1h_train,
+            df_1h_test=df_1h_test,
+            hmm_filter=hmm_filter,
+            retrain=should_retrain,
+        )
+
+        # Recompute PnL after regime gating (position may have changed)
+        # The simulator's position/PnL columns are already present; we re-run
+        # the full simulation on the gated target_exec to get correct PnL.
+        # But to avoid double-counting friction, we do a minimal recompute.
+        result = _recompute_pnl_after_gate(result)
+
+    return result, hmm_filter
+
+
+def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Recompute position and PnL after target_exec has been gated by HMM.
+
+    This is a lightweight recompute that only updates position, pos_change,
+    and pnl — preserving all other columns (including hmm_regime_* and
+    hmm_trade_gate).
+    """
+    eps = config.EPS
+
+    # Position: signal from t-1 executed at t
+    position = pl.col('target_exec').shift(1).fill_null(0.0)
+    pos_change = (position - position.shift(1)).abs().fill_null(0.0)
+
+    # Need ret_exec column — should already exist from first simulation pass
+    if 'ret_exec' not in df.columns:
+        open_next = pl.col('open').shift(-1)
+        close_next = pl.col('close').shift(-1)
+        ret_exec = ((close_next - open_next) / open_next.clip(eps, None)).fill_null(0.0)
+        ret_exec = ret_exec.clip(-0.02, 0.02)
+        df = df.with_columns(ret_exec.alias('ret_exec'))
+
+    if 'unit_cost' not in df.columns:
+        spread = (pl.col('high') - pl.col('low')) / pl.col('close').clip(eps, None)
+        spread = spread.clip(0.0, 0.05)
+        ret = (pl.col('close') / pl.col('close').shift(1)).log()
+        ret_lagged = ret.shift(1)
+        vol = ret_lagged.rolling_std(window_size=20).clip(eps, None).fill_null(1e-06)
+        unit_cost = (
+            config.COMMISSION_PER_TRADE
+            + config.SLIPPAGE_K * spread
+            + config.VOL_PENALTY * vol
+            + config.TX_COST_PER_ROUNDTURN / 2.0
+        ).clip(0.0, 0.01)
+        df = df.with_columns(unit_cost.alias('unit_cost'))
+
+    # Recompute PnL
+    pnl = position * pl.col('ret_exec') - pl.col('unit_cost') * pos_change
+    pnl = pnl.fill_nan(0.0).clip(-0.05, 0.05)
+
+    df = df.with_columns([
+        position.alias('position'),
+        pos_change.alias('pos_change'),
+        pnl.alias('pnl'),
+    ])
+
+    return df
+
+
+def run_walkforward_with_hmm(
+    X: pl.DataFrame,
+    y: pl.DataFrame,
+    feature_cols: list,
+    target_col: str = 'target_sign',
+    hmm_retrain_interval: int = 5,
+) -> Tuple[pl.DataFrame, dict]:
+    """
+    Walkforward with HMM regime-aware risk management.
+
+    Same interface as run_walkforward(), but additionally:
+      - Resamples 5-min data to 1H internally for the detection layer.
+      - Trains HMM periodically (every N folds).
+      - Bridges regime probabilities to 5-min execution bars.
+      - Gates trades based on regime (allowed/prohibited).
+      - Returns validation report comparing base vs HMM-filtered PnL.
+
+    Args:
+        X: Feature DataFrame (5-min).
+        y: Target DataFrame (5-min).
+        feature_cols: Feature column names.
+        target_col: Target column name.
+        hmm_retrain_interval: Retrain HMM every N folds.
+
+    Returns:
+        (df_hmm_result, validation_dict):
+            df_hmm_result: Full executed DataFrame with regime columns.
+            validation_dict: Dictionary with base_metrics, hmm_metrics, psr, etc.
+    """
+    from quant.regime.hmm_filter import HMMRegimeFilter
+    from quant.regime.validation import compare_strategies
+
+    df = X.with_columns(y)
+    if target_col not in df.columns:
+        raise KeyError(f"Target column '{target_col}' not found.")
+
+    df = df.with_columns(pl.col('ts_event').dt.date().alias('date'))
+    unique_dates = sorted(df['date'].unique().to_list())
+
+    # Correlation pruning on initial window
+    first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
+    first_train_df = df.filter(pl.col('date').is_in(first_train_dates))
+    if len(first_train_df) > 0:
+        pruned_features = correlation_prune(
+            first_train_df, feature_cols,
+            threshold=min(config.CORR_THRESHOLD, 0.9)
+        )
+    else:
+        pruned_features = feature_cols
+
+    # Build folds
+    folds = []
+    for i in range(
+        0,
+        len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1,
+        config.WF_STEP_DAYS,
+    ):
+        train_end = i + config.WF_TRAIN_DAYS
+        test_start = train_end
+        test_end = test_start + config.WF_TEST_DAYS
+        train_dates = unique_dates[i:train_end]
+        test_dates = unique_dates[test_start:test_end]
+        train_df = df.filter(pl.col('date').is_in(train_dates))
+        test_df = df.filter(pl.col('date').is_in(test_dates))
+        if train_df.is_empty() or test_df.is_empty():
+            continue
+        train_X = train_df.drop([target_col, 'date'])
+        train_y = train_df[target_col]
+        test_original = test_df.drop([target_col, 'date'])
+        folds.append((train_X, train_y, test_original, pruned_features))
+
+    if not folds:
+        raise ValueError('No folds processed.')
+
+    # Initialize HMM filter
+    hmm_filter = HMMRegimeFilter()
+
+    # Try to initialize HMM on the first training window
+    first_train = folds[0][0]
+    df_1h_init = _resample_to_1h(first_train)
+    if df_1h_init.height >= 60:  # at least 60 hours (~2.5 days)
+        success = hmm_filter.initialize(df_1h_init)
+        logger.info(
+            f"HMM initialization: {'success' if success else 'fallback'} "
+            f"({df_1h_init.height} 1H bars)"
+        )
+
+    results_base = []
+    results_hmm = []
+
+    for fold_idx, (train_X, train_y, test_original, feat_cols) in enumerate(
+        tqdm(folds, desc='Walkforward + HMM', unit='fold')
+    ):
+        # Standard base execution
+        base_result = process_fold(train_X, train_y, test_original, feat_cols)
+        results_base.append(base_result)
+
+        # HMM-aware execution
+        df_1h_test = _resample_to_1h(test_original)
+        hmm_result, hmm_filter = process_fold_with_hmm(
+            train_X=train_X,
+            train_y=train_y,
+            test_original=test_original,
+            feature_cols=feat_cols,
+            hmm_filter=hmm_filter,
+            df_1h_test=df_1h_test,
+            fold_idx=fold_idx,
+            hmm_retrain_interval=hmm_retrain_interval,
+        )
+        results_hmm.append(hmm_result)
+
+    # Concatenate results
+    df_base = pl.concat(results_base).sort(['session_id', 'ts_event'])
+    df_hmm = pl.concat(results_hmm).sort(['session_id', 'ts_event'])
+
+    # Validation
+    report = compare_strategies(
+        df_base=df_base,
+        df_hmm=df_hmm,
+        pnl_column='pnl',
+        position_column='position',
+        confidence=0.95,
+        hmm_active=hmm_filter.is_active,
+        fallback_reason=hmm_filter.fallback_reason,
+    )
+
+    logger.info(f"\n{report.summary()}")
+
+    # Build validation dict for serialization
+    validation_dict = report.to_dict()
+    validation_dict['hmm_training_log'] = hmm_filter.training_log
+    validation_dict['n_folds'] = len(folds)
+
+    return df_hmm, validation_dict
+
 
 def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target_col: str='target_sign') -> pl.DataFrame:
     df = X.with_columns(y)

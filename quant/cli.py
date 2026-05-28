@@ -12,7 +12,7 @@ from quant.config_manager import config, load_config
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
 from quant.discovery import run_feature_discovery
-from quant.walkforward import run_walkforward
+from quant.walkforward import run_walkforward, run_walkforward_with_hmm
 from quant.io.canonical_parquet import write_canonical_parquet
 from quant.analytics import calculate_metrics, run_aggregation
 logger = logging.getLogger(__name__)
@@ -49,6 +49,12 @@ def main():
     run_parser.add_argument('--data', required=True)
     run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_parser.add_argument('--out', required=True)
+    run_hmm_parser = subparsers.add_parser('run-hmm')
+    run_hmm_parser.add_argument('--data', required=True)
+    run_hmm_parser.add_argument('--manifest', default='output/manifests/manifest.json')
+    run_hmm_parser.add_argument('--out', required=True)
+    run_hmm_parser.add_argument('--retrain-interval', type=int, default=5,
+                                help='Retrain HMM every N folds (default: 5).')
     aggregate_parser = subparsers.add_parser('aggregate')
     aggregate_parser.add_argument('--artifacts', default='output')
     args = parser.parse_args()
@@ -56,7 +62,7 @@ def main():
     random.seed(config.SEED)
     np.random.seed(config.SEED)
     check_memory_safety()
-    if args.command in ('discover', 'run'):
+    if args.command in ('discover', 'run', 'run-hmm'):
         from quant.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
@@ -113,6 +119,86 @@ def main():
         print('\n================ METRICS ================')
         calculate_metrics(out_path)
         print('========================================\n')
+        try:
+            print('[CLI] Running aggregation...', flush=True)
+            run_aggregation()
+        except Exception as e:
+            print(f'[CLI] Aggregation skipped: {e}', flush=True)
+    elif args.command == 'run-hmm':
+        print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
+        target_col = 'target_sign_4h'
+        cache_dir = Path('output/cache')
+        data_tag = _stable_data_tag(args.data)
+        aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print('[CLI] Loading aligned data...', flush=True)
+        df_aligned = load_and_clean_data(
+            args.data,
+            cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+        )
+        if feature_cache.exists():
+            print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
+            df_features = pl.read_parquet(feature_cache)
+        else:
+            print('[CLI] Generating feature matrix (no cache)...', flush=True)
+            df_features = generate_features(df_aligned)
+        print('[CLI] Applying manifest...', flush=True)
+        if config.ENABLE_DISCOVERY:
+            df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+        else:
+            print('[CLI] Discovery disabled — skipping manifest pruning.', flush=True)
+            df_pruned = df_features
+        if target_col not in df_pruned.columns:
+            raise KeyError(f"Target column '{target_col}' missing!")
+        y = df_pruned[target_col]
+        X = df_pruned.drop(target_col)
+        _exclude = {
+            'ts_event', 'open', 'high', 'low', 'close', 'volume',
+            'session_id', 'regime', 'date', 'benchmark_pnl',
+        }
+        _numeric_types = (
+            pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+        )
+        feature_cols = [
+            c for c in X.columns
+            if c not in _exclude and X[c].dtype in _numeric_types
+        ]
+        print(
+            f'[CLI] Running HMM-aware walkforward with '
+            f'{len(feature_cols)} features '
+            f'(HMM retrain every {args.retrain_interval} folds)...',
+            flush=True,
+        )
+        result_df, validation = run_walkforward_with_hmm(
+            X, y, feature_cols, target_col,
+            hmm_retrain_interval=args.retrain_interval,
+        )
+        os.makedirs(args.out, exist_ok=True)
+        out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
+        result_df.write_parquet(out_path)
+        print(f'[CLI] HMM-filtered results saved to {out_path}', flush=True)
+        # Save validation report
+        val_path = os.path.join(args.out, 'hmm_validation_report.json')
+        with open(val_path, 'w') as f:
+            json.dump(validation, f, indent=2, default=str)
+        print(f'[CLI] Validation report saved to {val_path}', flush=True)
+        print('\n================ HMM METRICS ================')
+        calculate_metrics(out_path)
+        print('==============================================\n')
+        if not validation.get('fallback_triggered', True):
+            print(
+                f"[CLI] PSR: {validation['psr_result']['psr']:.4f} | "
+                f"Significant: {validation['psr_result']['significant']} | "
+                f"ΔSR: {validation['psr_result']['sharpe_difference']:+.4f}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[CLI] HMM FALLBACK ACTIVE: {validation.get('fallback_reason', 'unknown')}",
+                flush=True,
+            )
+        print(f"[CLI] Recommendation: {validation.get('recommendation', 'N/A')}", flush=True)
         try:
             print('[CLI] Running aggregation...', flush=True)
             run_aggregation()
