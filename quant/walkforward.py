@@ -61,7 +61,7 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
         probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     else:
         raise ValueError(f'Unknown MODEL_TYPE: {config.MODEL_TYPE}')
-    probs = safe_clip(probs, 0.3, 0.7)
+    probs = safe_clip(probs, 0.05, 0.95)
     return probs.astype(np.float32)
 
 def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: float=0.3) -> np.ndarray:

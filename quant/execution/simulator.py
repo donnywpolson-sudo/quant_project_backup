@@ -20,18 +20,26 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     eps = config.EPS
 
     # ------------------------------------------------------------------------
-    # 1. Generate trading signal from prediction probability
-    #    (prediction_prob is based on features at time t, so signal is
-    #     generated at t)
+    # 1. Generate trading signal from prediction probability via z-score
+    #    Compute rolling z-score of prediction_prob (1000-bar window ≈ 3.6d)
+    #    Enter signal when |z| > Z_SCORE_ENTRY_THRESHOLD (default 1.5)
+    #    This adapts thresholds to the prevailing signal distribution rather
+    #    than using fixed 0.6/0.4 cutoffs that suppress signal dispersion.
     # ------------------------------------------------------------------------
+    prob = pl.col('prediction_prob').fill_null(0.5)
+    prob_mean = prob.rolling_mean(window_size=1000, min_periods=50)
+    prob_std = prob.rolling_std(window_size=1000, min_periods=50).clip(1e-06, None)
+    z_score = ((prob - prob_mean) / prob_std).fill_null(0.0)
+
+    z_thresh = pl.lit(config.Z_SCORE_ENTRY_THRESHOLD, dtype=pl.Float32)
     signal_expr = (
-        pl.when(pl.col('prediction_prob').fill_null(0.5) > 0.6)
-        .then(1.0)
-        .when(pl.col('prediction_prob').fill_null(0.5) < 0.4)
-        .then(-1.0)
-        .otherwise(0.0)
+        pl.when(z_score > z_thresh)
+        .then(pl.lit(1.0, dtype=pl.Float32))
+        .when(z_score < -z_thresh)
+        .then(pl.lit(-1.0, dtype=pl.Float32))
+        .otherwise(pl.lit(0.0, dtype=pl.Float32))
     )
-    df = df.with_columns(signal_expr.cast(pl.Float32).alias('raw_signal'))
+    df = df.with_columns(signal_expr.alias('raw_signal'))
 
     # Initialize target_exec from raw_signal as Float32
     df = df.with_columns(
@@ -128,10 +136,24 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
         )
 
     # ------------------------------------------------------------------------
-    # 6. Fixed Contract Sizing: apply constant multiplier.
+    # 6. ATR-Based Volatility-Parity Position Sizing
+    #    S = TARGET_RISK_PER_TRADE / ATR(14)
+    #    ATR computed as rolling mean of bar range (high - low) over 14 bars.
+    #    Position size capped at MAX_LEVERAGE to prevent blowups in low-vol
+    #    regimes. Falls back to FIXED_CONTRACT_SIZE when ATR is unavailable.
     # ------------------------------------------------------------------------
+    bar_range = (pl.col('high') - pl.col('low')).clip(eps, None)
+    atr14 = bar_range.rolling_mean(window_size=14, min_periods=5).clip(eps, None)
+
+    volatility_size = (
+        pl.lit(config.TARGET_RISK_PER_TRADE, dtype=pl.Float32) / atr14
+    ).clip(
+        pl.lit(0.1, dtype=pl.Float32),
+        pl.lit(config.MAX_LEVERAGE, dtype=pl.Float32),
+    ).fill_null(pl.lit(FIXED_CONTRACT_SIZE, dtype=pl.Float32))
+
     df = df.with_columns(
-        (pl.col('target_exec') * pl.lit(FIXED_CONTRACT_SIZE, dtype=pl.Float32))
+        (pl.col('target_exec') * volatility_size)
         .cast(pl.Float32)
         .alias('target_exec')
     )

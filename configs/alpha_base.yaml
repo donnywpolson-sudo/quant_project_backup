@@ -81,3 +81,20 @@ io:
 pipeline:
   enable_discovery: true
   enable_expansion: true
+
+execution:
+  execute_at: "open[t+1]"
+  slippage_k: 0.001
+  vol_penalty: 0.005
+  commission_per_trade: 2e-05
+  tx_cost_per_roundturn: 0.00015
+  commission_per_contract: 1.50
+  target_vol: 0.01
+  max_leverage: 3.0
+  max_pos_change_per_min: 0.1
+  flat_before_close_minutes: 5
+  htf_trend_alignment: true
+  htf_vol_scaling: true
+  htf_vol_window: 10
+  z_score_entry_threshold: 1.5
+  target_risk_per_trade: 0.01

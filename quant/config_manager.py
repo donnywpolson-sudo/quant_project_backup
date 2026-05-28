@@ -169,6 +169,7 @@ class ExecutionConfig(BaseModel):
     vol_penalty: float = 0.005
     commission_per_trade: float = 2e-05
     tx_cost_per_roundturn: float = 0.00015
+    commission_per_contract: float = 1.50
     target_vol: float = 0.01
     max_leverage: float = 3.0
     max_pos_change_per_min: float = 0.1
@@ -178,6 +179,8 @@ class ExecutionConfig(BaseModel):
     htf_vol_window: int = 10
     max_position_size: str | None = None
     daily_loss_limit: str | None = None
+    z_score_entry_threshold: float = 1.5
+    target_risk_per_trade: float = 0.01
 
 
 class PreprocessingConfig(BaseModel):
@@ -391,6 +394,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.VOL_PENALTY = c.execution.vol_penalty
     config.COMMISSION_PER_TRADE = c.execution.commission_per_trade
     config.TX_COST_PER_ROUNDTURN = c.execution.tx_cost_per_roundturn
+    config.COMMISSION_PER_CONTRACT = c.execution.commission_per_contract
     config.TARGET_VOL = c.execution.target_vol
     config.MAX_LEVERAGE = c.execution.max_leverage
     config.MAX_POS_CHANGE_PER_MIN = c.execution.max_pos_change_per_min
@@ -398,6 +402,8 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.HTF_TREND_ALIGNMENT = c.execution.htf_trend_alignment
     config.HTF_VOL_SCALING = c.execution.htf_vol_scaling
     config.HTF_VOL_WINDOW = c.execution.htf_vol_window
+    config.Z_SCORE_ENTRY_THRESHOLD = c.execution.z_score_entry_threshold
+    config.TARGET_RISK_PER_TRADE = c.execution.target_risk_per_trade
 
     # -- preprocessing -------------------------------------------------------
     config.CLIP_MIN = c.preprocessing.clip_min
