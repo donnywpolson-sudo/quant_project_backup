@@ -50,11 +50,16 @@ def run_feature_discovery(data_path: str, manifest_out: str):
 
     df_ts = df_ts.sort('ts_event')
     latest_ts = df_ts[-1, 'ts_event']
-    latest_local = latest_ts.astimezone(config.TIMEZONE)
-    cutoff_local_date = latest_local.date()
-    cutoff_date = cutoff_local_date - timedelta(days=config.DISCOVERY_WINDOW_DAYS)
 
     local_tz = pytz.timezone(config.TIMEZONE)
+
+    if latest_ts.tzinfo is None:
+        latest_ts = pytz.utc.localize(latest_ts)
+
+    latest_local = latest_ts.astimezone(local_tz)
+
+    cutoff_local_date = latest_local.date()
+    cutoff_date = cutoff_local_date - timedelta(days=config.DISCOVERY_WINDOW_DAYS)
     cutoff_local_dt = local_tz.localize(
         datetime(cutoff_date.year, cutoff_date.month, cutoff_date.day)
     )

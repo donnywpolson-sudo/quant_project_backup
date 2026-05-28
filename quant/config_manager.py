@@ -253,9 +253,9 @@ class RootConfig(BaseModel):
     markets: list[str] = Field(default_factory=lambda: ["ES"])
     market_configs: dict = Field(
         default_factory=lambda: {
-            "ES": "config/markets/ES.yaml",
-            "CL": "config/markets/CL.yaml",
-            "ZB": "config/markets/ZB.yaml",
+            "ES": "configs/markets/ES.yaml",
+            "CL": "configs/markets/CL.yaml",
+            "ZB": "configs/markets/ZB.yaml",
         }
     )
     use_correlation_filter: bool = False
@@ -511,7 +511,7 @@ def load_config(env: str | None = None, configs_dir: Path | None = None) -> Root
         if "market_configs" not in merged:
             merged["market_configs"] = {}
         for m in merged["symbols"]:
-            merged["market_configs"][m] = f"config/markets/{m}.yaml"
+            merged["market_configs"][m] = f"configs/markets/{m}.yaml"
 
     # ---- 5. Validate with Pydantic -----------------------------------------
     try:
