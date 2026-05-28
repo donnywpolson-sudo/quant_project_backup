@@ -1,0 +1,59 @@
+name: Quant Model Structural Audit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
+  workflow_dispatch:      # Allow manual trigger
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout pyyaml
+
+      - name: Run causal audit tests
+        run: python -m pytest tests/test_causal_audit.py -v --tb=short --timeout=300
+
+      - name: Run alignment tests
+        run: python -m pytest tests/test_alignment.py -v --tb=short --timeout=120
+
+      - name: Run HTF feature tests
+        run: python -m pytest tests/test_htf_features.py -v --tb=short --timeout=120
+
+      - name: Run session streaming tests
+        run: python -m pytest tests/test_session_streaming.py -v --tb=short --timeout=120
+
+      - name: Run continuous contract tests
+        run: python -m pytest tests/test_continuous_contract.py -v --tb=short --timeout=120
+
+      - name: Run leakage audit tool
+        run: python tools/leakage_audit.py
+
+      - name: Run fuzz test — structural invariants (1000 runs)
+        run: python tests/test_fuzz.py --runs 1000
+
+      - name: Assert no failures
+        run: |
+          echo "============================================================"
+          echo " ALL STRUCTURAL AUDIT CHECKS COMPLETED"
+          echo " Roll test, leverage stress, intrabar stop/gap checks,"
+          echo " burn-in exclusion, round-turn cost, and 1000-run fuzz"
+          echo " harness all passed."
+          echo "============================================================"

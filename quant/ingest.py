@@ -5,6 +5,8 @@ from pathlib import Path
 from quant.config_manager import config
 from quant.session import load_all_streams_chunked
 from quant.align import align_htf_streams
+from quant.continuous_contract import build_continuous_series
+from quant.market_config import detect_symbol_from_path, load_market_config
 from quant.io.canonical_parquet import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
@@ -101,12 +103,20 @@ def _join_cross_asset_features(
     # Single left-join instead of N+1 individual joins
     df_aligned = df_aligned.join(cross_combined, on='ts_event', how='left')
 
-    # Forward-fill all cross-asset columns in one pass
+    # Forward-fill cross-asset columns within session_id groups only,
+    # resetting to null at session boundaries to avoid stale data
+    # contamination across primary market session gaps (Finding #17).
     cross_cols = [c for c in cross_combined.columns if c != 'ts_event']
     if cross_cols:
-        df_aligned = df_aligned.with_columns(
-            [pl.col(c).fill_null(strategy='forward') for c in cross_cols]
-        )
+        if 'session_id' in df_aligned.columns:
+            df_aligned = df_aligned.with_columns(
+                [pl.col(c).fill_null(strategy='forward').over('session_id')
+                 for c in cross_cols]
+            )
+        else:
+            df_aligned = df_aligned.with_columns(
+                [pl.col(c).fill_null(strategy='forward') for c in cross_cols]
+            )
 
     return df_aligned
 
@@ -137,6 +147,38 @@ def load_and_clean_data(
 
     print('[INGEST] Aligning HTF streams...', flush=True)
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
+    validate_memory_and_integrity(df_aligned)
+
+    # ---- Explicit gap filter (Finding #3) -----------------------------------
+    from quant.gap_filter import filter_gaps
+    df_aligned = filter_gaps(df_aligned, max_gap_minutes=30)
+    validate_memory_and_integrity(df_aligned)
+
+    # ---- Continuous contract pipeline (Finding #12) -------------------------
+    # Build ratio-adjusted continuous price series with roll-date splicing.
+    # Derives symbol from the data_glob path (e.g., 'data/ES/*.parquet' -> 'ES').
+    symbol = detect_symbol_from_path(data_glob)
+    print(f'[INGEST] Building continuous contract series for {symbol}...',
+          flush=True)
+
+    # Load contract_multiplier from per-market YAML if available
+    load_market_config(symbol)
+    contract_multiplier = 1.0
+    market_cfg_yaml = config.MARKET_CONFIGS.get(symbol)
+    if market_cfg_yaml and Path(market_cfg_yaml).exists():
+        import yaml
+        try:
+            with open(market_cfg_yaml, 'r') as f:
+                mkt = yaml.safe_load(f)
+            contract_multiplier = float(
+                mkt.get('metadata', {}).get('contract_multiplier', 1.0)
+            )
+        except Exception:
+            contract_multiplier = 1.0
+
+    df_aligned = build_continuous_series(
+        df_aligned, symbol, contract_multiplier=contract_multiplier
+    )
     validate_memory_and_integrity(df_aligned)
 
     # Batch join all cross-asset features in one pass (eliminates N+1 pattern)

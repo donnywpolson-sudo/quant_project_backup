@@ -161,6 +161,7 @@ class WalkforwardConfig(BaseModel):
     probability_smoothing_alpha: float = 0.1
     corr_threshold: float = 0.95
     wf_parallel_folds: int = 1
+    burn_in_bars: int = 500
 
 
 class ExecutionConfig(BaseModel):
@@ -181,6 +182,9 @@ class ExecutionConfig(BaseModel):
     daily_loss_limit: str | None = None
     z_score_entry_threshold: float = 1.5
     target_risk_per_trade: float = 0.01
+    stop_loss_pct: float = 0.005
+    take_profit_pct: float = 0.01
+    gap_slippage_pct: float = 0.002
 
 
 class PreprocessingConfig(BaseModel):
@@ -387,6 +391,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.PROBABILITY_SMOOTHING_ALPHA = c.walkforward.probability_smoothing_alpha
     config.CORR_THRESHOLD = c.walkforward.corr_threshold
     config.WF_PARALLEL_FOLDS = c.walkforward.wf_parallel_folds
+    config.BURN_IN_BARS = c.walkforward.burn_in_bars
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at
@@ -404,6 +409,9 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.HTF_VOL_WINDOW = c.execution.htf_vol_window
     config.Z_SCORE_ENTRY_THRESHOLD = c.execution.z_score_entry_threshold
     config.TARGET_RISK_PER_TRADE = c.execution.target_risk_per_trade
+    config.STOP_LOSS_PCT = c.execution.stop_loss_pct
+    config.TAKE_PROFIT_PCT = c.execution.take_profit_pct
+    config.GAP_SLIPPAGE_PCT = c.execution.gap_slippage_pct
 
     # -- preprocessing -------------------------------------------------------
     config.CLIP_MIN = c.preprocessing.clip_min

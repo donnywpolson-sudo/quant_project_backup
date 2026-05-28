@@ -102,14 +102,29 @@ def compute_benchmark(df: pl.DataFrame) -> pl.Series:
     pnl = position * safe_replace(ret_exec)
     return pl.Series('benchmark_pnl', safe_replace(pnl).astype(np.float32), dtype=pl.Float32)
 
+def exclude_warmup(df: pl.DataFrame, burn_in_bars: int) -> pl.DataFrame:
+    """Drop the first *burn_in_bars* rows so they are excluded from metrics
+    aggregation (PnL, Sharpe, etc.). Returns the trimmed DataFrame unchanged
+    if burn_in_bars <= 0 or the DataFrame is shorter than burn_in_bars."""
+    if burn_in_bars <= 0 or df.height <= burn_in_bars:
+        return df
+    return df.slice(burn_in_bars)
+
+
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
+    import psutil
+    rss_bytes = psutil.Process().memory_info().rss
+    rss_stop = getattr(config, 'RSS_STOP_BYTES', int(13.5 * 1024**3))
+    if rss_bytes > rss_stop:
+        raise MemoryError(f'RSS {rss_bytes/(1024**3):.2f} GB exceeds RSS_STOP_BYTES ({rss_stop/(1024**3):.2f} GB) in process_fold')
     probs = train_and_predict(train_X, train_y, test_original, feature_cols)
     if config.PROBABILITY_SMOOTHING_ALPHA > 0:
         session_ids = test_original['session_id'].to_numpy()
         probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
     result = test_original.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
-    return simulate_execution_classification(result)
+    result = simulate_execution_classification(result)
+    return exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
 
 # ============================================================================
 # HMM Regime-Aware Walkforward
@@ -227,6 +242,7 @@ def process_fold_with_hmm(
         # But to avoid double-counting friction, we do a minimal recompute.
         result = _recompute_pnl_after_gate(result)
 
+    result = exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
     return result, hmm_filter
 
 
@@ -315,12 +331,15 @@ def run_walkforward_with_hmm(
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
-    df = df.with_columns(pl.col('ts_event').dt.date().alias('date'))
-    unique_dates = sorted(df['date'].unique().to_list())
+    # Use session_id for fold boundaries instead of calendar date (Finding #15).
+    # Sessions cross midnight: a session starting 18:00 Jan 6 ends 16:00 Jan 7
+    # and shares one session_id. Calendar-date splitting would leak session features.
+    df = df.sort(['session_id', 'ts_event'])
+    unique_sessions = df['session_id'].unique(maintain_order=True).to_list()
 
     # Correlation pruning on initial window
-    first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
-    first_train_df = df.filter(pl.col('date').is_in(first_train_dates))
+    first_train_sessions = unique_sessions[:config.WF_TRAIN_DAYS]
+    first_train_df = df.filter(pl.col('session_id').is_in(first_train_sessions))
     if len(first_train_df) > 0:
         pruned_features = correlation_prune(
             first_train_df, feature_cols,
@@ -333,21 +352,21 @@ def run_walkforward_with_hmm(
     folds = []
     for i in range(
         0,
-        len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1,
+        len(unique_sessions) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1,
         config.WF_STEP_DAYS,
     ):
         train_end = i + config.WF_TRAIN_DAYS
         test_start = train_end
         test_end = test_start + config.WF_TEST_DAYS
-        train_dates = unique_dates[i:train_end]
-        test_dates = unique_dates[test_start:test_end]
-        train_df = df.filter(pl.col('date').is_in(train_dates))
-        test_df = df.filter(pl.col('date').is_in(test_dates))
+        train_sessions = unique_sessions[i:train_end]
+        test_sessions = unique_sessions[test_start:test_end]
+        train_df = df.filter(pl.col('session_id').is_in(train_sessions))
+        test_df = df.filter(pl.col('session_id').is_in(test_sessions))
         if train_df.is_empty() or test_df.is_empty():
             continue
-        train_X = train_df.drop([target_col, 'date'])
+        train_X = train_df.drop([target_col])
         train_y = train_df[target_col]
-        test_original = test_df.drop([target_col, 'date'])
+        test_original = test_df.drop([target_col])
         folds.append((train_X, train_y, test_original, pruned_features))
 
     if not folds:
@@ -412,6 +431,7 @@ def run_walkforward_with_hmm(
     validation_dict['hmm_training_log'] = hmm_filter.training_log
     validation_dict['n_folds'] = len(folds)
 
+    df_hmm = exclude_warmup(df_hmm, getattr(config, 'BURN_IN_BARS', 500))
     return df_hmm, validation_dict
 
 
@@ -419,28 +439,34 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     df = X.with_columns(y)
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
-    df = df.with_columns(pl.col('ts_event').dt.date().alias('date'))
-    unique_dates = sorted(df['date'].unique().to_list())
-    first_train_dates = unique_dates[:config.WF_TRAIN_DAYS]
-    first_train_df = df.filter(pl.col('date').is_in(first_train_dates))
+
+    # Use session_id for fold boundaries instead of calendar date (Finding #15).
+    # Sessions cross midnight: a session starting 18:00 Jan 6 ends 16:00 Jan 7
+    # and shares one session_id. Calendar-date splitting would leak session features.
+    df = df.sort(['session_id', 'ts_event'])
+    unique_sessions = df['session_id'].unique(maintain_order=True).to_list()
+
+    first_train_sessions = unique_sessions[:config.WF_TRAIN_DAYS]
+    first_train_df = df.filter(pl.col('session_id').is_in(first_train_sessions))
     if len(first_train_df) > 0:
         pruned_features = correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.9))
     else:
         pruned_features = feature_cols
+
     folds = []
-    for i in range(0, len(unique_dates) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
+    for i in range(0, len(unique_sessions) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
         train_end = i + config.WF_TRAIN_DAYS
         test_start = train_end
         test_end = test_start + config.WF_TEST_DAYS
-        train_dates = unique_dates[i:train_end]
-        test_dates = unique_dates[test_start:test_end]
-        train_df = df.filter(pl.col('date').is_in(train_dates))
-        test_df = df.filter(pl.col('date').is_in(test_dates))
+        train_sessions = unique_sessions[i:train_end]
+        test_sessions = unique_sessions[test_start:test_end]
+        train_df = df.filter(pl.col('session_id').is_in(train_sessions))
+        test_df = df.filter(pl.col('session_id').is_in(test_sessions))
         if train_df.is_empty() or test_df.is_empty():
             continue
-        train_X = train_df.drop([target_col, 'date'])
+        train_X = train_df.drop([target_col])
         train_y = train_df[target_col]
-        test_original = test_df.drop([target_col, 'date'])
+        test_original = test_df.drop([target_col])
         folds.append((train_X, train_y, test_original, pruned_features))
     if not folds:
         raise ValueError('No folds processed.')
@@ -452,4 +478,5 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
         results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')((delayed(process_fold)(train_X, train_y, test_original, feat_cols) for train_X, train_y, test_original, feat_cols in folds))
     final = pl.concat(results)
     final = final.sort(['session_id', 'ts_event'])
+    final = exclude_warmup(final, getattr(config, 'BURN_IN_BARS', 500))
     return final

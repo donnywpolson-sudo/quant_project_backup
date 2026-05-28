@@ -7,6 +7,7 @@ Realistic execution simulator with economic friction.
 - Position changes tracked for turnover calculation
 - HTF context-aware trade gating (directional bias, vol scaling, trend alignment)
 - Session close flatting (zero position within 5 min of 16:00 ET)
+- Intrabar stop/take-profit with linear path logic and gap simulation
 """
 import numpy as np
 import polars as pl
@@ -14,6 +15,147 @@ from quant.config_manager import config
 
 # Fixed contract size multiplier for position sizing
 FIXED_CONTRACT_SIZE = 1.0
+
+
+def simulate_intrabar_stops(
+    open_arr: np.ndarray,
+    high_arr: np.ndarray,
+    low_arr: np.ndarray,
+    position_arr: np.ndarray,
+    stop_pct: float,
+    target_pct: float,
+    gap_slippage_pct: float,
+    eps: float = 1e-09,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Simulate intrabar stop-loss and take-profit fills using linear-price-path
+    logic.  For every row with a non-zero position, the bar's high/low are
+    checked against stop/target levels placed relative to the entry price
+    (the bar's open).  Gap openings — where the open is already beyond the
+    stop level — are filled at the open plus an adverse slippage allowance.
+
+    Args:
+        open_arr:    bar open prices (aligned: position_i entered at open_i).
+        high_arr:    bar high prices.
+        low_arr:     bar low prices.
+        position_arr: signed position size at the start of each bar.
+        stop_pct:    stop-loss distance, as a decimal (e.g. 0.005 = 0.5 %).
+        target_pct:  take-profit distance, as a decimal (e.g. 0.01 = 1.0 %).
+        gap_slippage_pct: additional adverse slippage for gap fills (decimal).
+        eps:         small epsilon to avoid division-by-zero.
+
+    Returns:
+        adj_position:  position array after intrabar fills (0.0 where filled).
+        intrabar_pnl:  per-row PnL contribution from intrabar fills (price units).
+    """
+    n = len(open_arr)
+    adj_position = position_arr.copy()
+    intrabar_pnl = np.zeros(n, dtype=np.float64)
+
+    for i in range(n):
+        pos = position_arr[i]
+        if abs(pos) < eps:
+            continue
+
+        entry = open_arr[i]
+        if entry < eps:
+            continue
+
+        is_long = pos > 0.0
+
+        # Stop and target absolute price levels
+        if is_long:
+            stop_level = entry * (1.0 - stop_pct)
+            target_level = entry * (1.0 + target_pct)
+        else:
+            stop_level = entry * (1.0 + stop_pct)
+            target_level = entry * (1.0 - target_pct)
+
+        bar_high = high_arr[i]
+        bar_low = low_arr[i]
+
+        # ----------------------------------------------------------------
+        # 1. Gap opening check: if the bar opens already beyond the stop
+        #    level, the stop is triggered immediately at the open, plus
+        #    gap_slippage_pct of adverse movement.
+        # ----------------------------------------------------------------
+        gap_filled = False
+        fill_price = 0.0
+
+        if is_long and entry <= stop_level:
+            # Gapped down through stop — fill at open minus slippage
+            gap_filled = True
+            fill_price = entry * (1.0 - gap_slippage_pct)
+        elif (not is_long) and entry >= stop_level:
+            # Gapped up through stop — fill at open plus slippage
+            gap_filled = True
+            fill_price = entry * (1.0 + gap_slippage_pct)
+
+        if gap_filled:
+            pnl_impact = (fill_price - entry) * float(np.sign(pos)) * abs(pos)
+            intrabar_pnl[i] = pnl_impact
+            adj_position[i] = 0.0
+            continue
+
+        # ----------------------------------------------------------------
+        # 2. Linear-path intrabar check: determine which level
+        #    (stop or target) is touched first within the bar's range.
+        # ----------------------------------------------------------------
+        stop_hit = False
+        target_hit = False
+
+        if is_long:
+            if bar_low <= stop_level:
+                stop_hit = True
+            if bar_high >= target_level:
+                target_hit = True
+
+            if stop_hit and target_hit:
+                # Both levels reached — use distance to determine first touch
+                dist_to_stop = entry - stop_level   # positive distance
+                dist_to_target = target_level - entry  # positive distance
+                if dist_to_target <= dist_to_stop:
+                    # Target is closer → hit first
+                    fill_price = target_level
+                    stop_hit = False  # target overrides
+                else:
+                    fill_price = stop_level
+                    target_hit = False
+            elif stop_hit:
+                fill_price = stop_level
+            elif target_hit:
+                fill_price = target_level
+            else:
+                continue  # neither level touched — hold through bar
+        else:
+            # Short
+            if bar_high >= stop_level:
+                stop_hit = True
+            if bar_low <= target_level:
+                target_hit = True
+
+            if stop_hit and target_hit:
+                dist_to_stop = stop_level - entry    # positive distance
+                dist_to_target = entry - target_level  # positive distance
+                if dist_to_target <= dist_to_stop:
+                    fill_price = target_level
+                    stop_hit = False
+                else:
+                    fill_price = stop_level
+                    target_hit = False
+            elif stop_hit:
+                fill_price = stop_level
+            elif target_hit:
+                fill_price = target_level
+            else:
+                continue
+
+        # PnL = (fill - entry) * sign(pos) * |pos|
+        pnl_impact = (fill_price - entry) * float(np.sign(pos)) * abs(pos)
+        intrabar_pnl[i] = pnl_impact
+        adj_position[i] = 0.0
+
+    return adj_position, intrabar_pnl
 
 
 def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
@@ -159,6 +301,48 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     # ------------------------------------------------------------------------
+    # 6b. Position clipping: max_position_size and notional cap
+    #     using per-market contract_multiplier from market config.
+    # ------------------------------------------------------------------------
+    import os
+    import yaml
+    from pathlib import Path
+    from quant.market_config import detect_symbol_from_path
+
+    data_path = os.environ.get('QUANT_DATA_PATH', 'data/ES')
+    symbol = detect_symbol_from_path(data_path)
+    market_cfg_path = config.MARKET_CONFIGS.get(symbol)
+    if market_cfg_path and Path(market_cfg_path).exists():
+        with open(market_cfg_path, 'r') as f:
+            market_cfg = yaml.safe_load(f)
+        contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
+        max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
+        max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
+    else:
+        contract_multiplier = FIXED_CONTRACT_SIZE
+        max_pos = float('inf')
+
+    # Clip to max_position_size
+    df = df.with_columns(
+        pl.col('target_exec')
+        .clip(pl.lit(-max_pos, dtype=pl.Float32), pl.lit(max_pos, dtype=pl.Float32))
+        .alias('target_exec')
+    )
+
+    # Notional clip: |target_exec| <= MAX_LEVERAGE (equity-normalized)
+    open_next_expr = pl.col('open').shift(-1).clip(config.EPS, None)
+    equity = 1.0
+    max_notional = equity * config.MAX_LEVERAGE
+    df = df.with_columns(
+        pl.col('target_exec')
+        .clip(
+            pl.lit(-max_notional, dtype=pl.Float32) / (open_next_expr * pl.lit(contract_multiplier, dtype=pl.Float32)),
+            pl.lit(max_notional, dtype=pl.Float32) / (open_next_expr * pl.lit(contract_multiplier, dtype=pl.Float32))
+        )
+        .alias('target_exec')
+    )
+
+    # ------------------------------------------------------------------------
     # 7. HTF Trend Alignment: if config.HTF_TREND_ALIGNMENT is enabled,
     #    suppress signals that disagree with htf_daily_trend_slope_10.
     #    - Suppress longs when daily trend is strongly down (< -threshold)
@@ -241,14 +425,71 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pos_change.fill_null(0.0).alias('pos_change'))
 
     # ------------------------------------------------------------------------
-    # 14. PnL: position * forward return - unified transaction costs.
-    #     position is from t-1 signal, ret_exec is t->t+1 return.
+    # 13b. Intrabar Stops / Take-Profit (preprocessing before PnL).
+    #      For each bar where a position is held, the bar's open is the
+    #      entry price and high/low determine whether stop or target
+    #      levels are touched first (linear-price-path logic).
+    #      Gap openings fill at open plus gap_slippage_pct.
+    #      Positions that get intrabar-filled are zeroed out so they
+    #      do not participate in the regular open-to-close PnL.
+    #      Intrabar PnL is added to the per-bar PnL separately.
+    # ------------------------------------------------------------------------
+    open_vals = df['open'].to_numpy().astype(np.float64)
+    high_vals = df['high'].to_numpy().astype(np.float64)
+    low_vals = df['low'].to_numpy().astype(np.float64)
+    pos_vals = df['position'].to_numpy().astype(np.float64)
+
+    adj_position, intrabar_pnl = simulate_intrabar_stops(
+        open_arr=open_vals,
+        high_arr=high_vals,
+        low_arr=low_vals,
+        position_arr=pos_vals,
+        stop_pct=config.STOP_LOSS_PCT,
+        target_pct=config.TAKE_PROFIT_PCT,
+        gap_slippage_pct=config.GAP_SLIPPAGE_PCT,
+        eps=config.EPS,
+    )
+
+    # Replace position column with adjusted (intrabar-filled) positions
+    df = df.with_columns(
+        pl.Series('position', adj_position).cast(pl.Float32)
+    )
+    # Store intrabar PnL in price units (will be converted to notional below)
+    df = df.with_columns(
+        pl.Series('intrabar_pnl', intrabar_pnl).cast(pl.Float32)
+    )
+
+    # Recompute pos_change after intrabar adjustments
+    pos_change = (pl.col('position') - pl.col('position').shift(1)).abs()
+    df = df.with_columns(pos_change.fill_null(0.0).alias('pos_change'))
+
+    # ------------------------------------------------------------------------
+    # 14. PnL: position * forward return * contract_multiplier * entry_price
+    #     - transaction costs + round-turn settlement on flatting
+    #     + intrabar PnL (stop/take-profit fills within the bar).
+    #     position is from t-1 signal (adjusted for intrabar fills),
+    #     ret_exec is t->t+1 return.
     #     Friction (commission, slippage, vol penalty, tx_cost) is charged
     #     on position changes (turnover) only, not on held position.
+    #     Round-turn settlement: when position goes flat, charge
+    #     TX_COST_PER_ROUNDTURN * |prior_position| to complete the round-trip.
     # ------------------------------------------------------------------------
-    pnl = pl.col('position') * pl.col('ret_exec')
+    entry_price = pl.col('open').shift(-1)
+    prior_position = pl.col('position').shift(1).fill_null(0.0)
+    position_went_flat = (prior_position.abs() > config.EPS) & (pl.col('position').abs() <= config.EPS)
+
+    pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    # Add intrabar PnL (already in price units, convert to notional)
+    pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
-    pnl = pnl.fill_nan(0.0).clip(-0.05, 0.05)
+    # Round-turn settlement on flatting
+    pnl = pl.when(position_went_flat)\
+        .then(pnl - pl.lit(config.TX_COST_PER_ROUNDTURN, dtype=pl.Float32) * prior_position.abs())\
+        .otherwise(pnl)
+    pnl = pnl.fill_nan(0.0)
+    # Clip proportional to entry price and multiplier (5% of notional)
+    pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
 
     return df
