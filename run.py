@@ -4,6 +4,7 @@ import subprocess
 import logging
 from pathlib import Path
 import shutil
+import polars as pl
 from quant.config_manager import load_config, RootConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -30,7 +31,135 @@ def get_files(data_dir: str, config: RootConfig) -> list[Path]:
         valid = valid[:config.io.max_files]
     return valid
 
+def _load_file_date_bounds(files: list[Path]) -> dict[int, tuple]:
+    """
+    Scan each yearly parquet file to extract its (min_date, max_date) range.
+    Uses lazy scanning to avoid loading full datasets into memory.
+    Returns dict mapping file_stem_year -> (date_min, date_max).
+    """
+    import datetime as _dt
+    bounds: dict[int, tuple] = {}
+    for f in files:
+        try:
+            year = int(f.stem)
+        except ValueError:
+            continue
+        try:
+            lf = pl.scan_parquet(f).select(pl.col('ts_event'))
+            min_ts = lf.select(pl.col('ts_event').min()).collect().item()
+            max_ts = lf.select(pl.col('ts_event').max()).collect().item()
+            if min_ts is not None and max_ts is not None:
+                bounds[year] = (min_ts.date(), max_ts.date())
+        except Exception:
+            logger.debug('Could not read date bounds from %s — skipping', f)
+    return bounds
+
+
 def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[tuple[list[int], list[int]]]:
+    """
+    Generate walk-forward split index pairs.
+
+    When the walkforward config defines positive *day-based* parameters
+    (wf_train_days / wf_test_days / wf_step_days), each split is a
+    rolling calendar-day window anchored to the full date range of the
+    available data.  Files are assigned to each window based on whether
+    their date span overlaps the train or test interval.
+
+    Otherwise falls back to legacy year-count splitting.
+    """
+    import datetime as _dt
+
+    wf_cfg = config.walkforward
+
+    # ---- Day-based rolling-window mode ------------------------------------
+    day_based = (
+        wf_cfg.wf_train_days > 0
+        and wf_cfg.wf_test_days > 0
+        and wf_cfg.wf_step_days > 0
+    )
+
+    if day_based:
+        file_bounds = _load_file_date_bounds(files)
+        if not file_bounds:
+            logger.warning('No file date bounds available — returning empty splits')
+            return []
+
+        all_dates = sorted({
+            d for b in file_bounds.values()
+            for d in (b[0], b[1])
+        })
+        if not all_dates:
+            logger.warning('No dates extracted from files')
+            return []
+
+        data_start = all_dates[0]
+        data_end = all_dates[-1]
+        total_days = (data_end - data_start).days + 1
+        window = wf_cfg.wf_train_days + wf_cfg.wf_test_days
+
+        if total_days < window:
+            logger.warning(
+                'Insufficient date range for day-based walkforward: '
+                'need at least %d days, have %d days (%s → %s)',
+                window, total_days, data_start, data_end,
+            )
+            # Fallback: single split covering the whole range
+            all_years = sorted(file_bounds.keys())
+            return [(all_years, all_years)]
+
+        splits: list[tuple[list[int], list[int]]] = []
+        cursor = 0  # day offset from data_start
+
+        while cursor + window <= total_days:
+            train_start = data_start + _dt.timedelta(days=cursor)
+            train_end   = data_start + _dt.timedelta(days=cursor + wf_cfg.wf_train_days)
+            test_start  = train_end
+            test_end    = data_start + _dt.timedelta(days=cursor + window)
+
+            # Find files that overlap each window
+            train_files = [
+                yr for yr, (fmin, fmax) in file_bounds.items()
+                if fmax >= train_start and fmin < train_end
+            ]
+            test_files = [
+                yr for yr, (fmin, fmax) in file_bounds.items()
+                if fmax >= test_start and fmin < test_end
+            ]
+
+            if train_files and test_files:
+                splits.append((sorted(train_files), sorted(test_files)))
+                logger.debug(
+                    'Split %d: train=%s→%s (%d files) | test=%s→%s (%d files)',
+                    len(splits),
+                    train_start.isoformat(), train_end.isoformat(), len(train_files),
+                    test_start.isoformat(), test_end.isoformat(), len(test_files),
+                )
+
+            cursor += wf_cfg.wf_step_days
+            # Safety guard for very large step counts (prevent accidental infinite loop)
+            if len(splits) >= 10_000:
+                logger.warning('Split limit 10,000 reached — truncating')
+                break
+
+        if splits:
+            logger.info(
+                'Generated %d walkforward splits (day-based: train=%dd, test=%dd, step=%dd, '
+                'range=%s→%s)',
+                len(splits),
+                wf_cfg.wf_train_days, wf_cfg.wf_test_days, wf_cfg.wf_step_days,
+                data_start.isoformat(), data_end.isoformat(),
+            )
+            return splits
+
+        # Fallback: single merged split if no valid rolling windows produced
+        all_years = sorted(file_bounds.keys())
+        logger.warning(
+            'No day-based splits generated (step may be too large for range). '
+            'Falling back to single merged split.',
+        )
+        return [(all_years, all_years)]
+
+    # ---- Legacy year-count mode ------------------------------------------
     train_years = config.data_years
     wf_years = config.folds
     years = sorted({int(f.stem) for f in files})
@@ -39,21 +168,6 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         logger.warning('No years available for walkforward splitting')
         return []
 
-    # Determine if the walkforward config uses day-based splits (the
-    # quant/walkforward.py module splits by session_id using WF_TRAIN_DAYS
-    # and WF_TEST_DAYS).  In that mode the orchestrator does NOT need
-    # distinct calendar years for train vs. test — a single year's worth
-    # of data is sufficient because the walkforward itself handles
-    # train/test separation internally via session boundaries.
-    wf_cfg = config.walkforward
-    day_based = (
-        wf_cfg.wf_train_days > 0
-        and wf_cfg.wf_test_days > 0
-        and wf_cfg.wf_step_days > 0
-    )
-
-    # Minimum distinct years required for a *year-based* split.
-    # When day-based splitting is active we relax this constraint.
     min_years_needed = train_years + wf_years
 
     splits = []
@@ -67,35 +181,19 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         test_range = years[train_end:test_end]
         splits.append((train_range, test_range))
 
-    # ---- Fallback ----------------------------------------------------------
     if not splits:
-        if day_based and len(years) >= 1:
-            # Day-based walkforward: a single year of data is sufficient
-            # because session-level train/test splitting happens inside
-            # run_walkforward().  Use all available years for training
-            # and the last year for testing (they may overlap).
-            train_range = years[:] if len(years) >= 1 else []
-            test_range = [years[-1]] if years else []
-            logger.info(
-                'Day-based walkforward active (train=%dd, test=%dd, step=%dd) — '
-                'using %d year(s) of data (%d train, %d test).',
-                wf_cfg.wf_train_days, wf_cfg.wf_test_days, wf_cfg.wf_step_days,
-                len(years), len(train_range), len(test_range),
-            )
-            splits.append((train_range, test_range))
-        else:
-            train_range = years[:train_years] if len(years) >= train_years else years[:]
-            test_range = [years[-1]] if years else []
-            if not train_range:
-                logger.warning('No train range could be formed — no splits generated')
-                return []
-            logger.warning(
-                'Insufficient years for walkforward: need %d (train=%d + test=%d), '
-                'have %d. Falling back to single split: train=%s, test=%s',
-                min_years_needed, train_years, wf_years, len(years),
-                train_range, test_range,
-            )
-            splits.append((train_range, test_range))
+        train_range = years[:train_years] if len(years) >= train_years else years[:]
+        test_range = [years[-1]] if years else []
+        if not train_range:
+            logger.warning('No train range could be formed — no splits generated')
+            return []
+        logger.warning(
+            'Insufficient years for walkforward: need %d (train=%d + test=%d), '
+            'have %d. Falling back to single split: train=%s, test=%s',
+            min_years_needed, train_years, wf_years, len(years),
+            train_range, test_range,
+        )
+        splits.append((train_range, test_range))
 
     logger.info('Generated %d walkforward splits', len(splits))
     return splits
