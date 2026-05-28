@@ -376,6 +376,12 @@ def _build_ts_folds(
     folds = [(int(i0), int(i1), int(i2), int(i3))
              for i0, i1, i2, i3 in indices]
 
+    if not folds and df.height > 0:
+        # Sparse-data fallback: total_days >= window_days but no individual
+        # window satisfied the non-empty train+test constraint.  Return a
+        # single fold covering all available data.
+        return [(0, df.height, 0, df.height)]
+
     return folds
 
 
@@ -415,13 +421,19 @@ def run_walkforward_with_hmm(
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
+    # Empty-input guard — no data to walk forward over
+    if df.height == 0:
+        logger.warning('Empty input DataFrame for HMM walkforward — returning empty result.')
+        return pl.DataFrame(), {}
+
     # Time-based fold builder — pure ts_event slicing, no session_id counting
     df = df.sort('ts_event')
     fold_indices = _build_ts_folds(
         df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
     )
     if not fold_indices:
-        raise ValueError('No folds produced from ts_event windows.')
+        logger.warning('No folds produced from ts_event windows for HMM — returning empty result.')
+        return pl.DataFrame(), {}
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
@@ -507,13 +519,19 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
+    # Empty-input guard — no data to walk forward over
+    if df.height == 0:
+        logger.warning('Empty input DataFrame — returning empty result.')
+        return pl.DataFrame()
+
     # Time-based fold builder — pure ts_event slicing, no session_id counting
     df = df.sort('ts_event')
     fold_indices = _build_ts_folds(
         df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
     )
     if not fold_indices:
-        raise ValueError('No folds produced from ts_event windows.')
+        logger.warning('No folds produced from ts_event windows — returning empty result.')
+        return pl.DataFrame()
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])

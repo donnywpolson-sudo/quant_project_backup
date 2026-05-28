@@ -17,7 +17,12 @@ def filter_gaps(df: pl.DataFrame, max_gap_minutes: float = 30) -> pl.DataFrame:
     additional safety net run after alignment.
     """
     df = df.sort('ts_event')
-    gap = df['ts_event'].diff().cast(pl.Int64) / 1_000_000 / 60  # minutes
-    df = df.with_columns(pl.Series('_gap_minutes', gap))
-    df = df.filter(pl.col('_gap_minutes') <= max_gap_minutes)
+    # ts_event is datetime[ns, UTC] — diff yields nanoseconds.
+    # 60e9 ns = 1 minute.
+    gap = df['ts_event'].diff().cast(pl.Int64) / 60_000_000_000.0  # minutes
+    df = df.with_columns(gap.alias('_gap_minutes'))
+    # The first row has diff=None; keep it.
+    df = df.filter(
+        pl.col('_gap_minutes').is_null() | (pl.col('_gap_minutes') <= max_gap_minutes)
+    )
     return df.drop('_gap_minutes')

@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 def validate_memory_and_integrity(df: pl.DataFrame) -> int:
     logger.info('Running memory and integrity validation...')
+    if df.is_empty():
+        raise ValueError(
+            'validate_memory_and_integrity: DataFrame is empty — '
+            'upstream processing (resampling, session filter, or gap filter) '
+            'may have removed all rows.'
+        )
     if not df['ts_event'].is_sorted():
         raise ValueError('ts_event not strictly increasing.')
     critical_cols = ['open', 'high', 'low', 'close', 'volume', 'session_id']
@@ -95,10 +101,15 @@ def _join_cross_asset_features(
     if not cross_frames:
         return df_aligned
 
-    # Merge all cross-asset frames on ts_event into a single wide frame
+    # Merge all cross-asset frames on ts_event into a single wide frame.
+    # Iterative outer joins create 'ts_event_right' duplicates; coalesce
+    # by dropping the duplicate column after each join.
     cross_combined = cross_frames[0]
     for frame in cross_frames[1:]:
         cross_combined = cross_combined.join(frame, on='ts_event', how='outer')
+        right_col = 'ts_event_right'
+        if right_col in cross_combined.columns:
+            cross_combined = cross_combined.drop(right_col)
 
     # Single left-join instead of N+1 individual joins
     df_aligned = df_aligned.join(cross_combined, on='ts_event', how='left')

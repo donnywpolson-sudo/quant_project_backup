@@ -327,8 +327,10 @@ def build_continuous_series(
            continuous_low]
     """
     if df.is_empty():
-        logger.warning(f'build_continuous_series: empty DataFrame for {symbol}')
-        return df
+        raise ValueError(
+            f'build_continuous_series: received empty DataFrame for {symbol} '
+            f'— upstream filtering may have removed all rows.'
+        )
 
     df = df.sort('ts_event')
     start_ts = df['ts_event'].min()

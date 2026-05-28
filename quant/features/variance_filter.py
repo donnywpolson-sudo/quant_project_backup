@@ -7,6 +7,9 @@ logger = logging.getLogger(__name__)
 def remove_constant_features(df: pl.DataFrame, feature_cols: list, threshold: float=1e-09) -> list:
     if len(feature_cols) == 0:
         return []
+    # VarianceThreshold requires >1 sample to estimate variance.
+    if df.height <= 1:
+        return feature_cols
     X = df.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     selector = VarianceThreshold(threshold=threshold)
     selector.fit(X)
