@@ -398,12 +398,35 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     ).clip(0.0, 0.01)
     df = df.with_columns(unit_cost.alias('unit_cost'))
 
+    df = _compute_pnl_from_target_exec(df, contract_multiplier)
+    return df
+
+
+def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float = 1.0) -> pl.DataFrame:
+    """
+    Compute position, intrabar stops, and PnL from target_exec.
+
+    This is the full PnL calculation pipeline used by both the main
+    execution path and the HMM recompute path.  It assumes that
+    ``target_exec`` (the signed, sized, gated position signal),
+    ``vol``, ``spread``, and ``unit_cost`` columns already exist on
+    the DataFrame.
+
+    Includes:
+      - Execution return: buy at t+1 open, sell at t+1 close
+      - Position: signal from t-1 executed at t
+      - Position change (turnover cost basis)
+      - Intrabar stop-loss / take-profit with gap-slippage logic
+      - PnL = pos * ret_exec * entry_price * multiplier
+        + intrabar_pnl * multiplier
+        - unit_cost * pos_change
+        - round-turn settlement on flatting
+      - Proportional PnL clip (5 % of notional)
+    """
+    eps = config.EPS
+
     # ------------------------------------------------------------------------
-    # 11. Execution return: buy/sell at bar t+1 open, exit at bar t+1 close
-    #     This is forward-looking but acceptable because:
-    #     - target_exec was computed from features at time t
-    #     - trade is assumed executed at next bar's open
-    #     - trade is unwound at next bar's close
+    # Execution return: buy/sell at bar t+1 open, exit at bar t+1 close
     # ------------------------------------------------------------------------
     open_next = pl.col('open').shift(-1)
     close_next = pl.col('close').shift(-1)
@@ -412,27 +435,20 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(ret_exec.alias('ret_exec'))
 
     # ------------------------------------------------------------------------
-    # 12. Compute position: signal is generated at t, executed at t+1.
-    #     So the position for PnL at bar t uses the signal from bar t-1.
+    # Compute position: signal is generated at t, executed at t+1.
+    # So the position for PnL at bar t uses the signal from bar t-1.
     # ------------------------------------------------------------------------
     position = pl.col('target_exec').shift(1).fill_null(0.0)
     df = df.with_columns(position.alias('position'))
 
     # ------------------------------------------------------------------------
-    # 13. Position change (for transaction cost): |pos_t - pos_t-1|
+    # Position change (for transaction cost): |pos_t - pos_t-1|
     # ------------------------------------------------------------------------
     pos_change = (pl.col('position') - pl.col('position').shift(1)).abs()
     df = df.with_columns(pos_change.fill_null(0.0).alias('pos_change'))
 
     # ------------------------------------------------------------------------
-    # 13b. Intrabar Stops / Take-Profit (preprocessing before PnL).
-    #      For each bar where a position is held, the bar's open is the
-    #      entry price and high/low determine whether stop or target
-    #      levels are touched first (linear-price-path logic).
-    #      Gap openings fill at open plus gap_slippage_pct.
-    #      Positions that get intrabar-filled are zeroed out so they
-    #      do not participate in the regular open-to-close PnL.
-    #      Intrabar PnL is added to the per-bar PnL separately.
+    # Intrabar Stops / Take-Profit (preprocessing before PnL).
     # ------------------------------------------------------------------------
     open_vals = df['open'].to_numpy().astype(np.float64)
     high_vals = df['high'].to_numpy().astype(np.float64)
@@ -450,11 +466,9 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
         eps=config.EPS,
     )
 
-    # Replace position column with adjusted (intrabar-filled) positions
     df = df.with_columns(
         pl.Series('position', adj_position).cast(pl.Float32)
     )
-    # Store intrabar PnL in price units (will be converted to notional below)
     df = df.with_columns(
         pl.Series('intrabar_pnl', intrabar_pnl).cast(pl.Float32)
     )
@@ -464,30 +478,21 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pos_change.fill_null(0.0).alias('pos_change'))
 
     # ------------------------------------------------------------------------
-    # 14. PnL: position * forward return * contract_multiplier * entry_price
+    # PnL: position * forward return * contract_multiplier * entry_price
     #     - transaction costs + round-turn settlement on flatting
     #     + intrabar PnL (stop/take-profit fills within the bar).
-    #     position is from t-1 signal (adjusted for intrabar fills),
-    #     ret_exec is t->t+1 return.
-    #     Friction (commission, slippage, vol penalty, tx_cost) is charged
-    #     on position changes (turnover) only, not on held position.
-    #     Round-turn settlement: when position goes flat, charge
-    #     TX_COST_PER_ROUNDTURN * |prior_position| to complete the round-trip.
     # ------------------------------------------------------------------------
     entry_price = pl.col('open').shift(-1)
     prior_position = pl.col('position').shift(1).fill_null(0.0)
     position_went_flat = (prior_position.abs() > config.EPS) & (pl.col('position').abs() <= config.EPS)
 
     pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
-    # Add intrabar PnL (already in price units, convert to notional)
     pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
-    # Round-turn settlement on flatting
     pnl = pl.when(position_went_flat)\
         .then(pnl - pl.lit(config.TX_COST_PER_ROUNDTURN, dtype=pl.Float32) * prior_position.abs())\
         .otherwise(pnl)
     pnl = pnl.fill_nan(0.0)
-    # Clip proportional to entry price and multiplier (5% of notional)
     pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))

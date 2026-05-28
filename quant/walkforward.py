@@ -236,10 +236,10 @@ def process_fold_with_hmm(
             retrain=should_retrain,
         )
 
-        # Recompute PnL after regime gating (position may have changed)
-        # The simulator's position/PnL columns are already present; we re-run
-        # the full simulation on the gated target_exec to get correct PnL.
-        # But to avoid double-counting friction, we do a minimal recompute.
+        # Recompute PnL after regime gating (target_exec may be zeroed).
+        # Uses the full execution pipeline identical to simulate_execution_classification:
+        # intrabar stops, contract multiplier, position clipping, round-turn settlement,
+        # and proportional PnL clip — so the HMM PnL is directly comparable to the base PnL.
         result = _recompute_pnl_after_gate(result)
 
     result = exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
@@ -248,51 +248,53 @@ def process_fold_with_hmm(
 
 def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Recompute position and PnL after target_exec has been gated by HMM.
+    Recompute position, intrabar stops, and PnL after target_exec has been
+    gated by HMM.
 
-    This is a lightweight recompute that only updates position, pos_change,
-    and pnl — preserving all other columns (including hmm_regime_* and
-    hmm_trade_gate).
+    Uses the full execution pipeline (_compute_pnl_from_target_exec) so the
+    recomputed PnL is identical to the main simulation path, including:
+      - intrabar stop-loss / take-profit with gap-slippage logic
+      - contract multiplier in PnL
+      - position clipping (max_position_size + notional cap)
+      - round-turn settlement on flatting
+      - proportional PnL clip (5 % of notional)
+
+    Preserves all HMM columns (hmm_regime_*, hmm_trade_gate).
     """
-    eps = config.EPS
+    import os
+    import yaml
+    from pathlib import Path
+    from quant.execution.simulator import _compute_pnl_from_target_exec
+    from quant.market_config import detect_symbol_from_path
 
-    # Position: signal from t-1 executed at t
-    position = pl.col('target_exec').shift(1).fill_null(0.0)
-    pos_change = (position - position.shift(1)).abs().fill_null(0.0)
+    # Resolve contract_multiplier (same logic as simulate_execution_classification)
+    data_path = os.environ.get('QUANT_DATA_PATH', 'data/ES')
+    symbol = detect_symbol_from_path(data_path)
+    market_cfg_path = config.MARKET_CONFIGS.get(symbol)
+    if market_cfg_path and Path(market_cfg_path).exists():
+        with open(market_cfg_path, 'r') as f:
+            market_cfg = yaml.safe_load(f)
+        contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
+    else:
+        contract_multiplier = 1.0
 
-    # Need ret_exec column — should already exist from first simulation pass
-    if 'ret_exec' not in df.columns:
-        open_next = pl.col('open').shift(-1)
-        close_next = pl.col('close').shift(-1)
-        ret_exec = ((close_next - open_next) / open_next.clip(eps, None)).fill_null(0.0)
-        ret_exec = ret_exec.clip(-0.02, 0.02)
-        df = df.with_columns(ret_exec.alias('ret_exec'))
+    # Preserve HMM columns so they survive the recompute
+    hmm_cols = [c for c in df.columns if c.startswith('hmm_')]
+    hmm_data = {c: df[c].clone() for c in hmm_cols}
 
-    if 'unit_cost' not in df.columns:
-        spread = (pl.col('high') - pl.col('low')) / pl.col('close').clip(eps, None)
-        spread = spread.clip(0.0, 0.05)
-        ret = (pl.col('close') / pl.col('close').shift(1)).log()
-        ret_lagged = ret.shift(1)
-        vol = ret_lagged.rolling_std(window_size=20).clip(eps, None).fill_null(1e-06)
-        unit_cost = (
-            config.COMMISSION_PER_TRADE
-            + config.SLIPPAGE_K * spread
-            + config.VOL_PENALTY * vol
-            + config.TX_COST_PER_ROUNDTURN / 2.0
-        ).clip(0.0, 0.01)
-        df = df.with_columns(unit_cost.alias('unit_cost'))
+    # Drop columns that _compute_pnl_from_target_exec will recompute so we
+    # get a clean replacement without column-name conflicts.
+    recompute_cols = ['ret_exec', 'position', 'pos_change', 'intrabar_pnl', 'pnl']
+    df_clean = df.drop([c for c in recompute_cols if c in df.columns])
 
-    # Recompute PnL
-    pnl = position * pl.col('ret_exec') - pl.col('unit_cost') * pos_change
-    pnl = pnl.fill_nan(0.0).clip(-0.05, 0.05)
+    # Re-run full PnL pipeline against the HMM-gated target_exec
+    df_result = _compute_pnl_from_target_exec(df_clean, contract_multiplier)
 
-    df = df.with_columns([
-        position.alias('position'),
-        pos_change.alias('pos_change'),
-        pnl.alias('pnl'),
-    ])
+    # Restore HMM columns
+    for col, series in hmm_data.items():
+        df_result = df_result.with_columns(series.alias(col))
 
-    return df
+    return df_result
 
 
 def run_walkforward_with_hmm(
