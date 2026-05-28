@@ -121,7 +121,7 @@ def main():
         print('========================================\n')
         try:
             print('[CLI] Running aggregation...', flush=True)
-            run_aggregation()
+            run_aggregation('artifacts')
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
@@ -201,7 +201,7 @@ def main():
         print(f"[CLI] Recommendation: {validation.get('recommendation', 'N/A')}", flush=True)
         try:
             print('[CLI] Running aggregation...', flush=True)
-            run_aggregation()
+            run_aggregation('artifacts')
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'aggregate':

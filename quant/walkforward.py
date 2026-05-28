@@ -327,11 +327,11 @@ def _build_ts_folds(
         return []
 
     # Extract timestamps once — single sort, single epoch extraction
-    ts_us = df['ts_event'].to_numpy().view('int64')  # microseconds since epoch
-    ts_min = ts_us[0]
-    ts_max = ts_us[-1]
-    day_us = np.int64(86_400_000_000)  # one day in microseconds
-    total_days = int((ts_max - ts_min) // day_us) + 1
+    ts_ns = df['ts_event'].to_numpy().view('int64')  # nanoseconds since epoch
+    ts_min = ts_ns[0]
+    ts_max = ts_ns[-1]
+    day_ns = np.int64(86_400_000_000_000)  # one day in nanoseconds
+    total_days = int((ts_max - ts_min) // day_ns) + 1
     window_days = train_days + test_days
 
     if total_days < window_days:
@@ -343,25 +343,25 @@ def _build_ts_folds(
     n_steps = max(1, (total_days - window_days) // step_days + 1)
     if n_steps > 10_000:
         n_steps = 10_000  # safety cap
-    step_offsets = np.arange(n_steps, dtype='int64') * np.int64(step_days) * day_us
+    step_offsets = np.arange(n_steps, dtype='int64') * np.int64(step_days) * day_ns
     cursor_ts = np.int64(ts_min) + step_offsets
 
-    # For each cursor, find the index where ts_us >= target timestamp
+    # For each cursor, find the index where ts_ns >= target timestamp
     # np.searchsorted is vectorized and O(n log n)
-    cursor_idx = np.searchsorted(ts_us, cursor_ts, side='left')
+    cursor_idx = np.searchsorted(ts_ns, cursor_ts, side='left')
     cursor_idx = np.clip(cursor_idx, 0, df.height - 1)
 
     # train_end := cursor + train_days
-    train_end_ts = cursor_ts + np.int64(train_days) * day_us
-    train_end_idx = np.searchsorted(ts_us, train_end_ts, side='left')
+    train_end_ts = cursor_ts + np.int64(train_days) * day_ns
+    train_end_idx = np.searchsorted(ts_ns, train_end_ts, side='left')
     train_end_idx = np.clip(train_end_idx, 0, df.height)
 
     # test_start := train_end (strict causality: train < test)
     test_start_idx = train_end_idx.copy()
 
     # test_end := test_start + test_days
-    test_end_ts = cursor_ts + np.int64(window_days) * day_us
-    test_end_idx = np.searchsorted(ts_us, test_end_ts, side='left')
+    test_end_ts = cursor_ts + np.int64(window_days) * day_ns
+    test_end_idx = np.searchsorted(ts_ns, test_end_ts, side='left')
     test_end_idx = np.clip(test_end_idx, 0, df.height)
 
     # ---- Filter: keep only folds where both train and test are non-empty ----

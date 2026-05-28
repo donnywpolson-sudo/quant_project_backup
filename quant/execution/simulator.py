@@ -168,10 +168,13 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #    This adapts thresholds to the prevailing signal distribution rather
     #    than using fixed 0.6/0.4 cutoffs that suppress signal dispersion.
     # ------------------------------------------------------------------------
+    # Use a rolling window that fits within a single walkforward fold
+    # (wf_test_days=1 ≈ 264 bars).  Window=50 with min_samples=20 ensures
+    # z-scores are available for most bars inside the fold.
     prob = pl.col('prediction_prob').fill_null(0.5)
     prob_lagged = prob.shift(1)
-    prob_mean = prob_lagged.rolling_mean(window_size=1000, min_periods=50)
-    prob_std = prob_lagged.rolling_std(window_size=1000, min_periods=50).clip(1e-06, None)
+    prob_mean = prob_lagged.rolling_mean(window_size=50, min_samples=20)
+    prob_std = prob_lagged.rolling_std(window_size=50, min_samples=20).clip(1e-06, None)
     z_score = ((prob - prob_mean) / prob_std).fill_null(0.0)
 
     z_thresh = pl.lit(config.Z_SCORE_ENTRY_THRESHOLD, dtype=pl.Float32)
@@ -286,7 +289,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #    regimes. Falls back to FIXED_CONTRACT_SIZE when ATR is unavailable.
     # ------------------------------------------------------------------------
     bar_range = (pl.col('high') - pl.col('low')).clip(eps, None)
-    atr14 = bar_range.shift(1).rolling_mean(window_size=14, min_periods=5).clip(eps, None)
+    atr14 = bar_range.shift(1).rolling_mean(window_size=14, min_samples=5).clip(eps, None)
 
     volatility_size = (
         pl.lit(config.TARGET_RISK_PER_TRADE, dtype=pl.Float32) / atr14

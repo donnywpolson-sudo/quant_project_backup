@@ -202,7 +202,9 @@ def load_all_backtests(artifacts_root='output') -> dict:
     root = Path(artifacts_root)
     results = {}
 
-    for f in root.glob('backtests/*/*/backtest_results.parquet'):
+    # Search for backtest_results.parquet nested two levels deep:
+    #   <root>/<market>/<year>/backtest_results.parquet
+    for f in root.glob('*/*/backtest_results.parquet'):
         try:
             # Projection: read only columns we'll actually use downstream.
             # Polars will read the parquet footer to discover which of the
@@ -252,41 +254,29 @@ def compute_year_breakdown(year_dfs: list) -> list:
 
 def _build_combined_pnl(results: dict) -> pl.Series:
     """
-    Build a combined-market total-PnL series in a single join pass,
-    eliminating the N+1 market-by-market join loop.
+    Build a combined-market total-PnL series by concatenating all market
+    PnL series and summing per-timestamp using group_by aggregation.
 
-    Strategy:
-      1. Collect one [ts_event, pnl_{market}] frame per market.
-      2. Perform a single full outer join chain using ``pl.align_frames``
-         under the hood — each market frame is aligned on ts_event.
-      3. Sum across all pnl columns to produce the final series.
+    This avoids N+1 join chains and the suffix/collision issues inherent
+    in outer joins over 3+ frames.
 
     Returns a pl.Series of combined pnl values, or None if fewer than 2
     market series are available.
     """
-    pnl_frames = {}
+    pnl_frames = []
     for market, year_dfs in results.items():
         market_df = aggregate_market(year_dfs).select(['ts_event', 'pnl'])
-        market_df = market_df.rename({'pnl': f'pnl_{market}'})
-        pnl_frames[market] = market_df
+        pnl_frames.append(market_df)
 
     if len(pnl_frames) < 2:
         return None
 
-    # Merge all market frames on ts_event with a single full outer join chain
-    market_names = sorted(pnl_frames.keys())
-    combined = pnl_frames[market_names[0]]
-    for mkt in market_names[1:]:
-        combined = combined.join(
-            pnl_frames[mkt], on='ts_event', how='outer'
-        )
-
-    pnl_cols = [f'pnl_{m}' for m in market_names]
-    total = combined.with_columns(
-        sum((pl.col(c).fill_null(0) for c in pnl_cols)).alias('total_pnl')
-    )['total_pnl']
-
-    return total
+    # Stack all market series and sum PnL per timestamp
+    stacked = pl.concat(pnl_frames)
+    combined = stacked.group_by('ts_event', maintain_order=True).agg(
+        pl.col('pnl').sum().alias('total_pnl')
+    )
+    return combined['total_pnl']
 
 
 def run_aggregation(artifacts_root='output'):
