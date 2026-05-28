@@ -1,255 +1,514 @@
 # Structural Audit Findings — Quant Pipeline
 
-**Auditor**: Sr Quant Auditor / Adversarial Risk Engineer  
-**Axiom**: "backtest always lies via hidden biases"  
-**Mandate**: zero-tolerance structural audit  
-**Date**: 2026-05-28  
-**Context**: 5m ES,CL,ZB futures — ExtraTrees → Ridge → execution simulation (2010–2026, 12 markets)
+**Auditor:** Sr Quant Auditor / Adversarial Risk Engineer  
+**Axiom:** "backtest always lies via hidden biases"  
+**Date:** 2026-05-28  
+**Scope:** 5m ES, CL, ZB futures pipeline (ExtraTrees discovery → Ridge walkforward → execution simulation)
 
 ---
 
-## Summary
+## Assertion Summary
 
-| # | Finding | Risk | Status |
-|---|---------|------|--------|
-| 1 | max_position_size not propagated to SimpleNamespace | LOW | Existing code partially mitigates |
-| 2 | ExecutionConfig.max_position_size has wrong type (str) | LOW | Type error in Pydantic model |
-| 3 | market_config.py missing contract_multiplier/tick_size/max_position propagation | MEDIUM | Simulator re-reads YAML directly as workaround |
-| 4 | HMM PnL recompute missing intrabar stops / clipping / multiplier / round-turn | HIGH | Simplified recompute path |
-| 5 | CI audit workflow absent | MEDIUM | No .github/workflows/audit_quant_model.yml |
+| # | Assertion | Verdict | Risk |
+|---|-----------|---------|------|
+| 1 | CONFIG HIERARCHY | PASS (1 gap) | LOW |
+| 2 | DATA INTEGRITY | PASS | — |
+| 3 | GAP DETECTION | PASS | — |
+| 4 | HTF ALIGNMENT | PASS | — |
+| 5 | ROLLING WINDOWS | PASS | — |
+| 6 | Z‑SCORE | PASS | — |
+| 7 | DISCOVERY | PASS | — |
+| 8 | ENGINE / SIGNAL → POSITION | PASS | — |
+| 9 | COST MODEL | PASS | — |
+| 10 | SESSION | PASS | — |
+| 11 | INTRABAR SL/TP/GAP SIM | PASS | — |
+| 12 | CONTINUOUS CONTRACT / ROLLOVER | PASS | — |
+| 13 | POSITION CLIPPING | PASS (1 gap) | MEDIUM |
+| 14 | BURN‑IN / WARMUP | PASS | — |
+| 15 | WALKFORWARD SESSION BOUNDARY | PASS | — |
+| 16 | MULTIPLIER PROPAGATION | PASS | — |
+| 17 | CROSS‑ASSET ALIGNMENT | PASS | — |
+| 18 | HMM PNL RECOMPUTE | PASS | — |
+| 19 | PROBABILITY SMOOTHING | PASS | — |
+| — | CI WORKFLOW | FAIL | MEDIUM |
+| — | FUZZ HARNESS | PASS (exists) | — |
+| — | CONFIG max_position_size propagation | FAIL | MEDIUM |
+| — | MARKET_CONFIG max_position_size | FAIL | LOW |
 
 ---
 
-## Finding 1 — CONFIG HIERARCHY: max_position_size not in SimpleNamespace
+## Detailed Findings
 
-**Evidence**: `quant/config_manager.py:396-414` — `_populate_simple_namespace()` execution section terminates at `config.GAP_SLIPPAGE_PCT` (line 414). `max_position_size` (RootConfig.execution.max_position_size, line 181) and `daily_loss_limit` (line 182) are never written to the SimpleNamespace.
+---
 
-**Impact**: Any module that accesses `config.MAX_POSITION_SIZE` from the SimpleNamespace would get `AttributeError`. The simulator.py workaround (lines 312-323) reads `max_position_size` directly from the per-market YAML, bypassing the config system entirely.
+### Finding 1 — CONFIG HIERARCHY: max_position_size in Pydantic but NOT propagated to SimpleNamespace
 
-**Risk**: LOW (simulator has a direct-YAML workaround but the config gap is a code smell).
+| Evidence | File |
+|----------|------|
+| `max_position_size: str \| None = None` defined in `ExecutionConfig` (Pydantic) | `quant/config_manager.py:181` |
+| `_populate_simple_namespace()` lines 396-414 — NO `config.MAX_POSITION_SIZE` assignment | `quant/config_manager.py:396-414` |
+| Simulator reads `max_position_size` directly from market YAML (lines 319–320), but consumers expecting `config.MAX_POSITION_SIZE` get `AttributeError` | `quant/execution/simulator.py:319-320` |
 
-**Fix**:
+**Verdict:** `max_position_size` lives in the typed Pydantic model but never reaches the `config` SimpleNamespace that all quant modules consume. Any module that tries `config.MAX_POSITION_SIZE` (as the audit expects) will fail at runtime. The simulator bypasses this by reading the YAML directly, which works but is an inconsistency.
+
+**Risk:** MEDIUM — inconsistent config surface; any new module expecting `config.MAX_POSITION_SIZE` will silently have no position cap.
+
+**Fix:**
+
 ```python
-# quant/config_manager.py — after line 414 (config.GAP_SLIPPAGE_PCT line)
-    config.MAX_POSITION_SIZE = int(c.execution.max_position_size) if c.execution.max_position_size else None
-    config.DAILY_LOSS_LIMIT = float(c.execution.daily_loss_limit) if c.execution.daily_loss_limit else None
+# quant/config_manager.py — add to ExecutionConfig (line 181)
+# Change type from str|None to float|None:
+max_position_size: float | None = None
+
+# quant/config_manager.py — add to _populate_simple_namespace() after line 414
+config.MAX_POSITION_SIZE = (
+    float(c.execution.max_position_size)
+    if c.execution.max_position_size is not None
+    else float('inf')
+)
 ```
 
 ---
 
-## Finding 2 — CONFIG HIERARCHY: ExecutionConfig.max_position_size wrong type
+### Finding 2 — DATA INTEGRITY: RSS check added in walkforward.py
 
-**Evidence**: `quant/config_manager.py:181` — `max_position_size: str | None = None`
+| Evidence | File |
+|----------|------|
+| `process_fold()` checks `psutil.Process().memory_info().rss > config.RSS_STOP_BYTES` before training | `quant/walkforward.py:116-119` |
+| `discovery.py` checks RSS per bootstrap fold | `quant/discovery.py:138-139` |
+| `ingest.py` validates ts_event sorted, OHLCV nulls, high≥low, open/close bounds, RAM_CAP_BYTES | `quant/ingest.py:17-33` |
 
-**Impact**: The field is typed as `str` but should be `int`. This is a Pydantic validation gap — a YAML value of `50` (int) would fail validation if strict mode were enabled. Currently works because Pydantic coerces, but the type annotation is semantically wrong.
+**Verdict:** PASS. RSS check was absent from walkforward previously but is now present in `process_fold()`. All data integrity checks are enforced.
 
-**Risk**: LOW (Pydantic default coercion masks the issue).
-
-**Fix**:
-```python
-# quant/config_manager.py:181 — change type annotation
-    max_position_size: int | None = None
-```
+**Fix:** None required.
 
 ---
 
-## Finding 3 — CONFIG HIERARCHY: market_config.py missing key propagations
+### Finding 3 — GAP DETECTION: explicit filter exists and is called
 
-**Evidence**: `quant/market_config.py:21-24` propagates `SLIPPAGE_K`, `VOL_PENALTY`, `COMMISSION_PER_TRADE`, `MAX_LEVERAGE`, `TARGET_VOL`, and rolling window overrides. It does NOT propagate `contract_multiplier`, `tick_size`, or `max_position_size`.
+| Evidence | File |
+|----------|------|
+| `filter_gaps(df, max_gap_minutes=30)` function | `quant/gap_filter.py:11-23` |
+| Called from `load_and_clean_data()` after alignment | `quant/ingest.py:153-154` |
 
-**Impact**: The simulator.py (lines 312-323) re-reads the per-market YAML directly to get `contract_multiplier` and `max_position_size`. This works but creates a split path: some config comes from the SimpleNamespace and some from raw YAML re-reads. The `market_config.py` override function becomes incomplete.
+**Verdict:** PASS. Standalone gap filter function exists and is called in the ingest pipeline. Resampling n_ticks thresholds in session.py remain as a complementary guard.
 
-**Risk**: MEDIUM (functionally works via simulator re-read but architectural inconsistency).
-
-**Fix**:
-```python
-# quant/market_config.py:21-24 — add missing keys to overrides dict
-    overrides = {
-        'ROLL_WINDOWS': market_cfg.get('roll_windows'),
-        'ROLL_WINDOWS_1H': market_cfg.get('roll_windows_1h'),
-        'ROLL_WINDOWS_DAILY': market_cfg.get('roll_windows_daily'),
-        'REGIME_HIGH_THRESH': market_cfg.get('regime_high_thresh'),
-        'REGIME_LOW_THRESH': market_cfg.get('regime_low_thresh'),
-        'HTF_TREND_WINDOWS': market_cfg.get('htf_trend_windows'),
-        'HTF_VOLATILITY_WINDOWS': market_cfg.get('htf_volatility_windows'),
-        'SLIPPAGE_K': market_cfg.get('slippage_k'),
-        'VOL_PENALTY': market_cfg.get('vol_penalty'),
-        'COMMISSION_PER_TRADE': market_cfg.get('commission_per_trade'),
-        'MAX_LEVERAGE': market_cfg.get('max_leverage'),
-        'TARGET_VOL': market_cfg.get('target_vol'),
-        'CONTRACT_MULTIPLIER': market_cfg.get('metadata', {}).get('contract_multiplier'),
-        'TICK_SIZE': market_cfg.get('contract_specs', {}).get('tick_size'),
-        'MAX_POSITION_SIZE': market_cfg.get('risk', {}).get('max_position_size'),
-    }
-```
+**Fix:** None required.
 
 ---
 
-## Finding 4 — HMM PNL RECOMPUTE: simplified path missing critical protections
+### Finding 4 — HTF ALIGNMENT: backward_fill only after forward_fill (EXEMPT)
 
-**Evidence**: `quant/walkforward.py:249-295` — `_recompute_pnl_after_gate()` re-derives `ret_exec`, `unit_cost`, `position`, `pos_change`, and `pnl`. It does **NOT** include:
+| Evidence | File |
+|----------|------|
+| 1h timestamps shifted +1 hour before `join_asof(strategy='backward')` | `quant/align.py:32` |
+| Daily timestamps shifted +1 day | `quant/align.py:51` |
+| `daily_cols` forward-filled THEN backward-filled (boundary bars only) | `quant/align.py:62-64` |
+| `htf_daily_trend_slope_10` uses `shift(1)` and `shift(1+bars*10)` — strictly past | `quant/features/htf_context.py:52-56` |
 
-1. **Intrabar stops/take-profit** (`simulate_intrabar_stops` not called) — line 286 uses raw `position * ret_exec - unit_cost * pos_change`.
-2. **Position clipping** — no `max_position_size` clip, no notional clip (`equity * max_leverage / (open_next * contract_multiplier)`)
-3. **Contract multiplier** — PnL at line 286 uses `position * ret_exec` without `* entry_price * contract_multiplier`
-4. **Intrabar PnL** — `intrabar_pnl` column not added
-5. **Proportional PnL clip** — no `clip(-0.05 * entry_price * multiplier, 0.05 * entry_price * multiplier)`
-6. **Round-turn settlement on flatting** — no `TX_COST_PER_ROUNDTURN` deduction when position goes flat
+**Verdict:** PASS. `.backward_fill()` on daily columns appears only after `.forward_fill()` (line 64) — EXEMPT per documented rule. All HTF trend features use strictly lagged values.
 
-**Comparison with full simulator path** (`quant/execution/simulator.py`):
-
-| Protection | Full simulator | HMM recompute |
-|---|---|---|
-| ret_exec formula | lines 408-412 | lines 264-268 ✓ |
-| unit_cost formula | lines 393-399 | lines 271-283 ✓ |
-| Position shift(1) | line 418 | line 260 ✓ |
-| pos_change | line 424 | line 261 ✓ |
-| Intrabar stops | lines 442-451 ✗ | absent |
-| Position clipping | lines 306-343 ✗ | absent |
-| Multiplier in PnL | line 481 ✗ | absent |
-| Intrabar_pnl | line 458 ✗ | absent |
-| Round-turn settlement | lines 478-488 ✗ | absent |
-| Proportional PnL clip | lines 491-492 ✗ | absent |
-
-**Impact**: When HMM gates trades, the recomputed PnL diverges from the base PnL even for bars where no gating occurred, because the PnL formula is less complete. This makes HMM validation metrics (`compare_strategies`) unreliable — the comparison includes both regime-gating effects and formula-divergence effects.
-
-**Risk**: HIGH — validation metrics for the HMM regime filter are contaminated.
-
-**Fix**: Replace `_recompute_pnl_after_gate()` with a re-call to `simulate_execution_classification()` on the gated DataFrame, or replicate all protections:
-
-```python
-# quant/walkforward.py:249-295 — replace function body
-def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Re-run the full simulator on the HMM-gated target_exec.
-    Preserves HMM columns while recomputing PnL identically to the base path.
-    """
-    from quant.execution.simulator import simulate_execution_classification
-    
-    # Preserve HMM-specific columns before re-simulation
-    hmm_cols = [c for c in df.columns if c.startswith('hmm_')]
-    hmm_data = {c: df[c].clone() for c in hmm_cols} if hmm_cols else {}
-    
-    # Drop columns that the simulator will recompute
-    recompute_cols = ['raw_signal', 'target_exec', 'vol', 'spread', 'unit_cost',
-                      'ret_exec', 'position', 'pos_change', 'pnl', 'intrabar_pnl']
-    df_clean = df.drop([c for c in recompute_cols if c in df.columns])
-    
-    # Re-run full simulator (includes intrabar stops, clipping, multiplier, round-turn)
-    df_result = simulate_execution_classification(df_clean)
-    
-    # Restore HMM columns
-    for col, series in hmm_data.items():
-        df_result = df_result.with_columns(series.alias(col))
-    
-    return df_result
-```
+**Fix:** None required.
 
 ---
 
-## Finding 5 — CI: Audit workflow absent
+### Finding 5 — ROLLING WINDOWS: all predictive rolling_* use shift(1)
 
-**Evidence**: `absent` — No file at `.github/workflows/audit_quant_model.yml` or equivalent.
+| Function | File:Line | Shift Applied |
+|----------|-----------|---------------|
+| `feature_ewma_vol_20` | `baseline.py:38-39` | `ret_1.shift(1).rolling_std(20)` ✓ |
+| Regime vol | `expansion.py:13` | `ret.shift(1).rolling_std(20)` ✓ |
+| Z‑score mean/std | `expansion.py:30-31` | `pl.col(col).shift(1).rolling_mean/std(30)` ✓ |
+| `rolling_quantile` | `expansion.py:122` | `ret.shift(1).rolling_quantile(…)` ✓ |
+| `rolling_moments` | `expansion.py:143` | `ret.shift(1).rolling_sum/…` ✓ |
+| Acceleration | `expansion.py:164` | `ret − ret.shift(1)` — no rolling, no issue ✓ |
+| VWAP | `expansion.py:172-173` | `tp.shift(1) * vol.shift(1).rolling_sum(…)` ✓ |
+| Volume Profile close_lag/vol_lag | `volume_profile.py:62-63` | `shift(1)` ✓ |
+| VPA vol_lag/spread_lag | `volume_profile.py:167-168` | `shift(1)` ✓ |
+| `_daily_high_expanding` | `htf_context.py:20` | `high.shift(1).cum_max()` ✓ |
+| `htf_daily_vol_5` | `htf_context.py:61` | `ret_1.shift(1).rolling_std(260)` ✓ |
+| `_1h_vol_4` | `htf_context.py:70` | `_1h_return.shift(1).rolling_std(4)` ✓ |
+| Simulator vol | `simulator.py:372-374` | `ret.shift(1).rolling_std(20)` ✓ |
 
-**Impact**: No automated enforcement of structural invariants. Assertions can regress silently.
+**Verdict:** PASS. Every rolling window that feeds a predictive feature applies `.shift(1)` to the input series before the rolling operation. No leakage.
 
-**Risk**: MEDIUM.
+**Fix:** None required.
 
-**Fix**: Create CI workflow:
+---
+
+### Finding 6 — Z‑SCORE: feature z‑scores lagged; signal z‑score NOT lagged (correct)
+
+| Evidence | File |
+|----------|------|
+| Feature z‑scores use `shift(1)` on feature column before `rolling_mean/std(30)` | `quant/features/expansion.py:30-32` |
+| Signal z‑score in simulator uses current `prediction_prob` directly (NOT lagged) — this is CORRECT for entry gating: you want current conviction measured against its own rolling distribution | `quant/execution/simulator.py:171-174` |
+| Signal rolling window: 1000 bars, `min_periods=50` — sufficient history | `quant/execution/simulator.py:172-173` |
+
+**Verdict:** PASS. Feature z‑scores use lagged distributions. Signal z‑score correctly uses current probability (this is entry gating, not a predictive feature). Window size is adequate.
+
+**Fix:** None required.
+
+---
+
+### Finding 7 — DISCOVERY: deterministic, parameter-consistent
+
+| Evidence | File |
+|----------|------|
+| `get_fold_seed()` uses SHA256 of `config.SEED + fold_idx` | `quant/discovery.py:19-21` |
+| ExtraTrees params from `config.EXTRA_TREES_PARAMS` (defaults: max_depth=8, n_estimators=100, max_features=0.3, bootstrap=False) | `quant/config_manager.py:131-140` |
+| Bootstrap folds = `config.BOOTSTRAP_FOLDS` (default 30) | `quant/discovery.py:129` |
+| IQR scaling via `robust_scale()` | `quant/walkforward.py:26-37` |
+| Manifest prune: selection_freq ≥ 0.75, sign_consistency ≥ 0.8, cumulative_importance ≥ 0.95 | `quant/discovery.py:188-205` |
+
+**Verdict:** PASS. Seed is deterministic. ExtraTrees parameters match RootConfig defaults. Bootstrap fold count matches config. IQR scaling uses median/IQR. Manifest pruning uses configured thresholds.
+
+**Fix:** None required. (alpha_1 YAML overrides `bootstrap_folds: 3` and `discovery_window_days: 30` explicitly — tier override is valid.)
+
+---
+
+### Finding 8 — ENGINE / SIGNAL → POSITION: pipeline order verified
+
+| Step | File:Line | Verified |
+|------|-----------|----------|
+| 1. Z‑score gating → raw_signal | `simulator.py:171-184` | ✓ |
+| 2. HTF hourly alignment gating | `simulator.py:197-213` | ✓ |
+| 3. Session break flat (17:00–18:00) | `simulator.py:218-232` | ✓ |
+| 4. Session close flat (15:55) | `simulator.py:237-251` | ✓ |
+| 5. HTF vol scaling | `simulator.py:260-278` | ✓ |
+| 6. ATR sizing (TARGET_RISK_PER_TRADE / ATR14) | `simulator.py:287-301` | ✓ |
+| 6b. Position clipping (max_position_size + notional cap) | `simulator.py:304-343` | ✓ |
+| 7. HTF daily trend alignment | `simulator.py:351-367` | ✓ |
+| Position at bar t = target_exec.shift(1) | `simulator.py:441` | ✓ |
+| PnL = position * ret_exec * multiplier * price − costs + intrabar + round‑turn settlement | `simulator.py:489-498` | ✓ |
+
+**Verdict:** PASS. Pipeline order is correct. All gating stages are present and applied in the right sequence.
+
+**Fix:** None required.
+
+---
+
+### Finding 9 — COST MODEL: round‑turn settlement on flatting IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| `unit_cost = COMMISSION_PER_TRADE + SLIPPAGE_K*spread + VOL_PENALTY*vol + TX_COST_PER_ROUNDTURN/2` | `simulator.py:393-398` |
+| Round‑turn settlement: `when position_went_flat → pnl − TX_COST_PER_ROUNDTURN * |prior_position|` | `simulator.py:486-494` |
+
+**Verdict:** PASS. The per‑delta amortization (TX_COST/2 per position change) combined with the flat‑settlement charge (line 492–494) produces the correct total round‑turn cost: flat‑to‑flat = 2 × (TX_COST/2) = TX_COST. Single‑bar round‑trips are fully covered.
+
+**Fix:** None required.
+
+---
+
+### Finding 10 — SESSION: flatten logic and session_id verified
+
+| Evidence | File |
+|----------|------|
+| Session break flat: 17:00–18:00 local → position = 0 | `simulator.py:224-232` |
+| Session close flat: 15:55–16:00 local → position = 0 | `simulator.py:237-251` |
+| `session_id = ts_local.offset_by('6h').dt.date()` | `session.py:29` |
+
+**Verdict:** PASS. Session break and close flattens are correctly timed. `offset_by('6h')` ensures evening (18:00–23:59) and morning (00:00–16:00) bars share the same session_id.
+
+**Fix:** None required.
+
+---
+
+### Finding 11 — INTRABAR SL/TP/GAP SIM: IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| `simulate_intrabar_stops()` with linear‑path logic and gap‑opening fill | `simulator.py:20-158` |
+| Called from `_compute_pnl_from_target_exec()` | `simulator.py:458-467` |
+| `stop_loss_pct: 0.005`, `take_profit_pct: 0.01`, `gap_slippage_pct: 0.002` in config | `config_manager.py:185-187` |
+
+**Verdict:** PASS. Intrabar stop/take‑profit simulation is present with linear‑path first‑touched logic and gap‑opening fill at `open + gap_slippage_pct`. Called in both the main execution path and the HMM PnL recompute path.
+
+**Fix:** None required.
+
+---
+
+### Finding 12 — CONTINUOUS CONTRACT / ROLLOVER: IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| `compute_roll_dates()` — ES/NQ/YM/RTY (HMUZ quarterly), CL/NG (monthly), ZB/ZN (quarterly) | `quant/continuous_contract.py:54-162` |
+| `build_ratio_adjusted_series()` — ratio‑adjustment across one roll point | `quant/continuous_contract.py:165-247` |
+| `apply_splice()` — cumulative factor join and continuous_price computation | `quant/continuous_contract.py:250-294` |
+| `build_continuous_series()` — full pipeline, called from ingest | `quant/continuous_contract.py:297-457` |
+| Called from `load_and_clean_data()` after alignment | `quant/ingest.py:179-181` |
+| `adjustment_factor`, `contract_month`, `contract_multiplier` persisted in output | `quant/continuous_contract.py:440-449` |
+
+**Verdict:** PASS. Continuous contract pipeline exists with symbol‑specific roll schedules, ratio adjustment, cumulative splicing, and metadata columns. Called from ingest.py as required.
+
+**Fix:** None required.
+
+---
+
+### Finding 13 — POSITION CLIPPING: IMPLEMENTED with config namespace gap
+
+| Evidence | File |
+|----------|------|
+| `max_position_size` clipped in simulator from market YAML | `simulator.py:325-330` |
+| Notional cap: `|position| ≤ max_leverage / (open_next * contract_multiplier)` | `simulator.py:333-343` |
+| `contract_multiplier` loaded from per‑market YAML | `simulator.py:312-318` |
+| **GAP:** `config.MAX_POSITION_SIZE` is NEVER populated in `_populate_simple_namespace()` | `config_manager.py:396-414` (absent) |
+| **GAP:** `market_config.py:load_market_config()` does NOT load `max_position_size` | `market_config.py:21` (missing from overrides) |
+
+**Verdict:** PASS with gaps. Position clipping IS enforced in the simulator (direct YAML read), but the config propagation chain has two holes: (a) `_populate_simple_namespace` never assigns `config.MAX_POSITION_SIZE`, and (b) `load_market_config()` doesn't override `max_position_size` from per‑market YAMLs. Any module that doesn't read the YAML directly will miss the cap.
+
+**Fix A (config_manager.py — add after line 414):**
+
+```python
+config.MAX_POSITION_SIZE = (
+    float(c.execution.max_position_size)
+    if c.execution.max_position_size is not None
+    else float('inf')
+)
+```
+
+**Fix B (market_config.py — add to `overrides` dict on line 21):**
+
+```python
+overrides = {
+    # ...existing entries...
+    'MAX_POSITION_SIZE': market_cfg.get('risk', {}).get('max_position_size'),
+}
+```
+
+**Fix C (config_manager.py — change type on line 181):**
+
 ```yaml
-# .github/workflows/audit_quant_model.yml
-name: Audit Quant Model
+# Change:
+max_position_size: str | None = None
+# To:
+max_position_size: float | None = None
+```
+
+---
+
+### Finding 14 — BURN‑IN / WARMUP: IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| `WalkforwardConfig.burn_in_bars: int = 500` | `config_manager.py:164` |
+| `exclude_warmup()` function | `quant/walkforward.py:105-111` |
+| Called in `process_fold()` | `quant/walkforward.py:127` |
+| Called in `run_walkforward()` | `quant/walkforward.py:483` |
+| Called in `run_walkforward_with_hmm()` | `quant/walkforward.py:436` |
+
+**Verdict:** PASS. `burn_in_bars=500` is configured, propagated to `config.BURN_IN_BARS`, and applied in all three walkforward paths (`process_fold`, `run_walkforward`, `run_walkforward_with_hmm`). Metrics aggregation excludes the first 500 bars of each fold.
+
+**Fix:** None required.
+
+---
+
+### Finding 15 — WALKFORWARD SESSION BOUNDARY: session_id splitting IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| `run_walkforward()` builds folds by `session_id` groups, NOT `pl.col('ts_event').dt.date()` | `quant/walkforward.py:447-472` |
+| `run_walkforward_with_hmm()` also uses `session_id` groups | `quant/walkforward.py:339-372` |
+
+**Verdict:** PASS. Both walkforward entry points use `unique_sessions = df['session_id'].unique(maintain_order=True)` and split folds by session index range. No calendar‑date leakage across session boundaries.
+
+**Fix:** None required.
+
+---
+
+### Finding 16 — MULTIPLIER PROPAGATION: contract_multiplier reaches PnL
+
+| Evidence | File |
+|----------|------|
+| `contract_multiplier` loaded from per‑market YAML in `simulate_execution_classification()` | `simulator.py:312-318` |
+| Passed to `_compute_pnl_from_target_exec()` | `simulator.py:401` |
+| Used in PnL: `position * ret_exec * entry_price * contract_multiplier` | `simulator.py:489` |
+| Used in intrabar PnL: `intrabar_pnl * contract_multiplier` | `simulator.py:490` |
+| Used in PnL clip: `0.05 * entry_price * contract_multiplier` | `simulator.py:496` |
+| `FIXED_CONTRACT_SIZE = 1.0` is only a fallback (line 17), overridden by actual multiplier | `simulator.py:17` |
+
+**Verdict:** PASS. Contract multiplier is loaded from per‑market YAML and applied in PnL computation, intrabar PnL, and PnL clipping. The `FIXED_CONTRACT_SIZE=1.0` constant is only used as a fallback when no market config exists.
+
+**Fix:** None required.
+
+---
+
+### Finding 17 — CROSS‑ASSET ALIGNMENT: session‑scoped forward‑fill IMPLEMENTED
+
+| Evidence | File |
+|----------|------|
+| Cross‑asset features forward‑filled within `session_id` groups, resetting to null at session boundaries | `quant/ingest.py:111-114` |
+
+**Verdict:** PASS. `fill_null(strategy='forward').over('session_id')` prevents stale secondary‑market data from bleeding across primary‑market session gaps.
+
+**Fix:** None required.
+
+---
+
+### Finding 18 — HMM PNL RECOMPUTE: identical pipeline used
+
+| Evidence | File |
+|----------|------|
+| `_recompute_pnl_after_gate()` calls `_compute_pnl_from_target_exec()` — same pipeline as `simulate_execution_classification()` | `quant/walkforward.py:249-297` |
+| Shares contract_multiplier resolution, intrabar stops, position clipping, round‑turn settlement, PnL clip | `quant/walkforward.py:291` |
+
+**Verdict:** PASS. HMM‑gated PnL is recomputed through the exact same `_compute_pnl_from_target_exec()` pipeline. No divergence between base and HMM PnL formulas.
+
+**Fix:** None required.
+
+---
+
+### Finding 19 — PROBABILITY SMOOTHING: session‑boundary reset verified
+
+| Evidence | File |
+|----------|------|
+| `smooth_probabilities()` resets `current = 0.5` when `sess != last_session` | `quant/walkforward.py:82-83` |
+| `session_ids` from `test_original['session_id']` — matches actual data session boundaries | `quant/walkforward.py:122` |
+
+**Verdict:** PASS. EMA smoothing resets to neutral (0.5) at every session boundary, and the session_id array comes directly from the DataFrame.
+
+**Fix:** None required.
+
+---
+
+### Finding 20 — CI WORKFLOW: ABSENT
+
+| Evidence | File |
+|----------|------|
+| No `.github/workflows/` directory exists in the project | absent |
+
+**Verdict:** FAIL (MEDIUM risk). No CI pipeline runs the audit assertions or the fuzz harness automatically. Any regression in causal integrity, position clipping, or rollover handling will go undetected until a human re‑runs the test suite.
+
+**Fix — create `.github/workflows/audit_quant_model.yml`:**
+
+```yaml
+name: Quant Model Structural Audit
 
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  schedule:
-    - cron: '0 6 * * 1'  # weekly Monday 06:00 UTC
+  workflow_dispatch:
 
 jobs:
-  fuzz-and-assert:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run causal audit tests
+        run: python tests/test_causal_audit.py
+
+      - name: Run continuous contract tests
+        run: python tests/test_continuous_contract.py
+
       - name: Run fuzz harness (1000 runs)
         run: python tests/test_fuzz.py --runs 1000 --seed 42
-      - name: Run causal audit
-        run: python -m pytest tests/test_causal_audit.py -v --tb=short
+
+      - name: Verify config hierarchy
+        run: python tools/verify_config.py
+
       - name: Run alignment tests
-        run: python -m pytest tests/test_alignment.py tests/test_continuous_contract.py -v --tb=short
+        run: python -m pytest tests/test_alignment.py -v --tb=short || python tests/test_alignment.py
+
       - name: Run HTF feature tests
-        run: python -m pytest tests/test_htf_features.py -v --tb=short
+        run: python -m pytest tests/test_htf_features.py -v --tb=short || python tests/test_htf_features.py
+
       - name: Run session streaming tests
-        run: python -m pytest tests/test_session_streaming.py -v --tb=short
+        run: python -m pytest tests/test_session_streaming.py -v --tb=short || python tests/test_session_streaming.py
+
+      - name: Audit assertion summary
+        if: failure()
+        run: |
+          echo "::error::One or more structural audit assertions FAILED."
+          echo "Review logs above. Do NOT merge until all assertions pass."
 ```
 
 ---
 
-## Assertion Trigger Summary
+### Finding 21 — FUZZ HARNESS: EXISTS
 
-| Assertion | Result | Evidence |
-|---|---|---|
-| ASSERT_CONFIG_HIERARCHY | WARN | max_position_size in Pydantic but not SimpleNamespace (fixed via direct YAML read) |
-| ASSERT_DATA_INTEGRITY | PASS | ts_event sort, OHLCV nulls, H≥L, O/C bounds, RAM_CAP, RSS in process_fold |
-| ASSERT_GAP_FILTER | PASS | quant/gap_filter.py exists, called from ingest.py:153-154 |
-| ASSERT_HTF_ALIGNMENT | PASS | +1h/+1d shifts, forward_fill→backward_fill pattern EXEMPT |
-| ASSERT_ROLLING_SHIFT | PASS | All rolling_* verified with shift(1) on input series |
-| ASSERT_ZSCORE_CORRECT | PASS | Feature z-score uses shift(1) lagged mean/std; signal z-score intentionally non-lagged |
-| ASSERT_ET_PARAMS | PASS | max_depth=8, bootstrap_folds=30, deterministic seeds |
-| ASSERT_CONTINUOUS_CONTRACT | PASS | quant/continuous_contract.py present with full pipeline |
-| ASSERT_MAX_POSITION_SIZE | PASS | simulator.py:306-343 clips to max_position_size + notional cap |
-| ASSERT_INTRABAR_STOPS | PASS | simulator.py:20-158 simulate_intrabar_stops with gap logic |
-| ASSERT_BURN_IN | PASS | WalkforwardConfig.burn_in_bars=500, exclude_warmup() applied |
-| ASSERT_SESSION_FOLD | PASS | Walkforward folds use session_id, not calendar date |
-| ASSERT_MULTIPLIER | PASS | contract_multiplier propagated to PnL in simulator.py:481 |
-| ASSERT_FUZZ_HARNESS | PASS | tests/test_fuzz.py with time_skew, missing_bars, roll_jump + audit assertions |
+| Evidence | File |
+|----------|------|
+| `run_fuzz_harness()` with `time_skew`, `missing_bars`, `roll_jump` perturbations | `tests/test_fuzz.py:598-646` |
+| Audit assertion checks embedded: roll test, leverage stress, intrabar gap, burn‑in exclusion, round‑turn cost | `tests/test_fuzz.py:310-451` |
+| Supports `--runs 1000`, `--seed 42` CLI flags | `tests/test_fuzz.py:652-659` |
+
+**Verdict:** PASS. Fuzz harness exists with all required perturbation types and audit‑assertion checks. The CI job (Finding 20) is the missing piece that would run this harness automatically.
+
+**Fix:** See Finding 20 (CI workflow) above.
 
 ---
 
-## Items Already Fixed (pre-audit remediation confirmed)
+### Finding 22 — market_config.py: max_position_size NOT loaded from per‑market YAML
 
-The following protections, initially flagged as absent in the audit mandate, were found to be already present:
+| Evidence | File |
+|----------|------|
+| `overrides` dict includes `SLIPPAGE_K`, `VOL_PENALTY`, `MAX_LEVERAGE` but NOT `MAX_POSITION_SIZE` | `quant/market_config.py:21` |
+| `generate_markets.py` writes `max_position_size` into every market YAML (e.g., ES.yaml line 12) | `tools/generate_markets.py:42` |
+| Per‑market YAMLs (12 files) all contain `risk.max_position_size` | `configs/markets/*.yaml` |
 
-1. **Continuous contract**: `quant/continuous_contract.py` — `compute_roll_dates()`, `build_ratio_adjusted_series()`, `apply_splice()`, `build_continuous_series()`. Called from `ingest.py:179`.
-2. **Gap filter**: `quant/gap_filter.py` — `filter_gaps(max_gap_minutes=30)`. Called from `ingest.py:153-154`.
-3. **Intrabar stops/take-profit/gap**: `simulate_intrabar_stops()` in `simulator.py:20-158` with linear-path-first-touch and gap-slippage logic.
-4. **Position clipping**: Max position size + notional clip in `simulator.py:306-343`.
-5. **Burn-in/warmup**: `WalkforwardConfig.burn_in_bars=500`, `exclude_warmup()` in `walkforward.py:105-111`.
-6. **Session boundary folds**: Walkforward uses session_id instead of calendar date (`walkforward.py:446-447`).
-7. **Multiplier in PnL**: `contract_multiplier` read from per-market YAML, used in PnL (`simulator.py:481`).
-8. **Round-turn settlement**: `pnl -= TX_COST_PER_ROUNDTURN * prior_position.abs()` on flatting (`simulator.py:486-487`).
-9. **Cross-asset fill within session**: Forward-fill within `session_id` groups only (`ingest.py:111-113`).
-10. **RSS check in walkforward**: `process_fold()` checks RSS against `RSS_STOP_BYTES` (`walkforward.py:116-119`).
-11. **Fuzz harness**: `tests/test_fuzz.py` with `time_skew`, `missing_bars`, `roll_jump` and audit assertions.
+**Verdict:** FAIL (LOW risk). `load_market_config()` overrides liquidity/leverage params but omits `max_position_size`. Since the simulator reads max_position_size directly from the YAML (not via config namespace), the operational impact is low, but the config propagation chain is incomplete.
 
----
+**Fix — add to `market_config.py` line 21 `overrides` dict:**
 
-## Risk Scoring Summary
-
-| Risk | Count | Item |
-|---|---|---|
-| VERY HIGH | 0 | — (all VERY HIGH risks flagged in mandate are now fixed) |
-| HIGH | 1 | HMM PnL recompute missing protections (Finding 4) |
-| MEDIUM | 2 | market_config.py incomplete propagation (Finding 3), CI workflow absent (Finding 5) |
-| LOW | 2 | max_position_size not in SimpleNamespace (Finding 1), wrong type annotation (Finding 2) |
-
-**Directive**: HMM PnL recompute (Finding 4) must be fixed before comparing base vs HMM strategies. The remaining findings are code-smell / architectural improvements.
+```python
+overrides = {
+    # ... existing entries ...
+    'MAX_POSITION_SIZE': market_cfg.get('risk', {}).get('max_position_size'),
+}
+```
 
 ---
 
-## Compliance with Audit Directives
+### Finding 23 — config_manager.py: max_position_size type is `str | None`, should be `float | None`
 
-- ✅ **No deploy until all VERY HIGH and HIGH risks fixed**: 0 VERY HIGH, 1 HIGH remaining (Finding 4)
-- ✅ **All 16 assertion triggers evaluated**: 13 PASS, 0 FAIL, 1 WARN
-- ✅ **Exact fix snippets provided** for all 5 findings
-- ✅ **CI job specification included** (Finding 5)
-- ⚠️ **Backward_fill on daily EXEMPT**: Verified align.py:62-64 follows forward_fill→backward_fill pattern
-- ⚠️ **Signal z-score non-lagged**: Intentionally non-lagged for conviction measurement — documented exemption
+| Evidence | File |
+|----------|------|
+| `max_position_size: str | None = None` | `quant/config_manager.py:181` |
+
+**Verdict:** FAIL (LOW risk). The Pydantic field type is `str | None` but the actual values in market YAMLs are integers (e.g., ES=50, CL=30). No validation error occurs because the default is `None` and the field is never populated in `_populate_simple_namespace`. Should be `float | None` for correctness.
+
+**Fix — change `quant/config_manager.py` line 181:**
+
+```python
+# From:
+max_position_size: str | None = None
+# To:
+max_position_size: float | None = None
+```
+
+---
+
+## Risk Summary
+
+| Risk Level | Count | Items |
+|------------|-------|-------|
+| VERY HIGH | 0 | All VERY HIGH risks from original audit are RESOLVED |
+| HIGH | 0 | All HIGH risks from original audit are RESOLVED |
+| MEDIUM | 2 | Config max_position_size propagation gap (F1), CI workflow absent (F20) |
+| LOW | 2 | market_config missing max_position_size override (F22), Pydantic type mismatch (F23) |
+
+**Directive:** No deploy blocker remains. All VERY HIGH and HIGH risks have been resolved:
+- Continuous contract (F12): IMPLEMENTED ✓
+- Position clipping (F13): IMPLEMENTED ✓
+- Intrabar stops (F11): IMPLEMENTED ✓
+- Burn‑in/warmup (F14): IMPLEMENTED ✓
+- Session boundary folds (F15): IMPLEMENTED ✓
+- Multiplier propagation (F16): IMPLEMENTED ✓
+- Round‑turn settlement (F9): IMPLEMENTED ✓
+- Cost model integrity (F9): VERIFIED ✓
+
+**Recommended before deploy:** Apply the 4 config fixes (F1, F22, F23) and add the CI workflow (F20).
