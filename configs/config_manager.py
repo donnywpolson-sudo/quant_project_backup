@@ -127,7 +127,7 @@ def _resolve_env_vars(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 # public API
 # ---------------------------------------------------------------------------
-_CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
+_CONFIGS_DIR = Path(__file__).resolve().parent
 
 def load_config(env: str, configs_dir: Path | None = None) -> RootConfig:
     """
@@ -138,14 +138,15 @@ def load_config(env: str, configs_dir: Path | None = None) -> RootConfig:
         env: tier name (e.g. "alpha_1", "alpha_2", "production")
         configs_dir: override configs directory (default: project-root/configs/)
     """
-    base_path = (configs_dir or _CONFIGS_DIR) / "base.yaml"
+    base_path = (configs_dir or _CONFIGS_DIR) / "alpha_base.yaml"
     if not base_path.exists():
         raise FileNotFoundError(f"Base config not found: {base_path}")
 
     with open(base_path) as f:
         merged = yaml.safe_load(f) or {}
 
-    tier_path = (configs_dir or _CONFIGS_DIR) / f"{env}.yaml"
+    tier_name = "alpha_production" if env == "production" else env
+    tier_path = (configs_dir or _CONFIGS_DIR) / f"{tier_name}.yaml"
     if tier_path.exists():
         with open(tier_path) as f:
             tier_cfg = yaml.safe_load(f) or {}
