@@ -23,8 +23,7 @@ from pathlib import Path
 _project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_project_root))
 
-from quant.config import config
-from quant.utils.config_loader import load_config
+from quant.config_manager import config, load_config
 
 # Expected values for Lean Alpha Discovery mode
 EXPECTED = {

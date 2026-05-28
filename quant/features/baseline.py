@@ -1,6 +1,6 @@
 import polars as pl
 import yaml
-from quant.config import config
+from quant.config_manager import config
 
 
 def load_baseline_feature_names() -> list:

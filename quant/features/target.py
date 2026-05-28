@@ -1,5 +1,5 @@
 import polars as pl
-from quant.config import config
+from quant.config_manager import config
 
 def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
     horizon = config.TARGET_5M_HORIZON

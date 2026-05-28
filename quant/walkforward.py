@@ -5,7 +5,7 @@ from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestClassifier
 from scipy.special import expit
 from joblib import Parallel, delayed
-from quant.config import config
+from quant.config_manager import config
 from quant.execution.simulator import simulate_execution_classification
 from quant.features.corr_prune import correlation_prune
 from quant.features.variance_filter import remove_constant_features

@@ -1,12 +1,10 @@
-pass
 import yaml
 import logging
 from pathlib import Path
-from quant.config import config
+from quant.config_manager import config
 logger = logging.getLogger(__name__)
 
 def detect_symbol_from_path(data_path: str) -> str:
-    pass
     path = Path(data_path)
     for part in path.parent.parts:
         if part in config.MARKET_CONFIGS:
@@ -14,7 +12,6 @@ def detect_symbol_from_path(data_path: str) -> str:
     return 'ES'
 
 def load_market_config(symbol: str):
-    pass
     yaml_path = config.MARKET_CONFIGS.get(symbol)
     if not yaml_path or not Path(yaml_path).exists():
         logger.warning(f'Market config for {symbol} not found at {yaml_path}, using global defaults.')

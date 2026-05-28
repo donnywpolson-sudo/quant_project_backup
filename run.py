@@ -4,7 +4,7 @@ import subprocess
 import logging
 from pathlib import Path
 import shutil
-from utils.config_manager import load_config, RootConfig
+from quant.config_manager import load_config, RootConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')

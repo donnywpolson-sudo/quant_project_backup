@@ -6,8 +6,7 @@ from pathlib import Path
 import tempfile
 import glob
 import shutil
-from quant.config import config
-from quant.utils.config_loader import load_config
+from quant.config_manager import config, load_config
 from tqdm import tqdm
 
 load_config()  # ensure config is populated (idempotent)

@@ -1,7 +1,7 @@
 pass
 import polars as pl
 import logging
-from quant.config import config
+from quant.config_manager import config
 from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
 from quant.features.expansion import expand_features, add_cross_timeframe_interactions
 from quant.features.htf_context import add_htf_context_features

@@ -2,7 +2,7 @@ import polars as pl
 import numpy as np
 import logging
 from itertools import combinations
-from quant.config import config
+from quant.config_manager import config
 logger = logging.getLogger(__name__)
 
 

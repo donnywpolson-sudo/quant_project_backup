@@ -2,7 +2,7 @@ pass
 import pyarrow as pa
 import pyarrow.parquet as pq
 import polars as pl
-from quant.config import config
+from quant.config_manager import config
 import logging
 logger = logging.getLogger(__name__)
 

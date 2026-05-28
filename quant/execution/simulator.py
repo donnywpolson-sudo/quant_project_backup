@@ -10,7 +10,7 @@ Realistic execution simulator with economic friction.
 """
 import numpy as np
 import polars as pl
-from quant.config import config
+from quant.config_manager import config
 
 # Fixed contract size multiplier for position sizing
 FIXED_CONTRACT_SIZE = 1.0
