@@ -1,4 +1,4 @@
-# Inherits defaults from market_defaults.yaml — override-only fields listed.
+# Inherits defaults from market_defaults.yaml  --  override-only fields listed.
 metadata:
   ticker: HG
   contract_multiplier: 25000

@@ -297,6 +297,85 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
     return df_result
 
 
+def _build_ts_folds(
+    df: pl.DataFrame,
+    train_days: int,
+    test_days: int,
+    step_days: int,
+) -> list:
+    """
+    Build walkforward fold index ranges from ts_event timestamps only.
+
+    Pure ts_event-based slicing with vectorized overlap detection.
+    No file names, no year parsing, no session_id counting.
+
+    Args:
+        df: DataFrame sorted by ts_event (monotonic, ascending).
+        train_days: Training window in calendar days.
+        test_days: Test window in calendar days.
+        step_days: Step stride in calendar days.
+
+    Returns:
+        list of (i0, i1, i2, i3) index tuples:
+            train = df[i0:i1], test = df[i2:i3]
+            train < test strictly in time (i1 <= i2).
+    """
+    if df.height == 0:
+        return []
+
+    # Extract timestamps once — single sort, single epoch extraction
+    ts_us = df['ts_event'].to_numpy().view('int64')  # microseconds since epoch
+    ts_min = ts_us[0]
+    ts_max = ts_us[-1]
+    day_us = np.int64(86_400_000_000)  # one day in microseconds
+    total_days = int((ts_max - ts_min) // day_us) + 1
+    window_days = train_days + test_days
+
+    if total_days < window_days:
+        # Not enough data — return single fold covering all data
+        return [(0, df.height, 0, df.height)]
+
+    # ---- Vectorized searchsorted for window boundaries ----
+    # Build candidate window start timestamps (one per step)
+    n_steps = max(1, (total_days - window_days) // step_days + 1)
+    if n_steps > 10_000:
+        n_steps = 10_000  # safety cap
+    step_offsets = np.arange(n_steps, dtype='int64') * np.int64(step_days) * day_us
+    cursor_ts = np.int64(ts_min) + step_offsets
+
+    # For each cursor, find the index where ts_us >= target timestamp
+    # np.searchsorted is vectorized and O(n log n)
+    cursor_idx = np.searchsorted(ts_us, cursor_ts, side='left')
+    cursor_idx = np.clip(cursor_idx, 0, df.height - 1)
+
+    # train_end := cursor + train_days
+    train_end_ts = cursor_ts + np.int64(train_days) * day_us
+    train_end_idx = np.searchsorted(ts_us, train_end_ts, side='left')
+    train_end_idx = np.clip(train_end_idx, 0, df.height)
+
+    # test_start := train_end (strict causality: train < test)
+    test_start_idx = train_end_idx.copy()
+
+    # test_end := test_start + test_days
+    test_end_ts = cursor_ts + np.int64(window_days) * day_us
+    test_end_idx = np.searchsorted(ts_us, test_end_ts, side='left')
+    test_end_idx = np.clip(test_end_idx, 0, df.height)
+
+    # ---- Filter: keep only folds where both train and test are non-empty ----
+    valid = (train_end_idx > cursor_idx) & (test_end_idx > test_start_idx)
+
+    # ---- Deterministic: produce identical output for identical timestamps ----
+    indices = np.column_stack([
+        cursor_idx, train_end_idx, test_start_idx, test_end_idx,
+    ])[valid]
+
+    # Convert to list of int tuples (exact same output shape as tuple)
+    folds = [(int(i0), int(i1), int(i2), int(i3))
+             for i0, i1, i2, i3 in indices]
+
+    return folds
+
+
 def run_walkforward_with_hmm(
     X: pl.DataFrame,
     y: pl.DataFrame,
@@ -333,46 +412,29 @@ def run_walkforward_with_hmm(
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
-    # Use session_id for fold boundaries instead of calendar date (Finding #15).
-    # Sessions cross midnight: a session starting 18:00 Jan 6 ends 16:00 Jan 7
-    # and shares one session_id. Calendar-date splitting would leak session features.
-    df = df.sort(['session_id', 'ts_event'])
-    unique_sessions = df['session_id'].unique(maintain_order=True).to_list()
+    # Time-based fold builder — pure ts_event slicing, no session_id counting
+    df = df.sort('ts_event')
+    fold_indices = _build_ts_folds(
+        df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
+    )
+    if not fold_indices:
+        raise ValueError('No folds produced from ts_event windows.')
 
-    # Correlation pruning on initial window
-    first_train_sessions = unique_sessions[:config.WF_TRAIN_DAYS]
-    first_train_df = df.filter(pl.col('session_id').is_in(first_train_sessions))
-    if len(first_train_df) > 0:
-        pruned_features = correlation_prune(
-            first_train_df, feature_cols,
-            threshold=min(config.CORR_THRESHOLD, 0.9)
-        )
-    else:
-        pruned_features = feature_cols
+    # Correlation pruning on first training window
+    first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
+    pruned_features = (
+        correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.9))
+        if first_train_df.height > 0
+        else feature_cols
+    )
 
-    # Build folds
+    # Build folds from index ranges (zero-copy slicing)
     folds = []
-    for i in range(
-        0,
-        len(unique_sessions) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1,
-        config.WF_STEP_DAYS,
-    ):
-        train_end = i + config.WF_TRAIN_DAYS
-        test_start = train_end
-        test_end = test_start + config.WF_TEST_DAYS
-        train_sessions = unique_sessions[i:train_end]
-        test_sessions = unique_sessions[test_start:test_end]
-        train_df = df.filter(pl.col('session_id').is_in(train_sessions))
-        test_df = df.filter(pl.col('session_id').is_in(test_sessions))
-        if train_df.is_empty() or test_df.is_empty():
-            continue
-        train_X = train_df.drop([target_col])
-        train_y = train_df[target_col]
-        test_original = test_df.drop([target_col])
+    for i0, i1, i2, i3 in fold_indices:
+        train_X = df.slice(i0, i1 - i0).drop([target_col])
+        train_y = df.slice(i0, i1 - i0)[target_col]
+        test_original = df.slice(i2, i3 - i2).drop([target_col])
         folds.append((train_X, train_y, test_original, pruned_features))
-
-    if not folds:
-        raise ValueError('No folds processed.')
 
     # Initialize HMM filter
     hmm_filter = HMMRegimeFilter()
@@ -442,36 +504,29 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
-    # Use session_id for fold boundaries instead of calendar date (Finding #15).
-    # Sessions cross midnight: a session starting 18:00 Jan 6 ends 16:00 Jan 7
-    # and shares one session_id. Calendar-date splitting would leak session features.
-    df = df.sort(['session_id', 'ts_event'])
-    unique_sessions = df['session_id'].unique(maintain_order=True).to_list()
+    # Time-based fold builder — pure ts_event slicing, no session_id counting
+    df = df.sort('ts_event')
+    fold_indices = _build_ts_folds(
+        df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
+    )
+    if not fold_indices:
+        raise ValueError('No folds produced from ts_event windows.')
 
-    first_train_sessions = unique_sessions[:config.WF_TRAIN_DAYS]
-    first_train_df = df.filter(pl.col('session_id').is_in(first_train_sessions))
-    if len(first_train_df) > 0:
-        pruned_features = correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.9))
-    else:
-        pruned_features = feature_cols
+    # Correlation pruning on first training window
+    first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
+    pruned_features = (
+        correlation_prune(first_train_df, feature_cols, threshold=min(config.CORR_THRESHOLD, 0.9))
+        if first_train_df.height > 0
+        else feature_cols
+    )
 
+    # Build folds from index ranges (zero-copy slicing)
     folds = []
-    for i in range(0, len(unique_sessions) - config.WF_TRAIN_DAYS - config.WF_TEST_DAYS + 1, config.WF_STEP_DAYS):
-        train_end = i + config.WF_TRAIN_DAYS
-        test_start = train_end
-        test_end = test_start + config.WF_TEST_DAYS
-        train_sessions = unique_sessions[i:train_end]
-        test_sessions = unique_sessions[test_start:test_end]
-        train_df = df.filter(pl.col('session_id').is_in(train_sessions))
-        test_df = df.filter(pl.col('session_id').is_in(test_sessions))
-        if train_df.is_empty() or test_df.is_empty():
-            continue
-        train_X = train_df.drop([target_col])
-        train_y = train_df[target_col]
-        test_original = test_df.drop([target_col])
+    for i0, i1, i2, i3 in fold_indices:
+        train_X = df.slice(i0, i1 - i0).drop([target_col])
+        train_y = df.slice(i0, i1 - i0)[target_col]
+        test_original = df.slice(i2, i3 - i2).drop([target_col])
         folds.append((train_X, train_y, test_original, pruned_features))
-    if not folds:
-        raise ValueError('No folds processed.')
     if config.WF_PARALLEL_FOLDS == 1:
         results = []
         for train_X, train_y, test_original, feat_cols in tqdm(folds, desc='Walkforward folds', unit='fold'):

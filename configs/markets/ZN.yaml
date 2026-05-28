@@ -1,4 +1,4 @@
-# Inherits defaults from market_defaults.yaml — override-only fields listed.
+# Inherits defaults from market_defaults.yaml  --  override-only fields listed.
 metadata:
   ticker: ZN
   contract_multiplier: 1000
