@@ -178,7 +178,7 @@ class ExecutionConfig(BaseModel):
     htf_trend_alignment: bool = True
     htf_vol_scaling: bool = True
     htf_vol_window: int = 10
-    max_position_size: str | None = None
+    max_position_size: float | None = None
     daily_loss_limit: str | None = None
     z_score_entry_threshold: float = 1.5
     target_risk_per_trade: float = 0.01
@@ -412,6 +412,11 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.STOP_LOSS_PCT = c.execution.stop_loss_pct
     config.TAKE_PROFIT_PCT = c.execution.take_profit_pct
     config.GAP_SLIPPAGE_PCT = c.execution.gap_slippage_pct
+    config.MAX_POSITION_SIZE = (
+        float(c.execution.max_position_size)
+        if c.execution.max_position_size is not None
+        else float('inf')
+    )
 
     # -- preprocessing -------------------------------------------------------
     config.CLIP_MIN = c.preprocessing.clip_min

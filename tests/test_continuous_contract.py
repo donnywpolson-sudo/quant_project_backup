@@ -37,7 +37,7 @@ def test_build_continuous_series():
     """Synthetic data with a single roll should have all required columns."""
     ts = pl.datetime_range(
         datetime(2024, 1, 2), datetime(2024, 3, 30), "5m", eager=True
-    )
+    ).dt.replace_time_zone("UTC")
     n = len(ts)
     close_vals = [4500.0 + i * 0.1 for i in range(n)]
     df = pl.DataFrame(

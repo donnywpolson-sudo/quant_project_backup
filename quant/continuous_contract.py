@@ -16,7 +16,7 @@ Strategy:
 
 import polars as pl
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 import logging
@@ -37,8 +37,8 @@ _MONTH_CODE = {
 
 
 def _third_friday(year: int, month: int) -> datetime:
-    """Return the 3rd Friday of a given month and year."""
-    first = datetime(year, month, 1)
+    """Return the 3rd Friday of a given month and year (UTC)."""
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
     # weekday(): Monday=0, Sunday=6; Friday=4
     days_to_fri = (4 - first.weekday()) % 7
     first_fri = first + timedelta(days=days_to_fri)
@@ -76,6 +76,13 @@ def compute_roll_dates(
           [roll_date, front_contract, back_contract, front_month, back_month]
     """
     rolls = []
+
+    # Normalize dates to UTC for comparison with timezone-aware roll dates
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    if end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+
     current = start_date
 
     equity_symbols = {'ES', 'NQ', 'YM', 'RTY'}
@@ -399,6 +406,12 @@ def build_continuous_series(
         })
 
     adjustments_df = pl.DataFrame(adjustment_rows)
+
+    # Align time unit with the main DataFrame to avoid join schema errors
+    data_dtype = df['ts_event'].dtype
+    adjustments_df = adjustments_df.with_columns(
+        pl.col('ts_event').cast(data_dtype)
+    )
 
     # Apply splice: join cumulative factors and compute continuous_price
     df = df.join(
