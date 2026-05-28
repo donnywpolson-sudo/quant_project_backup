@@ -203,7 +203,7 @@ class PipelineConfig(BaseModel):
 class DataSectionConfig(BaseModel):
     data_glob: str = "data/futures/*.parquet"
     manifest_path: str = "artifacts/manifest.json"
-    baseline_features_file: str = "config/baseline_features.yaml"
+    baseline_features_file: str = "configs/baseline_features.yaml"
     baseline_features_persist_path: str = "artifacts/baseline_feature_matrix.parquet"
     trades_out: str = "artifacts/trades.csv"
     log_dir: str = "logs/"

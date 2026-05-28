@@ -34,6 +34,11 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
     train_years = config.data_years
     wf_years = config.folds
     years = sorted({int(f.stem) for f in files})
+
+    if not years:
+        logger.warning('No years available for walkforward splitting')
+        return []
+
     splits = []
     for i in range(len(years)):
         train_start = i
@@ -44,7 +49,24 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         train_range = years[train_start:train_end]
         test_range = years[train_end:test_end]
         splits.append((train_range, test_range))
-    logger.info(f'Generated {len(splits)} walkforward splits')
+
+    # Fallback: insufficient years for a proper walkforward — use all
+    # available years for training and the last year for testing.
+    if not splits:
+        train_range = years[:train_years] if len(years) >= train_years else years[:]
+        test_range = [years[-1]] if years else []
+        if not train_range:
+            logger.warning('No train range could be formed — no splits generated')
+            return []
+        logger.warning(
+            'Insufficient years for walkforward: need %d (train=%d + test=%d), '
+            'have %d. Falling back to single split: train=%s, test=%s',
+            train_years + wf_years, train_years, wf_years, len(years),
+            train_range, test_range,
+        )
+        splits.append((train_range, test_range))
+
+    logger.info('Generated %d walkforward splits', len(splits))
     return splits
 
 def process_split(train_years: list[int], test_years: list[int], files: list[Path], config: RootConfig) -> None:

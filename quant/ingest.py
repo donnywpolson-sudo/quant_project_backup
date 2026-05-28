@@ -62,8 +62,8 @@ def load_and_clean_data(data_glob: str, cache_path: str=None, cross_asset_symbol
     logger.info(f'Loading three streams from: {data_glob}')
     streams = load_all_streams_chunked(data_glob)
     df_5min = streams['5m']
-    df_1h = streams['1h']
-    df_daily = streams['1d']
+    df_1h = streams.get('1h')
+    df_daily = streams.get('1d')
     print('[INGEST] Aligning HTF streams...', flush=True)
     df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
     validate_memory_and_integrity(df_aligned)
