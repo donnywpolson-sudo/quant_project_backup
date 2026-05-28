@@ -4,46 +4,35 @@ import subprocess
 import logging
 from pathlib import Path
 import shutil
-import yaml
+from utils.config_manager import load_config, RootConfig
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')
 
-def load_config():
-    config_path = Path(__file__).parent / 'config.yaml'
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        logger.info('Loaded config')
-        return config
-    return {}
-
-def get_files(data_dir, config):
+def get_files(data_dir: str, config: RootConfig) -> list[Path]:
     files = list(Path(data_dir).rglob('*.parquet'))
-    start = config.get('start_year')
-    end = config.get('end_year')
-    allowed_markets = set(config.get('markets', []))
+    allowed_markets = set(config.symbols)
     valid = []
     for f in files:
         try:
             year = int(f.stem)
         except Exception:
             continue
-        if start and year < start:
+        if year < config.start_year:
             continue
-        if end and year > end:
+        if year > config.end_year:
             continue
         if allowed_markets and f.parent.name not in allowed_markets:
             continue
         valid.append(f)
     valid = sorted(valid, key=lambda x: (x.parent.name, x.stem))
-    max_files = config.get('max_files')
-    if max_files:
-        valid = valid[:max_files]
+    if config.io.max_files:
+        valid = valid[:config.io.max_files]
     return valid
 
-def generate_walkforward_splits(files, config):
-    train_years = config.get('training_years', 3)
-    wf_years = config.get('walkforward_years', 1)
+def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[tuple[list[int], list[int]]]:
+    train_years = config.data_years
+    wf_years = config.folds
     years = sorted({int(f.stem) for f in files})
     splits = []
     for i in range(len(years)):
@@ -58,7 +47,7 @@ def generate_walkforward_splits(files, config):
     logger.info(f'Generated {len(splits)} walkforward splits')
     return splits
 
-def process_split(train_years, test_years, files):
+def process_split(train_years: list[int], test_years: list[int], files: list[Path], config: RootConfig) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
     if not train_files or not test_files:
@@ -81,7 +70,7 @@ def process_split(train_years, test_years, files):
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('artifacts') / f"manifest_{'_'.join(map(str, train_years))}.json"
-    if config.get('enable_discovery', True):
+    if config.pipeline.enable_discovery:
         logger.info('Running feature discovery on TRAIN data...')
         subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
     else:
@@ -91,7 +80,7 @@ def process_split(train_years, test_years, files):
         placeholder = {
             'version': '1.0',
             'feature_names': [],
-            'selection_seed': config.get('preprocessing', {}).get('seed', 42),
+            'selection_seed': config.preprocessing.seed,
             'selection_date': 'placeholder',
             'discovery_status': 'disabled',
         }
@@ -103,8 +92,8 @@ def process_split(train_years, test_years, files):
         out_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
 if __name__ == '__main__':
-    config = load_config()
-    data_dir = config.get('data_dir', 'data')
+    config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
+    data_dir = 'data'
     files = get_files(data_dir, config)
     if not files:
         logger.warning('No files found after filtering')
@@ -112,5 +101,5 @@ if __name__ == '__main__':
     splits = generate_walkforward_splits(files, config)
     for i, (train, test) in enumerate(splits, 1):
         logger.info(f'[Split {i}] Train({len(train)}): {train} | Test({len(test)}): {test}')
-        process_split(train, test, files)
+        process_split(train, test, files, config)
     logger.info('Done')

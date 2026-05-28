@@ -1,0 +1,13 @@
+# Deployment tier: hard risk limits, env-var secrets
+execution:
+  max_position_size: "${ENV_MAX_POSITION_SIZE}"
+  daily_loss_limit: "${ENV_DAILY_LOSS_LIMIT}"
+
+broker:
+  api_key: "${ENV_BROKER_API_KEY}"
+  api_secret: "${ENV_BROKER_API_SECRET}"
+  endpoint: "${ENV_BROKER_ENDPOINT}"
+
+data:
+  vendor_api_key: "${ENV_DATA_API_KEY}"
+  vendor_endpoint: "${ENV_DATA_ENDPOINT}"

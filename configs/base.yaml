@@ -1,0 +1,83 @@
+# ===================================================================
+# BASE CONFIG — shared parameters inherited by all tiers
+# ===================================================================
+symbols:
+  - ES
+  - CL
+  - ZB
+
+time_zone: "America/New_York"
+
+log_level: "INFO"
+
+session:
+  timezone: "America/New_York"
+  session_start_local: "18:00"
+  session_end_local: "16:00"
+  session_break_start_local: "17:00"
+  session_break_end_local: "18:00"
+
+features:
+  resample_frequencies: ["5m"]
+  drop_incomplete_rows: true
+  roll_windows: [5, 10, 20]
+  roll_window_min_rows: 20
+  feature_transforms: ["lags", "ratios", "z_scores"]
+  max_pairwise_interactions: 50
+  max_cross_timeframe_interactions: 0
+  htf_alignment_filter: false
+  vol_median_window: 20
+  vol_smooth_window: 5
+  regime_high_thresh: 0.6
+  regime_low_thresh: 0.4
+  regime_missing_default: 0.0
+
+target:
+  target_5m_horizon: 1
+  target_scale_factor: 100.0
+
+discovery:
+  discovery_window_days: 30
+  extra_trees_params:
+    random_state: 42
+    n_jobs: 1
+    n_estimators: 50
+    max_depth: 4
+    max_features: 0.3
+    bootstrap: false
+  selection_freq_threshold: 0.75
+  sign_consistency_threshold: 0.8
+  cumulative_importance_threshold: 0.95
+  min_selected_features: 5
+  max_selected_features: 50
+
+walkforward:
+  wf_train_days: 30
+  wf_test_days: 1
+  wf_step_days: 10
+  ridge_params:
+    alpha: 1.0
+    solver: "cholesky"
+    fit_intercept: true
+    random_state: 42
+  model_type: "Ridge"
+  probability_smoothing_alpha: 0.0
+  corr_threshold: 0.99
+  wf_parallel_folds: 1
+
+preprocessing:
+  clip_min: -10.0
+  clip_max: 10.0
+  eps: 1.0e-09
+  replace_inf_nan_with: 0.0
+  remove_prediction_bias: false
+  seed: 42
+
+io:
+  row_group_size: 65536
+  max_files: 20
+  skip_completed: true
+
+pipeline:
+  enable_discovery: true
+  enable_expansion: true
