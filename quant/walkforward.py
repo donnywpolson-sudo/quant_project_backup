@@ -1,7 +1,7 @@
 import logging
 import json
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -16,6 +16,9 @@ from quant.features.variance_filter import remove_constant_features
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from quant.regime.hmm_filter import HMMRegimeFilter
 
 def safe_clip(X, min_val=-10.0, max_val=10.0):
     return np.clip(X, min_val, max_val)
