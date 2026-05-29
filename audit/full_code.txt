@@ -276,31 +276,55 @@ quant_project_backup/
                 backtest_results.parquet
             2024_split_1/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_2/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_3/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_4/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_5/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_6/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
         ES/
             2024/
                 backtest_results.parquet
             2024_split_1/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_2/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_3/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_4/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_5/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_6/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
         train_2024/
             CL_2024.parquet
             ES_2024.parquet
@@ -334,16 +358,28 @@ quant_project_backup/
                 backtest_results.parquet
             2024_split_1/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_2/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_3/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_4/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_5/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
             2024_split_6/
                 backtest_results.parquet
+                backtest_results_hmm.parquet
+                hmm_validation_report.json
     quant/
         align.py
         cli.py
@@ -922,10 +958,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
-    kw = {'check': True, 'env': env}
+    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE}
     if not _VERBOSE:
         kw['stdout'] = subprocess.DEVNULL
-        kw['stderr'] = subprocess.PIPE
     if config.pipeline.enable_discovery:
         subprocess.run([sys.executable, '-m', 'quant.cli', 'discover',
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
@@ -948,7 +983,33 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                '--manifest', str(manifest_path), '--out', str(out_dir)]
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
-        subprocess.run(cmd, **kw)
+        try:
+            subprocess.run(cmd, **kw)
+        except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
+            err_lines = stderr_text.strip().split('\n')
+            print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
+            for line in err_lines[-3:]:
+                print(f'  > {line}')
+            logger.warning(
+                'run-hmm failed for %s split=%d (rc=%d)',
+                symbol, split_idx, e.returncode,
+            )
+            # Safe fallback: retry with plain run (no HMM)
+            logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
+            cmd_fb = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+                       '--manifest', str(manifest_path), '--out', str(out_dir)]
+            if test_start and test_end:
+                cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+            try:
+                subprocess.run(cmd_fb, **kw)
+            except subprocess.CalledProcessError as e2:
+                stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
+                err2_lines = stderr2.strip().split('\n')
+                print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
+                for line in err2_lines[-3:]:
+                    print(f'  > {line}')
+                logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results_hmm.parquet'
         if not bt_path.exists():
@@ -2305,7 +2366,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:09:52.055746Z",
+    "selection_date": "2026-05-29T13:38:25.336280Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2317,7 +2378,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:10:13.429256Z",
+    "selection_date": "2026-05-29T13:39:42.419359Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2329,7 +2390,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:10:35.035923Z",
+    "selection_date": "2026-05-29T13:40:54.290417Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2341,7 +2402,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:10:56.185528Z",
+    "selection_date": "2026-05-29T13:41:51.818905Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2353,7 +2414,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:11:17.316372Z",
+    "selection_date": "2026-05-29T13:43:03.427689Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2365,7 +2426,7 @@ risk:
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-29T13:11:40.814478Z",
+    "selection_date": "2026-05-29T13:44:04.242230Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }
@@ -2373,12 +2434,12 @@ risk:
 
 --- START OF FILE: output\aggregated\all_markets.json ---
 {
-  "total_pnl": 130669.921875,
-  "total_return_percent": 13066992.1875,
-  "sharpe_annualized": 1.526,
-  "sortino_annualized": 1.7,
-  "calmar_ratio": 3.519,
-  "max_drawdown": -89241.976562,
+  "total_pnl": 133439.71875,
+  "total_return_percent": 13343971.875,
+  "sharpe_annualized": 1.559,
+  "sortino_annualized": 1.737,
+  "calmar_ratio": 3.593,
+  "max_drawdown": -89241.851562,
   "win_rate": 0.0,
   "profit_factor": 0.0,
   "avg_win": 0.0,
@@ -2403,25 +2464,25 @@ risk:
 
 --- START OF FILE: output\aggregated\CL_metrics.json ---
 {
-  "total_pnl": 49352.53125,
-  "total_return_percent": 4935253.125,
-  "sharpe_annualized": 1.048,
-  "sortino_annualized": 1.289,
-  "calmar_ratio": 1.343,
-  "max_drawdown": -83072.054688,
-  "win_rate": 0.4796,
-  "profit_factor": 1.0164,
-  "avg_win": 419.80081177,
-  "avg_loss": -421.53713989,
-  "ratio_avg_win_loss": 0.996,
-  "number_of_trades": 15477,
+  "total_pnl": 52122.320312,
+  "total_return_percent": 5212232.0312,
+  "sharpe_annualized": 1.107,
+  "sortino_annualized": 1.361,
+  "calmar_ratio": 1.458,
+  "max_drawdown": -80795.265625,
+  "win_rate": 0.4797,
+  "profit_factor": 1.0184,
+  "avg_win": 420.17114258,
+  "avg_loss": -421.19851685,
+  "ratio_avg_win_loss": 0.998,
+  "number_of_trades": 15489,
   "avg_holding_bars": 2.0,
-  "turnover": 0.1696,
+  "turnover": 0.1729,
   "spearman_ic": 0.0122,
   "spearman_ic_pvalue": 0.032781,
   "benchmark_sharpe": 3.168,
   "benchmark_max_drawdown": -0.082784,
-  "correlation_with_benchmark": 0.6167,
+  "correlation_with_benchmark": 0.6149,
   "market": "CL",
   "num_years": 7,
   "total_rows": 30777,
@@ -2449,113 +2510,113 @@ risk:
       "year": "2024"
     },
     {
-      "total_pnl": -11229.324219,
-      "total_return_percent": -1122932.4219,
-      "sharpe_annualized": -11.766,
-      "sortino_annualized": -15.103,
-      "calmar_ratio": -80.044,
-      "max_drawdown": -16344.042969,
-      "win_rate": 0.4664,
-      "profit_factor": 0.8093,
-      "avg_win": 420.77520752,
-      "avg_loss": -507.71981812,
-      "ratio_avg_win_loss": 0.829,
+      "total_pnl": -10746.672852,
+      "total_return_percent": -1074667.2852,
+      "sharpe_annualized": -11.206,
+      "sortino_annualized": -14.454,
+      "calmar_ratio": -77.806,
+      "max_drawdown": -16091.570312,
+      "win_rate": 0.4624,
+      "profit_factor": 0.8066,
+      "avg_win": 426.16903687,
+      "avg_loss": -507.71984863,
+      "ratio_avg_win_loss": 0.839,
       "number_of_trades": 271,
       "avg_holding_bars": 2.1,
-      "turnover": 0.1916,
+      "turnover": 0.2117,
       "spearman_ic": -0.0814,
       "spearman_ic_pvalue": 0.047054,
       "benchmark_sharpe": -2.649,
       "benchmark_max_drawdown": -0.016113,
-      "correlation_with_benchmark": 0.5434,
+      "correlation_with_benchmark": 0.5464,
       "year": "2024_split_1"
     },
     {
-      "total_pnl": 15104.667969,
-      "total_return_percent": 1510466.7969,
-      "sharpe_annualized": 10.95,
-      "sortino_annualized": 14.53,
-      "calmar_ratio": 83.937,
-      "max_drawdown": -14304.019531,
-      "win_rate": 0.499,
-      "profit_factor": 1.1692,
-      "avg_win": 438.10083008,
+      "total_pnl": 16283.992188,
+      "total_return_percent": 1628399.2188,
+      "sharpe_annualized": 11.549,
+      "sortino_annualized": 15.664,
+      "calmar_ratio": 90.491,
+      "max_drawdown": -14304.023438,
+      "win_rate": 0.4979,
+      "profit_factor": 1.1502,
+      "avg_win": 432.78067017,
       "avg_loss": -413.88143921,
-      "ratio_avg_win_loss": 1.059,
+      "ratio_avg_win_loss": 1.046,
       "number_of_trades": 491,
       "avg_holding_bars": 1.7,
-      "turnover": 0.2137,
+      "turnover": 0.233,
       "spearman_ic": 0.0172,
       "spearman_ic_pvalue": 0.611269,
       "benchmark_sharpe": 19.042,
       "benchmark_max_drawdown": -0.008964,
-      "correlation_with_benchmark": 0.6628,
+      "correlation_with_benchmark": 0.6481,
       "year": "2024_split_2"
     },
     {
-      "total_pnl": -31007.205078,
-      "total_return_percent": -3100720.5078,
-      "sharpe_annualized": -23.601,
-      "sortino_annualized": -25.851,
-      "calmar_ratio": -75.442,
-      "max_drawdown": -32670.138672,
-      "win_rate": 0.4524,
-      "profit_factor": 0.7278,
-      "avg_win": 348.6852417,
-      "avg_loss": -431.00463867,
-      "ratio_avg_win_loss": 0.809,
+      "total_pnl": -28730.447266,
+      "total_return_percent": -2873044.7266,
+      "sharpe_annualized": -21.881,
+      "sortino_annualized": -24.138,
+      "calmar_ratio": -75.139,
+      "max_drawdown": -30393.376953,
+      "win_rate": 0.4567,
+      "profit_factor": 0.7744,
+      "avg_win": 352.75662231,
+      "avg_loss": -417.70782471,
+      "ratio_avg_win_loss": 0.845,
       "number_of_trades": 519,
       "avg_holding_bars": 1.5,
-      "turnover": 0.1894,
+      "turnover": 0.2342,
       "spearman_ic": 0.0091,
       "spearman_ic_pvalue": 0.789121,
       "benchmark_sharpe": -6.937,
       "benchmark_max_drawdown": -0.029626,
-      "correlation_with_benchmark": 0.5004,
+      "correlation_with_benchmark": 0.4394,
       "year": "2024_split_3"
     },
     {
-      "total_pnl": 12925.821289,
-      "total_return_percent": 1292582.1289,
-      "sharpe_annualized": 11.162,
-      "sortino_annualized": 16.979,
-      "calmar_ratio": 102.623,
+      "total_pnl": 11430.28418,
+      "total_return_percent": 1143028.418,
+      "sharpe_annualized": 10.188,
+      "sortino_annualized": 15.015,
+      "calmar_ratio": 90.75,
       "max_drawdown": -11303.676758,
-      "win_rate": 0.4744,
-      "profit_factor": 1.1533,
-      "avg_win": 388.26300049,
-      "avg_loss": -339.47824097,
-      "ratio_avg_win_loss": 1.144,
+      "win_rate": 0.4753,
+      "profit_factor": 1.1479,
+      "avg_win": 382.05743408,
+      "avg_loss": -337.01922607,
+      "ratio_avg_win_loss": 1.134,
       "number_of_trades": 511,
       "avg_holding_bars": 1.5,
-      "turnover": 0.203,
+      "turnover": 0.2118,
       "spearman_ic": 0.0117,
       "spearman_ic_pvalue": 0.744505,
       "benchmark_sharpe": 16.434,
       "benchmark_max_drawdown": -0.011617,
-      "correlation_with_benchmark": 0.6709,
+      "correlation_with_benchmark": 0.695,
       "year": "2024_split_4"
     },
     {
-      "total_pnl": 14640.070312,
-      "total_return_percent": 1464007.0312,
-      "sharpe_annualized": 13.237,
-      "sortino_annualized": 14.834,
-      "calmar_ratio": 120.823,
-      "max_drawdown": -11688.703125,
-      "win_rate": 0.5191,
-      "profit_factor": 1.1953,
-      "avg_win": 379.00039673,
-      "avg_loss": -389.5980835,
-      "ratio_avg_win_loss": 0.973,
+      "total_pnl": 14966.670898,
+      "total_return_percent": 1496667.0898,
+      "sharpe_annualized": 13.52,
+      "sortino_annualized": 15.165,
+      "calmar_ratio": 128.265,
+      "max_drawdown": -11256.224609,
+      "win_rate": 0.5204,
+      "profit_factor": 1.201,
+      "avg_win": 380.47329712,
+      "avg_loss": -391.74200439,
+      "ratio_avg_win_loss": 0.971,
       "number_of_trades": 450,
       "avg_holding_bars": 1.5,
-      "turnover": 0.2265,
+      "turnover": 0.2632,
       "spearman_ic": -0.1358,
       "spearman_ic_pvalue": 0.000258,
       "benchmark_sharpe": 22.046,
       "benchmark_max_drawdown": -0.012169,
-      "correlation_with_benchmark": 0.6935,
+      "correlation_with_benchmark": 0.6864,
       "year": "2024_split_5"
     },
     {
@@ -2990,29 +3051,1061 @@ risk:
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_1\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_1\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_1\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -14.9945,
+    "annualized_sortino": -19.7994,
+    "max_drawdown": -32095.672012,
+    "calmar_ratio": -52.5748,
+    "total_return_percent": -2663891.061,
+    "win_rate": 0.4459,
+    "profit_factor": 0.7867,
+    "number_of_trades": 518,
+    "avg_trade_pnl": -51.35057969,
+    "turnover": 0.1878,
+    "volatility_annualized": 112536.447619
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -7.8698,
+    "annualized_sortino": -7.6705,
+    "max_drawdown": -13265.513638,
+    "calmar_ratio": -46.0024,
+    "total_return_percent": -963379.0421,
+    "win_rate": 0.4351,
+    "profit_factor": 0.8267,
+    "number_of_trades": 239,
+    "avg_trade_pnl": -38.08162597,
+    "turnover": 0.1702,
+    "volatility_annualized": 77542.880572
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": -14.9945,
+    "filtered_sharpe": -7.8698,
+    "sharpe_difference": 7.1247,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 600,
+      "pct_time": 54.64,
+      "total_pnl": -13727.764637,
+      "avg_pnl_per_bar": -22.87960773,
+      "sharpe_contribution": -19.9237
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 366,
+      "pct_time": 33.33,
+      "total_pnl": -356.931244,
+      "avg_pnl_per_bar": -0.97522198,
+      "sharpe_contribution": -3.2732
+    },
+    "HighVol_Expansion": {
+      "bars": 132,
+      "pct_time": 12.02,
+      "total_pnl": 4450.90546,
+      "avg_pnl_per_bar": 33.71898076,
+      "sharpe_contribution": 16.7394
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+7.1247). Calmar improved from -52.5748 to -46.0024. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 244,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_1\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_2\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_2\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 4.1914,
+    "annualized_sortino": 5.5966,
+    "max_drawdown": -14304.02985,
+    "calmar_ratio": 33.8614,
+    "total_return_percent": 958235.3779,
+    "win_rate": 0.4906,
+    "profit_factor": 1.0392,
+    "number_of_trades": 799,
+    "avg_trade_pnl": 7.85662669,
+    "turnover": 0.2068,
+    "volatility_annualized": 115558.349384
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 10.109,
+    "annualized_sortino": 10.0231,
+    "max_drawdown": -9807.448608,
+    "calmar_ratio": 92.2714,
+    "total_return_percent": 1790325.238,
+    "win_rate": 0.5179,
+    "profit_factor": 1.1461,
+    "number_of_trades": 504,
+    "avg_trade_pnl": 26.89804643,
+    "turnover": 0.1461,
+    "volatility_annualized": 89519.250409
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": 4.1914,
+    "filtered_sharpe": 10.109,
+    "sharpe_difference": 5.9175,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 36,
+      "pct_time": 2.62,
+      "total_pnl": -986.536079,
+      "avg_pnl_per_bar": -27.40377998,
+      "sharpe_contribution": -15.5291
+    },
+    "LowVol_Range": {
+      "bars": 672,
+      "pct_time": 48.84,
+      "total_pnl": -1137.497025,
+      "avg_pnl_per_bar": -1.69270391,
+      "sharpe_contribution": -15.9087
+    },
+    "HighVol_Correction": {
+      "bars": 156,
+      "pct_time": 11.34,
+      "total_pnl": 999.984741,
+      "avg_pnl_per_bar": 6.4101586,
+      "sharpe_contribution": 21.1831
+    },
+    "HighVol_Expansion": {
+      "bars": 512,
+      "pct_time": 37.21,
+      "total_pnl": 19027.300743,
+      "avg_pnl_per_bar": 37.16269676,
+      "sharpe_contribution": 18.1855
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+5.9175). Calmar improved from 33.8614 to 92.2714. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 291,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_2\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_3\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_3\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_3\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -11.7268,
+    "annualized_sortino": -14.1883,
+    "max_drawdown": -31245.765554,
+    "calmar_ratio": -39.9738,
+    "total_return_percent": -2471015.1102,
+    "win_rate": 0.4544,
+    "profit_factor": 0.8804,
+    "number_of_trades": 812,
+    "avg_trade_pnl": -23.8538168,
+    "turnover": 0.2438,
+    "volatility_annualized": 106509.413328
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -8.5667,
+    "annualized_sortino": -6.8309,
+    "max_drawdown": -15329.837753,
+    "calmar_ratio": -35.3483,
+    "total_return_percent": -1072048.9046,
+    "win_rate": 0.4061,
+    "profit_factor": 0.8174,
+    "number_of_trades": 293,
+    "avg_trade_pnl": -35.25650612,
+    "turnover": 0.1857,
+    "volatility_annualized": 63254.466927
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": -11.7268,
+    "filtered_sharpe": -8.5667,
+    "sharpe_difference": 3.1601,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 411,
+      "pct_time": 29.87,
+      "total_pnl": 26.236351,
+      "avg_pnl_per_bar": 0.0638354,
+      "sharpe_contribution": 0.1078
+    },
+    "LowVol_Range": {
+      "bars": 167,
+      "pct_time": 12.14,
+      "total_pnl": 81.738892,
+      "avg_pnl_per_bar": 0.48945444,
+      "sharpe_contribution": 20.4692
+    },
+    "HighVol_Correction": {
+      "bars": 472,
+      "pct_time": 34.3,
+      "total_pnl": 1949.486664,
+      "avg_pnl_per_bar": 4.13026836,
+      "sharpe_contribution": 7.2381
+    },
+    "HighVol_Expansion": {
+      "bars": 326,
+      "pct_time": 23.69,
+      "total_pnl": -12777.950953,
+      "avg_pnl_per_bar": -39.19616857,
+      "sharpe_contribution": -24.5047
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+3.1601). Calmar improved from -39.9738 to -35.3483. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 289,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_3\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_4\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_4\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 0.3107,
+    "annualized_sortino": 0.3819,
+    "max_drawdown": -12153.84926,
+    "calmar_ratio": 2.7363,
+    "total_return_percent": 61012.4687,
+    "win_rate": 0.4791,
+    "profit_factor": 1.0174,
+    "number_of_trades": 812,
+    "avg_trade_pnl": 3.07776913,
+    "turnover": 0.2186,
+    "volatility_annualized": 107020.395347
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 8.4653,
+    "annualized_sortino": 9.7164,
+    "max_drawdown": -6601.6982,
+    "calmar_ratio": 108.217,
+    "total_return_percent": 1310666.3027,
+    "win_rate": 0.4852,
+    "profit_factor": 1.1697,
+    "number_of_trades": 542,
+    "avg_trade_pnl": 26.34663615,
+    "turnover": 0.2367,
+    "volatility_annualized": 84393.837767
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": 0.3107,
+    "filtered_sharpe": 8.4653,
+    "sharpe_difference": 8.1545,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 326,
+      "pct_time": 25.55,
+      "total_pnl": 1482.811279,
+      "avg_pnl_per_bar": 4.54850086,
+      "sharpe_contribution": 7.1577
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 292,
+      "pct_time": 22.88,
+      "total_pnl": -269.064796,
+      "avg_pnl_per_bar": -0.92145478,
+      "sharpe_contribution": -2.0339
+    },
+    "HighVol_Expansion": {
+      "bars": 658,
+      "pct_time": 51.57,
+      "total_pnl": 11892.916544,
+      "avg_pnl_per_bar": 18.07434125,
+      "sharpe_contribution": 11.2919
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+8.1545). Calmar improved from 2.7363 to 108.2170. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 280,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_4\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_5\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_5\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_5\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 12.4396,
+    "annualized_sortino": 15.8894,
+    "max_drawdown": -11256.218121,
+    "calmar_ratio": 120.3686,
+    "total_return_percent": 2380494.8124,
+    "win_rate": 0.5071,
+    "profit_factor": 1.1766,
+    "number_of_trades": 773,
+    "avg_trade_pnl": 30.47614965,
+    "turnover": 0.2818,
+    "volatility_annualized": 108918.079304
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 13.8376,
+    "annualized_sortino": 11.5532,
+    "max_drawdown": -8499.751476,
+    "calmar_ratio": 128.0177,
+    "total_return_percent": 1911779.6413,
+    "win_rate": 0.5219,
+    "profit_factor": 1.2857,
+    "number_of_trades": 433,
+    "avg_trade_pnl": 44.74626512,
+    "turnover": 0.1859,
+    "volatility_annualized": 78634.698705
+  },
+  "psr_result": {
+    "psr": 0.9645,
+    "base_sharpe": 12.4396,
+    "filtered_sharpe": 13.8376,
+    "sharpe_difference": 1.3981,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.035463
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 328,
+      "pct_time": 26.84,
+      "total_pnl": 13124.412712,
+      "avg_pnl_per_bar": 40.01345339,
+      "sharpe_contribution": 26.0503
+    },
+    "LowVol_Range": {
+      "bars": 376,
+      "pct_time": 30.77,
+      "total_pnl": 1824.377808,
+      "avg_pnl_per_bar": 4.85206864,
+      "sharpe_contribution": 16.4329
+    },
+    "HighVol_Correction": {
+      "bars": 373,
+      "pct_time": 30.52,
+      "total_pnl": -764.025574,
+      "avg_pnl_per_bar": -2.04832593,
+      "sharpe_contribution": -15.8293
+    },
+    "HighVol_Expansion": {
+      "bars": 145,
+      "pct_time": 11.87,
+      "total_pnl": 4933.031467,
+      "avg_pnl_per_bar": 34.02090667,
+      "sharpe_contribution": 15.0261
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=0.9645, \u0394SR=+1.3981). Calmar improved from 120.3686 to 128.0177. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 272,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_5\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_6\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_6\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\CL\2024_split_6\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 7.6298,
+    "annualized_sortino": 9.4872,
+    "max_drawdown": -13889.06192,
+    "calmar_ratio": 58.0726,
+    "total_return_percent": 1421756.707,
+    "win_rate": 0.5087,
+    "profit_factor": 1.1102,
+    "number_of_trades": 692,
+    "avg_trade_pnl": 19.67860034,
+    "turnover": 0.2239,
+    "volatility_annualized": 105714.381494
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 14.1119,
+    "annualized_sortino": 14.8269,
+    "max_drawdown": -8118.333931,
+    "calmar_ratio": 161.8711,
+    "total_return_percent": 2316418.7065,
+    "win_rate": 0.5295,
+    "profit_factor": 1.2825,
+    "number_of_trades": 474,
+    "avg_trade_pnl": 47.94940844,
+    "turnover": 0.2385,
+    "volatility_annualized": 93121.798697
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": 7.6298,
+    "filtered_sharpe": 14.1119,
+    "sharpe_difference": 6.4821,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 597,
+      "pct_time": 48.69,
+      "total_pnl": -979.893131,
+      "avg_pnl_per_bar": -1.64136203,
+      "sharpe_contribution": -1.5215
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 240,
+      "pct_time": 19.58,
+      "total_pnl": -2041.656067,
+      "avg_pnl_per_bar": -8.50690028,
+      "sharpe_contribution": -13.9972
+    },
+    "HighVol_Expansion": {
+      "bars": 389,
+      "pct_time": 31.73,
+      "total_pnl": 26185.736263,
+      "avg_pnl_per_bar": 67.31551739,
+      "sharpe_contribution": 35.547
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+6.4821). Calmar improved from 58.0726 to 161.8711. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 266,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\CL\2024_split_6\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024\backtest_results.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_1\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_1\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_1\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -3.3153,
+    "annualized_sortino": -3.3145,
+    "max_drawdown": -17595.478985,
+    "calmar_ratio": -29.4743,
+    "total_return_percent": -938026.1688,
+    "win_rate": 0.4799,
+    "profit_factor": 0.96,
+    "number_of_trades": 798,
+    "avg_trade_pnl": -10.42058999,
+    "turnover": 0.0356,
+    "volatility_annualized": 156430.839136
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 1.7601,
+    "annualized_sortino": 1.3641,
+    "max_drawdown": -15335.654385,
+    "calmar_ratio": 14.6882,
+    "total_return_percent": 407418.2606,
+    "win_rate": 0.4966,
+    "profit_factor": 1.0299,
+    "number_of_trades": 439,
+    "avg_trade_pnl": 8.68907839,
+    "turnover": 0.0526,
+    "volatility_annualized": 127974.586622
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": -3.3153,
+    "filtered_sharpe": 1.7601,
+    "sharpe_difference": 5.0754,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 466,
+      "pct_time": 37.04,
+      "total_pnl": -115.140835,
+      "avg_pnl_per_bar": -0.24708334,
+      "sharpe_contribution": -0.0912
+    },
+    "LowVol_Range": {
+      "bars": 533,
+      "pct_time": 42.37,
+      "total_pnl": -1900.40448,
+      "avg_pnl_per_bar": -3.56548683,
+      "sharpe_contribution": -15.4658
+    },
+    "HighVol_Correction": {
+      "bars": 187,
+      "pct_time": 14.86,
+      "total_pnl": -1499.590942,
+      "avg_pnl_per_bar": -8.0192029,
+      "sharpe_contribution": -19.3374
+    },
+    "HighVol_Expansion": {
+      "bars": 72,
+      "pct_time": 5.72,
+      "total_pnl": 7589.318863,
+      "avg_pnl_per_bar": 105.40720643,
+      "sharpe_contribution": 32.2347
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+5.0754). Calmar improved from -29.4743 to 14.6882. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 284,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_1\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_2\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_2\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 7.2338,
+    "annualized_sortino": 7.1395,
+    "max_drawdown": -8679.832596,
+    "calmar_ratio": 82.5946,
+    "total_return_percent": 1535817.4267,
+    "win_rate": 0.4969,
+    "profit_factor": 1.1156,
+    "number_of_trades": 962,
+    "avg_trade_pnl": 16.15022573,
+    "turnover": 0.0245,
+    "volatility_annualized": 99105.447442
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 9.3401,
+    "annualized_sortino": 5.8772,
+    "max_drawdown": -8679.832596,
+    "calmar_ratio": 89.0763,
+    "total_return_percent": 1656342.416,
+    "win_rate": 0.5298,
+    "profit_factor": 1.2147,
+    "number_of_trades": 436,
+    "avg_trade_pnl": 34.41930845,
+    "turnover": 0.0385,
+    "volatility_annualized": 82779.371617
+  },
+  "psr_result": {
+    "psr": 0.9908,
+    "base_sharpe": 7.2338,
+    "filtered_sharpe": 9.3401,
+    "sharpe_difference": 2.1063,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.009211
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 326,
+      "pct_time": 21.88,
+      "total_pnl": 14167.209427,
+      "avg_pnl_per_bar": 43.45769763,
+      "sharpe_contribution": 46.2966
+    },
+    "LowVol_Range": {
+      "bars": 674,
+      "pct_time": 45.23,
+      "total_pnl": -44.65625,
+      "avg_pnl_per_bar": -0.06625556,
+      "sharpe_contribution": -1.6022
+    },
+    "HighVol_Correction": {
+      "bars": 167,
+      "pct_time": 11.21,
+      "total_pnl": -886.682007,
+      "avg_pnl_per_bar": -5.30947309,
+      "sharpe_contribution": -20.4692
+    },
+    "HighVol_Expansion": {
+      "bars": 323,
+      "pct_time": 21.68,
+      "total_pnl": 3327.55299,
+      "avg_pnl_per_bar": 10.30202164,
+      "sharpe_contribution": 4.3589
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=0.9908, \u0394SR=+2.1063). Calmar improved from 82.5946 to 89.0763. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 312,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_2\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_3\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_3\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_3\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 0.5901,
+    "annualized_sortino": 0.6124,
+    "max_drawdown": -11070.346794,
+    "calmar_ratio": 5.6302,
+    "total_return_percent": 132986.0878,
+    "win_rate": 0.4856,
+    "profit_factor": 1.0096,
+    "number_of_trades": 939,
+    "avg_trade_pnl": 1.46717877,
+    "turnover": 0.0295,
+    "volatility_annualized": 105621.321548
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 1.9065,
+    "annualized_sortino": 1.188,
+    "max_drawdown": -5223.788445,
+    "calmar_ratio": 18.2362,
+    "total_return_percent": 203256.9153,
+    "win_rate": 0.4629,
+    "profit_factor": 1.046,
+    "number_of_trades": 283,
+    "avg_trade_pnl": 6.5530251,
+    "turnover": 0.0423,
+    "volatility_annualized": 49966.409078
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": 0.5901,
+    "filtered_sharpe": 1.9065,
+    "sharpe_difference": 1.3164,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 96,
+      "pct_time": 6.47,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "LowVol_Range": {
+      "bars": 706,
+      "pct_time": 47.57,
+      "total_pnl": 1384.50457,
+      "avg_pnl_per_bar": 1.96105463,
+      "sharpe_contribution": 11.1218
+    },
+    "HighVol_Correction": {
+      "bars": 274,
+      "pct_time": 18.46,
+      "total_pnl": 351.031158,
+      "avg_pnl_per_bar": 1.28113561,
+      "sharpe_contribution": 15.9615
+    },
+    "HighVol_Expansion": {
+      "bars": 408,
+      "pct_time": 27.49,
+      "total_pnl": 297.033424,
+      "avg_pnl_per_bar": 0.7280231,
+      "sharpe_contribution": 0.5398
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+1.3164). Calmar improved from 5.6302 to 18.2362. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 310,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_3\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_4\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_4\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -5.6274,
+    "annualized_sortino": -5.6228,
+    "max_drawdown": -20202.288631,
+    "calmar_ratio": -26.7713,
+    "total_return_percent": -1052880.9334,
+    "win_rate": 0.4918,
+    "profit_factor": 0.9239,
+    "number_of_trades": 917,
+    "avg_trade_pnl": -11.5745279,
+    "turnover": 0.0233,
+    "volatility_annualized": 96108.842956
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 2.6942,
+    "annualized_sortino": 1.7912,
+    "max_drawdown": -10598.053185,
+    "calmar_ratio": 15.9998,
+    "total_return_percent": 330103.8105,
+    "win_rate": 0.5139,
+    "profit_factor": 1.0501,
+    "number_of_trades": 397,
+    "avg_trade_pnl": 7.13155205,
+    "turnover": 0.0204,
+    "volatility_annualized": 62937.119352
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": -5.6274,
+    "filtered_sharpe": 2.6942,
+    "sharpe_difference": 8.3216,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 358,
+      "pct_time": 26.44,
+      "total_pnl": 8562.134499,
+      "avg_pnl_per_bar": 23.91657681,
+      "sharpe_contribution": 26.5371
+    },
+    "LowVol_Range": {
+      "bars": 499,
+      "pct_time": 36.85,
+      "total_pnl": 338.481049,
+      "avg_pnl_per_bar": 0.67831873,
+      "sharpe_contribution": 11.8179
+    },
+    "HighVol_Correction": {
+      "bars": 353,
+      "pct_time": 26.07,
+      "total_pnl": -85.165482,
+      "avg_pnl_per_bar": -0.24126199,
+      "sharpe_contribution": -3.2546
+    },
+    "HighVol_Expansion": {
+      "bars": 144,
+      "pct_time": 10.64,
+      "total_pnl": -5514.411961,
+      "avg_pnl_per_bar": -38.2945275,
+      "sharpe_contribution": -16.1618
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+8.3216). Calmar improved from -26.7713 to 15.9998. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 295,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_4\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_5\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_5\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_5\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -1.4242,
+    "annualized_sortino": -1.4771,
+    "max_drawdown": -20204.711452,
+    "calmar_ratio": -8.9763,
+    "total_return_percent": -359846.7484,
+    "win_rate": 0.4836,
+    "profit_factor": 0.9814,
+    "number_of_trades": 945,
+    "avg_trade_pnl": -3.62925972,
+    "turnover": 0.0252,
+    "volatility_annualized": 127347.396232
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 5.1044,
+    "annualized_sortino": 3.3427,
+    "max_drawdown": -6015.922821,
+    "calmar_ratio": 57.064,
+    "total_return_percent": 681135.5549,
+    "win_rate": 0.4752,
+    "profit_factor": 1.1134,
+    "number_of_trades": 242,
+    "avg_trade_pnl": 23.33238818,
+    "turnover": 0.0392,
+    "volatility_annualized": 67254.672782
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": -1.4242,
+    "filtered_sharpe": 5.1044,
+    "sharpe_difference": 6.5285,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 144,
+      "pct_time": 10.43,
+      "total_pnl": -1934.89381,
+      "avg_pnl_per_bar": -13.43676257,
+      "sharpe_contribution": -8.5125
+    },
+    "LowVol_Range": {
+      "bars": 738,
+      "pct_time": 53.48,
+      "total_pnl": 207.245773,
+      "avg_pnl_per_bar": 0.28082083,
+      "sharpe_contribution": 5.6271
+    },
+    "HighVol_Correction": {
+      "bars": 275,
+      "pct_time": 19.93,
+      "total_pnl": 794.219208,
+      "avg_pnl_per_bar": 2.88806985,
+      "sharpe_contribution": 22.2827
+    },
+    "HighVol_Expansion": {
+      "bars": 223,
+      "pct_time": 16.16,
+      "total_pnl": 7744.784378,
+      "avg_pnl_per_bar": 34.72997479,
+      "sharpe_contribution": 17.0866
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+6.5285). Calmar improved from -8.9763 to 57.0640. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 298,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_5\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_6\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_6\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ES\2024_split_6\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 14.362,
+    "annualized_sortino": 17.3933,
+    "max_drawdown": -17982.21423,
+    "calmar_ratio": 91.4946,
+    "total_return_percent": 3150890.7768,
+    "win_rate": 0.5006,
+    "profit_factor": 1.2442,
+    "number_of_trades": 897,
+    "avg_trade_pnl": 35.21810549,
+    "turnover": 0.0256,
+    "volatility_annualized": 114557.490834
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 11.751,
+    "annualized_sortino": 12.5586,
+    "max_drawdown": -14028.372936,
+    "calmar_ratio": 81.669,
+    "total_return_percent": 2194114.0339,
+    "win_rate": 0.4922,
+    "profit_factor": 1.2599,
+    "number_of_trades": 640,
+    "avg_trade_pnl": 34.76469817,
+    "turnover": 0.0352,
+    "volatility_annualized": 97496.536623
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": 14.362,
+    "filtered_sharpe": 11.751,
+    "sharpe_difference": -2.611,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 665,
+      "pct_time": 49.92,
+      "total_pnl": 288.626926,
+      "avg_pnl_per_bar": 0.43402545,
+      "sharpe_contribution": 0.4278
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 318,
+      "pct_time": 23.87,
+      "total_pnl": -1241.123596,
+      "avg_pnl_per_bar": -3.90290439,
+      "sharpe_contribution": -20.6321
+    },
+    "HighVol_Expansion": {
+      "bars": 349,
+      "pct_time": 26.2,
+      "total_pnl": 22893.637009,
+      "avg_pnl_per_bar": 65.59781378,
+      "sharpe_contribution": 28.0772
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "REJECT: HMM regime filter DEGRADES performance (\u0394SR=-2.6110). The trade-gating logic is removing profitable trades. Review regime mapping and allowed/prohibited regime lists. Consider more granular state definitions.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 292,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ES\2024_split_6\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\CL_2024.parquet ---
 
@@ -3060,15 +4153,531 @@ risk:
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_1\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_1\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_1\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 5.0201,
+    "annualized_sortino": 6.2821,
+    "max_drawdown": -10733.682098,
+    "calmar_ratio": 46.1832,
+    "total_return_percent": 588712.7747,
+    "win_rate": 0.382,
+    "profit_factor": 1.0807,
+    "number_of_trades": 411,
+    "avg_trade_pnl": 14.31062707,
+    "turnover": 0.091,
+    "volatility_annualized": 98746.295603
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 5.0201,
+    "annualized_sortino": 6.2821,
+    "max_drawdown": -10733.682098,
+    "calmar_ratio": 46.1832,
+    "total_return_percent": 588712.7747,
+    "win_rate": 0.382,
+    "profit_factor": 1.0807,
+    "number_of_trades": 411,
+    "avg_trade_pnl": 14.31062707,
+    "turnover": 0.091,
+    "volatility_annualized": 98746.295603
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": 5.0201,
+    "filtered_sharpe": 5.0201,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 826,
+      "pct_time": 100.0,
+      "total_pnl": 5887.127747,
+      "avg_pnl_per_bar": 7.1272733,
+      "sharpe_contribution": 5.0201
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 183,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_1\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_2\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_2\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 1.3321,
+    "annualized_sortino": 1.6962,
+    "max_drawdown": -13399.324615,
+    "calmar_ratio": 8.4683,
+    "total_return_percent": 170647.5662,
+    "win_rate": 0.43,
+    "profit_factor": 1.0196,
+    "number_of_trades": 493,
+    "avg_trade_pnl": 3.45937556,
+    "turnover": 0.0817,
+    "volatility_annualized": 85181.856164
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 1.3321,
+    "annualized_sortino": 1.6962,
+    "max_drawdown": -13399.324615,
+    "calmar_ratio": 8.4683,
+    "total_return_percent": 170647.5662,
+    "win_rate": 0.43,
+    "profit_factor": 1.0196,
+    "number_of_trades": 493,
+    "avg_trade_pnl": 3.45937556,
+    "turnover": 0.0817,
+    "volatility_annualized": 85181.856164
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": 1.3321,
+    "filtered_sharpe": 1.3321,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 1046,
+      "pct_time": 100.0,
+      "total_pnl": 1706.475662,
+      "avg_pnl_per_bar": 1.63142989,
+      "sharpe_contribution": 1.3321
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 216,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_2\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_3\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_3\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_3\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -1.6154,
+    "annualized_sortino": -1.5239,
+    "max_drawdown": -10801.938492,
+    "calmar_ratio": -14.2693,
+    "total_return_percent": -210532.1228,
+    "win_rate": 0.3699,
+    "profit_factor": 0.9816,
+    "number_of_trades": 419,
+    "avg_trade_pnl": -3.3776063,
+    "turnover": 0.0882,
+    "volatility_annualized": 95418.677941
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -1.6154,
+    "annualized_sortino": -1.5239,
+    "max_drawdown": -10801.938492,
+    "calmar_ratio": -14.2693,
+    "total_return_percent": -210532.1228,
+    "win_rate": 0.3699,
+    "profit_factor": 0.9816,
+    "number_of_trades": 419,
+    "avg_trade_pnl": -3.3776063,
+    "turnover": 0.0882,
+    "volatility_annualized": 95418.677941
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": -1.6154,
+    "filtered_sharpe": -1.6154,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 950,
+      "pct_time": 100.0,
+      "total_pnl": -2105.321228,
+      "avg_pnl_per_bar": -2.21612761,
+      "sharpe_contribution": -1.6154
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 181,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_3\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_4\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_4\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -10.5161,
+    "annualized_sortino": -15.4252,
+    "max_drawdown": -20693.817902,
+    "calmar_ratio": -44.9669,
+    "total_return_percent": -1287060.4767,
+    "win_rate": 0.3654,
+    "profit_factor": 0.8553,
+    "number_of_trades": 468,
+    "avg_trade_pnl": -28.62449881,
+    "turnover": 0.0802,
+    "volatility_annualized": 88486.508567
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -10.5161,
+    "annualized_sortino": -15.4252,
+    "max_drawdown": -20693.817902,
+    "calmar_ratio": -44.9669,
+    "total_return_percent": -1287060.4767,
+    "win_rate": 0.3654,
+    "profit_factor": 0.8553,
+    "number_of_trades": 468,
+    "avg_trade_pnl": -28.62449881,
+    "turnover": 0.0802,
+    "volatility_annualized": 88486.508567
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": -10.5161,
+    "filtered_sharpe": -10.5161,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 962,
+      "pct_time": 100.0,
+      "total_pnl": -12870.604767,
+      "avg_pnl_per_bar": -13.37900703,
+      "sharpe_contribution": -10.5161
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 197,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_4\hmm_validation_report.json ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_5\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_5\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_5\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 11.8537,
+    "annualized_sortino": 16.2237,
+    "max_drawdown": -9142.861786,
+    "calmar_ratio": 144.6634,
+    "total_return_percent": 1951095.3094,
+    "win_rate": 0.4367,
+    "profit_factor": 1.1698,
+    "number_of_trades": 545,
+    "avg_trade_pnl": 33.36663796,
+    "turnover": 0.0897,
+    "volatility_annualized": 111580.422681
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 11.8537,
+    "annualized_sortino": 16.2237,
+    "max_drawdown": -9142.861786,
+    "calmar_ratio": 144.6634,
+    "total_return_percent": 1951095.3094,
+    "win_rate": 0.4367,
+    "profit_factor": 1.1698,
+    "number_of_trades": 545,
+    "avg_trade_pnl": 33.36663796,
+    "turnover": 0.0897,
+    "volatility_annualized": 111580.422681
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": 11.8537,
+    "filtered_sharpe": 11.8537,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 1026,
+      "pct_time": 100.0,
+      "total_pnl": 19510.953094,
+      "avg_pnl_per_bar": 19.01652348,
+      "sharpe_contribution": 11.8537
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 214,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_5\hmm_validation_report.json ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_6\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_6\backtest_results_hmm.parquet ---
+
+--- START OF FILE: output\ZB\2024_split_6\hmm_validation_report.json ---
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -1.0115,
+    "annualized_sortino": -1.5914,
+    "max_drawdown": -11438.717468,
+    "calmar_ratio": -7.2596,
+    "total_return_percent": -103156.0577,
+    "win_rate": 0.3853,
+    "profit_factor": 0.976,
+    "number_of_trades": 327,
+    "avg_trade_pnl": -4.81705001,
+    "turnover": 0.0938,
+    "volatility_annualized": 82094.690078
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -1.0115,
+    "annualized_sortino": -1.5914,
+    "max_drawdown": -11438.717468,
+    "calmar_ratio": -7.2596,
+    "total_return_percent": -103156.0577,
+    "win_rate": 0.3853,
+    "profit_factor": 0.976,
+    "number_of_trades": 327,
+    "avg_trade_pnl": -4.81705001,
+    "turnover": 0.0938,
+    "volatility_annualized": 82094.690078
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": -1.0115,
+    "filtered_sharpe": -1.0115,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 864,
+      "pct_time": 100.0,
+      "total_pnl": -1031.560577,
+      "avg_pnl_per_bar": -1.19393585,
+      "sharpe_contribution": -1.0115
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 186,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}
+--- END OF FILE: output\ZB\2024_split_6\hmm_validation_report.json ---
 
 --- START OF FILE: quant\align.py ---
 """
