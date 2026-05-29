@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 import shutil
 import polars as pl
+import numpy as np
 from quant.config_manager import load_config, RootConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -209,6 +210,88 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
     logger.info('Generated %d walkforward splits', len(splits))
     return splits
 
+
+_CONTRACT_MULTIPLIERS = {
+    'CL': 1000, 'ES': 50, 'NQ': 20, 'RTY': 50,
+    'GC': 100, 'SI': 5000, 'HG': 25000,
+    'ZB': 1000, 'ZN': 1000, 'ZF': 1000, 'ZT': 2000, 'ZC': 50, 'NG': 10000,
+    '6E': 125000, '6J': 12500000, '6B': 62500, 'YM': 5,
+}
+_MIN_ROWS = 1000
+_MIN_PRICE = {'CL': 0.1, 'ES': 500, 'NQ': 1000, 'GC': 500, 'SI': 5, 'HG': 1,
+              'ZB': 50, 'ZN': 50, 'ZC': 50, 'NG': 0.5}
+_MAX_PRICE = {'CL': 200, 'ES': 10000, 'NQ': 30000, 'GC': 5000, 'SI': 60, 'HG': 10,
+              'ZB': 250, 'ZN': 250, 'ZC': 20, 'NG': 30}
+
+
+def _validate_symbol_data(f: Path, config) -> bool:
+    symbol = f.parent.name
+    try:
+        df = pl.read_parquet(f)
+    except Exception as e:
+        logger.error('[SAFETY] Cannot read %s: %s -- SKIPPING', f, e)
+        return False
+    if df.height < _MIN_ROWS:
+        logger.error('[SAFETY] %s: %d rows < %d minimum -- SKIPPING', symbol, df.height, _MIN_ROWS)
+        return False
+    if 'ts_event' not in df.columns:
+        logger.error('[SAFETY] %s: missing ts_event column -- SKIPPING', symbol)
+        return False
+    if 'close' not in df.columns:
+        logger.error('[SAFETY] %s: missing close column -- SKIPPING', symbol)
+        return False
+    null_ts = df['ts_event'].null_count()
+    if null_ts > 0:
+        logger.error('[SAFETY] %s: %d null ts_event values -- SKIPPING', symbol, null_ts)
+        return False
+    close_mean = df['close'].mean()
+    lo, hi = _MIN_PRICE.get(symbol, 0), _MAX_PRICE.get(symbol, 1e9)
+    if close_mean < lo or close_mean > hi:
+        logger.error('[SAFETY] %s: close mean %.2f outside [%.2f, %.2f] -- SKIPPING',
+                     symbol, close_mean, lo, hi)
+        return False
+    ts_min = df['ts_event'].min()
+    ts_max = df['ts_event'].max()
+    if ts_min is None or ts_max is None:
+        logger.error('[SAFETY] %s: null ts_event range -- SKIPPING', symbol)
+        return False
+    available_days = (ts_max - ts_min).days
+    wf_window = getattr(config, 'WF_TRAIN_DAYS', 30) + getattr(config, 'WF_TEST_DAYS', 1)
+    if available_days < wf_window * 2:
+        logger.warning('[SAFETY] %s: %d days available < %d required (2x window) -- may have few folds',
+                       symbol, available_days, wf_window * 2)
+    logger.info('[SAFETY] %s: OK rows=%d close=%.2f range=%s->%s days=%d',
+                symbol, df.height, close_mean, ts_min.date(), ts_max.date(), available_days)
+    return True
+
+
+def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
+    bt_path = out_dir / 'backtest_results.parquet'
+    if not bt_path.exists():
+        raise RuntimeError('BACKTEST FAILURE: %s no output at %s' % (symbol, bt_path))
+    try:
+        df = pl.read_parquet(bt_path)
+    except Exception as e:
+        raise RuntimeError('BACKTEST FAILURE: %s cannot read %s: %s' % (symbol, bt_path, e))
+    if df.height == 0:
+        raise RuntimeError('BACKTEST FAILURE: %s empty output at %s' % (symbol, bt_path))
+    if 'pnl' not in df.columns:
+        raise RuntimeError('BACKTEST FAILURE: %s missing pnl column at %s' % (symbol, bt_path))
+    pnl_sum = df['pnl'].sum()
+    pnl_mean = df['pnl'].mean()
+    pnl_std = df['pnl'].std()
+    multiplier = _CONTRACT_MULTIPLIERS.get(symbol, 1)
+    notional = df['close'].mean() * multiplier if 'close' in df.columns else 0
+    logger.info('[VALIDATE] %s: rows=%d pnl_sum=%.2f pnl_mean=%.6f pnl_std=%.4f notional=%.0f mult=%d',
+                symbol, df.height, pnl_sum, pnl_mean, pnl_std, notional, multiplier)
+    if abs(pnl_std) < 0.0001 and multiplier > 1:
+        raise RuntimeError(
+            'BACKTEST FAILURE: %s pnl std %.8f is zero-scale '
+            '(multiplier=%d, notional=%.0f) -- PnL not in USD futures' %
+            (symbol, pnl_std, multiplier, notional)
+        )
+
+
 def process_split(train_years: list[int], test_years: list[int], files: list[Path], config: RootConfig) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
@@ -250,11 +333,15 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         with open(manifest_path, 'w') as f:
             json.dump(placeholder, f)
     for f in test_files:
+        symbol = f.parent.name
         logger.info(f'Evaluating TEST file: {f}')
+        if not _validate_symbol_data(f, config):
+            continue
         out_dir = Path('output') / f.parent.name / f.stem
         out_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
         time.sleep(0.2)  # NTFS lock release
+        _validate_backtest_output(out_dir, symbol)
 if __name__ == '__main__':
     config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
     data_dir = 'data'

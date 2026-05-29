@@ -46,12 +46,33 @@ def stabilize_targets(y):
     return np.clip(y, -1.0, 1.0)
 
 def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.DataFrame, feature_cols: list) -> np.ndarray:
+    # ---- Pre-ML contract validation ----
+    if train_X.height == 0:
+        raise RuntimeError('CONTRACT FAIL: train_X has 0 rows')
+    if len(train_y) == 0:
+        raise RuntimeError('CONTRACT FAIL: train_y has 0 rows')
+    if train_X.height != len(train_y):
+        raise RuntimeError('CONTRACT FAIL: X/y mismatch (X=%d, y=%d)' % (train_X.height, len(train_y)))
+    if test_X.height == 0:
+        raise RuntimeError('CONTRACT FAIL: test_X has 0 rows')
+    if 'ts_event' not in train_X.columns or 'ts_event' not in test_X.columns:
+        raise RuntimeError('CONTRACT FAIL: ts_event missing from X frame')
+
     feature_cols = remove_constant_features(train_X.select(feature_cols), feature_cols, threshold=1e-08)
     if len(feature_cols) == 0:
         return np.full(len(test_X), 0.5, dtype=np.float32)
     X_train = train_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y_train = stabilize_targets(train_y.to_numpy().astype(np.float32).ravel())
     X_test = test_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+
+    # Validate y after stabilization
+    if np.any(np.isnan(y_train)):
+        raise RuntimeError('SKLEARN FAIL: NaN in y_train after stabilize_targets')
+    if np.any(np.isinf(y_train)):
+        raise RuntimeError('SKLEARN FAIL: inf in y_train after stabilize_targets')
+    if X_train.shape[0] != len(y_train):
+        raise RuntimeError('CONTRACT FAIL: X/y shape mismatch (X=%s, y=%s)' % (X_train.shape, y_train.shape))
+
     X_train = safe_replace(safe_clip(X_train, -8.0, 8.0))
     X_test = safe_replace(safe_clip(X_test, -8.0, 8.0))
     X_train, X_test = robust_scale(X_train, X_test)
@@ -115,6 +136,19 @@ def exclude_warmup(df: pl.DataFrame, burn_in_bars: int) -> pl.DataFrame:
 
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     import psutil
+    if train_X.height == 0 or len(train_y) == 0:
+        raise RuntimeError(
+            'CONTRACT FAIL: empty fold (train_X=%d, train_y=%d)' %
+            (train_X.height, len(train_y))
+        )
+    if train_X.height != len(train_y):
+        raise RuntimeError(
+            'CONTRACT FAIL: fold X/y mismatch (X=%d, y=%d)' %
+            (train_X.height, len(train_y))
+        )
+    if test_original.height == 0:
+        raise RuntimeError('CONTRACT FAIL: empty test fold')
+
     rss_bytes = psutil.Process().memory_info().rss
     rss_stop = getattr(config, 'RSS_STOP_BYTES', int(13.5 * 1024**3))
     if rss_bytes > rss_stop:
@@ -337,96 +371,58 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
     return df_result
 
 
-def _build_ts_folds(
-    df: pl.DataFrame,
-    train_days: int,
-    test_days: int,
-    step_days: int,
-) -> list:
+def _build_bar_folds(df: pl.DataFrame) -> list:
     """
-    Build walkforward fold index ranges from ts_event timestamps only.
+    Build walkforward fold index ranges from bar count (not calendar days).
 
-    Pure ts_event-based slicing with vectorized overlap detection.
-    No file names, no year parsing, no session_id counting.
+    Bar-based folding avoids calendar-day assumptions that break on intraday
+    futures data with session gaps, weekends, and variable trading hours.
 
-    Args:
-        df: DataFrame sorted by ts_event (monotonic, ascending).
-        train_days: Training window in calendar days.
-        test_days: Test window in calendar days.
-        step_days: Step stride in calendar days.
+    Fold sizing:
+        train = max(MIN_TRAIN_BARS, int(bars * TRAIN_FRACTION))
+        test  = max(MIN_TEST_BARS,  int(bars * TEST_FRACTION))
+        step  = test
 
     Returns:
         list of (i0, i1, i2, i3) index tuples:
             train = df[i0:i1], test = df[i2:i3]
             train < test strictly in time (i1 <= i2).
     """
-    if df.height == 0:
-        return []
+    MIN_TRAIN_BARS = 1000
+    MIN_TEST_BARS = 200
+    TRAIN_FRACTION = 0.6
+    TEST_FRACTION = 0.2
 
-    # Extract timestamps once — single sort, single epoch extraction
-    ts_ns = df['ts_event'].to_numpy().view('int64')  # nanoseconds since epoch
-    ts_min = ts_ns[0]
-    ts_max = ts_ns[-1]
-    day_ns = np.int64(86_400_000_000_000)  # one day in nanoseconds
-    total_days = int((ts_max - ts_min) // day_ns) + 1
-    window_days = train_days + test_days
-
-    if total_days < window_days:
-        logger.warning(
-            'Insufficient date range (%d days) for walkforward window '
-            '(%d days). Folding requires at least window_days of data. '
-            'No folds generated.',
-            total_days, window_days,
+    bars = df.height
+    if bars < MIN_TRAIN_BARS + MIN_TEST_BARS:
+        raise RuntimeError(
+            'BACKTEST FAILURE: %d bars insufficient for walkforward '
+            '(need at least %d train + %d test)' %
+            (bars, MIN_TRAIN_BARS, MIN_TEST_BARS)
         )
-        return []
 
-    # ---- Vectorized searchsorted for window boundaries ----
-    # Build candidate window start timestamps (one per step)
-    n_steps = max(1, (total_days - window_days) // step_days + 1)
-    if n_steps > 10_000:
-        n_steps = 10_000  # safety cap
-    step_offsets = np.arange(n_steps, dtype='int64') * np.int64(step_days) * day_ns
-    cursor_ts = np.int64(ts_min) + step_offsets
+    train_size = max(MIN_TRAIN_BARS, int(bars * TRAIN_FRACTION))
+    test_size = max(MIN_TEST_BARS, int(bars * TEST_FRACTION))
+    step_size = test_size
+    window_size = train_size + test_size
 
-    # For each cursor, find the index where ts_ns >= target timestamp
-    # np.searchsorted is vectorized and O(n log n)
-    cursor_idx = np.searchsorted(ts_ns, cursor_ts, side='left')
-    cursor_idx = np.clip(cursor_idx, 0, df.height - 1)
+    folds = []
+    start = 0
+    while start + window_size <= bars:
+        folds.append((start, start + train_size, start + train_size, start + window_size))
+        start += step_size
 
-    # train_end := cursor + train_days
-    train_end_ts = cursor_ts + np.int64(train_days) * day_ns
-    train_end_idx = np.searchsorted(ts_ns, train_end_ts, side='left')
-    train_end_idx = np.clip(train_end_idx, 0, df.height)
-
-    # test_start := train_end (strict causality: train < test)
-    test_start_idx = train_end_idx.copy()
-
-    # test_end := test_start + test_days
-    test_end_ts = cursor_ts + np.int64(window_days) * day_ns
-    test_end_idx = np.searchsorted(ts_ns, test_end_ts, side='left')
-    test_end_idx = np.clip(test_end_idx, 0, df.height)
-
-    # ---- Filter: keep only folds where both train and test are non-empty ----
-    valid = (train_end_idx > cursor_idx) & (test_end_idx > test_start_idx)
-
-    # ---- Deterministic: produce identical output for identical timestamps ----
-    indices = np.column_stack([
-        cursor_idx, train_end_idx, test_start_idx, test_end_idx,
-    ])[valid]
-
-    # Convert to list of int tuples (exact same output shape as tuple)
-    folds = [(int(i0), int(i1), int(i2), int(i3))
-             for i0, i1, i2, i3 in indices]
-
-    if not folds and df.height > 0:
-        logger.warning(
-            'Total days (%d) >= window_days (%d) but no individual '
-            'window satisfied the non-empty train+test constraint '
-            '(likely sparse data). No folds generated.',
-            total_days, window_days,
+    if len(folds) < 2:
+        raise RuntimeError(
+            'BACKTEST FAILURE: only %d folds from %d bars '
+            '(train=%d, test=%d, step=%d) -- need at least 2' %
+            (len(folds), bars, train_size, test_size, step_size)
         )
-        return []
 
+    logger.info(
+        'Bar-based folds: %d folds from %d bars (train=%d, test=%d, step=%d)',
+        len(folds), bars, train_size, test_size, step_size,
+    )
     return folds
 
 
@@ -466,18 +462,15 @@ def run_walkforward_with_hmm(
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
-    # Empty-input guard — no data to walk forward over
+    # Empty-input guard -- no data to walk forward over
     if df.height == 0:
-        logger.warning('Empty input DataFrame for HMM walkforward — returning empty result.')
+        logger.warning('Empty input DataFrame for HMM walkforward -- returning empty result.')
         return pl.DataFrame(), {}
 
-    # Time-based fold builder — pure ts_event slicing, no session_id counting
     df = df.sort('ts_event')
-    fold_indices = _build_ts_folds(
-        df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
-    )
+    fold_indices = _build_bar_folds(df)
     if not fold_indices:
-        logger.warning('No folds produced from ts_event windows for HMM — returning empty result.')
+        logger.warning('No folds produced for HMM -- returning empty result.')
         return pl.DataFrame(), {}
 
     # Correlation pruning on first training window
@@ -564,18 +557,19 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
 
-    # Empty-input guard — no data to walk forward over
+    # Empty-input guard -- no data to walk forward over
     if df.height == 0:
-        logger.warning('Empty input DataFrame — returning empty result.')
-        return pl.DataFrame()
+        raise RuntimeError(
+            'BACKTEST FAILURE: 0 rows after feature generation (target=%s)' % target_col
+        )
 
-    # Time-based fold builder — pure ts_event slicing, no session_id counting
     df = df.sort('ts_event')
-    fold_indices = _build_ts_folds(
-        df, config.WF_TRAIN_DAYS, config.WF_TEST_DAYS, config.WF_STEP_DAYS
-    )
+    logger.info('[ML-CONTRACT] X=%d rows, y=%d rows, features=%d', df.height, df.height, len(feature_cols))
+    logger.info('[ML-CONTRACT] ts_event range: %s -> %s',
+                df['ts_event'].min(), df['ts_event'].max())
+    fold_indices = _build_bar_folds(df)
     if not fold_indices:
-        logger.warning('No folds produced from ts_event windows — returning empty result.')
+        logger.warning('No folds produced -- returning empty result.')
         return pl.DataFrame()
 
     # Correlation pruning on first training window

@@ -11,6 +11,24 @@ import hashlib
 from quant.io.atomic import atomic_write_parquet, atomic_write_json
 
 
+def _check_target_contract(y, X, target_col):
+    """Hard target validation — must pass before walkforward."""
+    if len(y) == 0:
+        raise RuntimeError('TARGET FAIL: y is empty after pruning')
+    y_nan = y.null_count()
+    if y_nan > 0:
+        raise RuntimeError(
+            'TARGET FAIL: %d NaN values in y (%s) after drop_incomplete_target' %
+            (y_nan, target_col)
+        )
+    if X.height != len(y):
+        raise RuntimeError(
+            'TARGET FAIL: X/y misalignment (X=%d, y=%d)' % (X.height, len(y))
+        )
+    print('[TARGET] %s: rows=%d NaN=0 aligned=X(%d)' %
+          (target_col, len(y), X.height), flush=True)
+
+
 def _diag(df, stage):
     """Pipeline diagnostic — row count and ts_event span at each stage."""
     print(f'[DIAG] stage={stage} rows={df.height} cols={len(df.columns)}', flush=True)
@@ -118,12 +136,16 @@ def main():
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
-            print('[CLI] Discovery disabled — skipping manifest pruning, using baseline features only.', flush=True)
+            print('[CLI] Discovery disabled -- skipping manifest pruning, using baseline features only.', flush=True)
             df_pruned = df_features
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
         X = df_pruned.drop(target_col)
+
+        # ---- Target contract enforcement (run path) ----
+        _check_target_contract(y, X, target_col)
+
         _exclude = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime', 'date', 'benchmark_pnl'}
         _exclude |= {c for c in X.columns if c.startswith('target_')}
         _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
@@ -175,6 +197,10 @@ def main():
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
         X = df_pruned.drop(target_col)
+
+        # ---- Target contract enforcement (hmm path) ----
+        _check_target_contract(y, X, target_col)
+
         _exclude = {
             'ts_event', 'open', 'high', 'low', 'close', 'volume',
             'session_id', 'regime', 'date', 'benchmark_pnl',
