@@ -241,30 +241,108 @@ quant_project_backup/
             2026.parquet
     output/
         manifest_2024.json
+        manifest_2024_split_1.json
+        manifest_2024_split_2.json
+        manifest_2024_split_3.json
+        manifest_2024_split_4.json
+        manifest_2024_split_5.json
+        manifest_2024_split_6.json
         aggregated/
             all_markets.json
             CL_metrics.json
             ES_metrics.json
             ZB_metrics.json
         cache/
+            aligned_data_1f3125ac3f33.parquet
+            aligned_data_54cdaed9f5f3.parquet
             aligned_data_793df9163439.parquet
             aligned_data_7f22063a0371.parquet
+            aligned_data_91458bddb8e3.parquet
+            aligned_data_91d9b764b17c.parquet
+            aligned_data_a00b4c0cb7a7.parquet
             aligned_data_aa6e302e19f5.parquet
+            aligned_data_b3c47247939f.parquet
+            full_feature_matrix_1f3125ac3f33.parquet
+            full_feature_matrix_54cdaed9f5f3.parquet
             full_feature_matrix_793df9163439.parquet
             full_feature_matrix_7f22063a0371.parquet
+            full_feature_matrix_91458bddb8e3.parquet
+            full_feature_matrix_91d9b764b17c.parquet
+            full_feature_matrix_a00b4c0cb7a7.parquet
             full_feature_matrix_aa6e302e19f5.parquet
+            full_feature_matrix_b3c47247939f.parquet
         CL/
             2024/
                 backtest_results.parquet
+            2024_split_1/
+                backtest_results.parquet
+            2024_split_2/
+                backtest_results.parquet
+            2024_split_3/
+                backtest_results.parquet
+            2024_split_4/
+                backtest_results.parquet
+            2024_split_5/
+                backtest_results.parquet
+            2024_split_6/
+                backtest_results.parquet
         ES/
             2024/
+                backtest_results.parquet
+            2024_split_1/
+                backtest_results.parquet
+            2024_split_2/
+                backtest_results.parquet
+            2024_split_3/
+                backtest_results.parquet
+            2024_split_4/
+                backtest_results.parquet
+            2024_split_5/
+                backtest_results.parquet
+            2024_split_6/
                 backtest_results.parquet
         train_2024/
             CL_2024.parquet
             ES_2024.parquet
             ZB_2024.parquet
+        train_2024_split_1/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
+        train_2024_split_2/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
+        train_2024_split_3/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
+        train_2024_split_4/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
+        train_2024_split_5/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
+        train_2024_split_6/
+            CL_2024.parquet
+            ES_2024.parquet
+            ZB_2024.parquet
         ZB/
             2024/
+                backtest_results.parquet
+            2024_split_1/
+                backtest_results.parquet
+            2024_split_2/
+                backtest_results.parquet
+            2024_split_3/
+                backtest_results.parquet
+            2024_split_4/
+                backtest_results.parquet
+            2024_split_5/
+                backtest_results.parquet
+            2024_split_6/
                 backtest_results.parquet
     quant/
         align.py
@@ -462,6 +540,7 @@ import sys
 import subprocess
 import logging
 import time
+import json
 from pathlib import Path
 import shutil
 import polars as pl
@@ -595,7 +674,8 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             ]
 
             if train_files and test_files:
-                splits.append((sorted(train_files), sorted(test_files)))
+                splits.append((sorted(train_files), sorted(test_files),
+                               test_start, test_end))
                 logger.debug(
                     'Split %d: train=%s→%s (%d files) | test=%s→%s (%d files)',
                     len(splits),
@@ -773,8 +853,40 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
         )
 
 
+def load_all_splits_for_year(year: int) -> list:
+    """Load per-split manifests and backtest results for a given year."""
+    import glob as _glob
+    manifests = sorted(_glob.glob(f'output/manifest_{year}_split_*.json'))
+    if not manifests:
+        fallback = Path(f'output/manifest_{year}.json')
+        if fallback.exists():
+            manifests = [str(fallback)]
+    summaries = []
+    for mpath in manifests:
+        with open(mpath, 'r', encoding='utf-8') as f:
+            mf = json.load(f)
+        out_path = mf.get('output_path')
+        if out_path and Path(out_path).exists():
+            try:
+                df = pl.read_parquet(out_path)
+                summaries.append({
+                    'symbol': mf.get('symbol'),
+                    'year': mf.get('year'),
+                    'split_idx': mf.get('split_idx'),
+                    'rows': df.height,
+                })
+            except Exception as e:
+                summaries.append({'symbol': mf.get('symbol'), 'year': mf.get('year'),
+                                  'split_idx': mf.get('split_idx'), 'error': str(e)})
+        else:
+            summaries.append({'symbol': mf.get('symbol'), 'year': mf.get('year'),
+                              'split_idx': mf.get('split_idx'), 'error': 'backtest file missing'})
+    return summaries
+
+
 def process_split(train_years: list[int], test_years: list[int], files: list[Path],
-                  config: RootConfig, split_idx: int, total_splits: int) -> None:
+                  config: RootConfig, split_idx: int, total_splits: int,
+                  test_start=None, test_end=None) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
     if not train_files or not test_files:
@@ -788,7 +900,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             'Consider wf_train_days >= %d for stable bootstrap.',
             wf_train, _MIN_TRAIN_DAYS, _MIN_TRAIN_DAYS
         )
-    train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}"
+    train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}_split_{split_idx}"
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info('Preparing TRAIN dataset for years %s', train_years)
     for f in train_files:
@@ -803,7 +915,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}.json"
+    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
@@ -816,20 +928,24 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
         time.sleep(0.2)
     else:
-        import json
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(manifest_path, 'w') as f:
+        tmp = str(manifest_path) + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump({'version': '1.0', 'feature_names': [], 'selection_seed': config.preprocessing.seed,
                        'selection_date': 'placeholder', 'discovery_status': 'disabled'}, f)
+        os.replace(tmp, str(manifest_path))
     per_symbol = {}
     for f in test_files:
         symbol = f.parent.name
         if not _validate_symbol_data(f, config):
             continue
-        out_dir = Path('output') / symbol / f.stem
+        out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
-                        '--manifest', str(manifest_path), '--out', str(out_dir)], **kw)
+        cmd = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+               '--manifest', str(manifest_path), '--out', str(out_dir)]
+        if test_start and test_end:
+            cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        subprocess.run(cmd, **kw)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results.parquet'
         if bt_path.exists():
@@ -856,8 +972,11 @@ if __name__ == '__main__':
     if not _VERBOSE:
         logging.getLogger().setLevel(logging.WARNING)
         logging.getLogger('quant').setLevel(logging.WARNING)
-    for i, (train, test) in enumerate(splits, 1):
-        process_split(train, test, files, config, i, total)
+    for i, split_data in enumerate(splits, 1):
+        train, test = split_data[0], split_data[1]
+        test_start = split_data[2] if len(split_data) > 2 else None
+        test_end = split_data[3] if len(split_data) > 3 else None
+        process_split(train, test, files, config, i, total, test_start, test_end)
     logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')
 --- END OF FILE: run.py ---
@@ -2166,14 +2285,86 @@ risk:
 }
 --- END OF FILE: output\manifest_2024.json ---
 
+--- START OF FILE: output\manifest_2024_split_1.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:09:52.055746Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_1.json ---
+
+--- START OF FILE: output\manifest_2024_split_2.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:10:13.429256Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_2.json ---
+
+--- START OF FILE: output\manifest_2024_split_3.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:10:35.035923Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_3.json ---
+
+--- START OF FILE: output\manifest_2024_split_4.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:10:56.185528Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_4.json ---
+
+--- START OF FILE: output\manifest_2024_split_5.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:11:17.316372Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_5.json ---
+
+--- START OF FILE: output\manifest_2024_split_6.json ---
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T13:11:40.814478Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
+--- END OF FILE: output\manifest_2024_split_6.json ---
+
 --- START OF FILE: output\aggregated\all_markets.json ---
 {
-  "total_pnl": 74071.773438,
-  "total_return_percent": 7407177.3438,
-  "sharpe_annualized": 1.074,
-  "sortino_annualized": 1.236,
-  "calmar_ratio": 1.912,
-  "max_drawdown": -95870.007812,
+  "total_pnl": 130669.921875,
+  "total_return_percent": 13066992.1875,
+  "sharpe_annualized": 1.526,
+  "sortino_annualized": 1.7,
+  "calmar_ratio": 3.519,
+  "max_drawdown": -89241.976562,
   "win_rate": 0.0,
   "profit_factor": 0.0,
   "avg_win": 0.0,
@@ -2198,28 +2389,28 @@ risk:
 
 --- START OF FILE: output\aggregated\CL_metrics.json ---
 {
-  "total_pnl": 31151.722656,
-  "total_return_percent": 3115172.2656,
-  "sharpe_annualized": 0.779,
-  "sortino_annualized": 0.955,
-  "calmar_ratio": 1.99,
-  "max_drawdown": -41543.171875,
-  "win_rate": 0.4749,
-  "profit_factor": 1.0113,
-  "avg_win": 395.0473938,
-  "avg_loss": -397.39556885,
-  "ratio_avg_win_loss": 0.994,
-  "number_of_trades": 15129,
-  "avg_holding_bars": 1.7,
-  "turnover": 0.1942,
-  "spearman_ic": 0.0095,
-  "spearman_ic_pvalue": 0.122285,
-  "benchmark_sharpe": 2.03,
-  "benchmark_max_drawdown": -0.082491,
-  "correlation_with_benchmark": 0.6161,
+  "total_pnl": 49352.53125,
+  "total_return_percent": 4935253.125,
+  "sharpe_annualized": 1.048,
+  "sortino_annualized": 1.289,
+  "calmar_ratio": 1.343,
+  "max_drawdown": -83072.054688,
+  "win_rate": 0.4796,
+  "profit_factor": 1.0164,
+  "avg_win": 419.80081177,
+  "avg_loss": -421.53713989,
+  "ratio_avg_win_loss": 0.996,
+  "number_of_trades": 15477,
+  "avg_holding_bars": 2.0,
+  "turnover": 0.1696,
+  "spearman_ic": 0.0122,
+  "spearman_ic_pvalue": 0.032781,
+  "benchmark_sharpe": 3.168,
+  "benchmark_max_drawdown": -0.082784,
+  "correlation_with_benchmark": 0.6167,
   "market": "CL",
-  "num_years": 1,
-  "total_rows": 26209,
+  "num_years": 7,
+  "total_rows": 30777,
   "years_breakdown": [
     {
       "total_pnl": 31151.722656,
@@ -2242,6 +2433,138 @@ risk:
       "benchmark_max_drawdown": -0.082491,
       "correlation_with_benchmark": 0.6161,
       "year": "2024"
+    },
+    {
+      "total_pnl": -11229.324219,
+      "total_return_percent": -1122932.4219,
+      "sharpe_annualized": -11.766,
+      "sortino_annualized": -15.103,
+      "calmar_ratio": -80.044,
+      "max_drawdown": -16344.042969,
+      "win_rate": 0.4664,
+      "profit_factor": 0.8093,
+      "avg_win": 420.77520752,
+      "avg_loss": -507.71981812,
+      "ratio_avg_win_loss": 0.829,
+      "number_of_trades": 271,
+      "avg_holding_bars": 2.1,
+      "turnover": 0.1916,
+      "spearman_ic": -0.0814,
+      "spearman_ic_pvalue": 0.047054,
+      "benchmark_sharpe": -2.649,
+      "benchmark_max_drawdown": -0.016113,
+      "correlation_with_benchmark": 0.5434,
+      "year": "2024_split_1"
+    },
+    {
+      "total_pnl": 15104.667969,
+      "total_return_percent": 1510466.7969,
+      "sharpe_annualized": 10.95,
+      "sortino_annualized": 14.53,
+      "calmar_ratio": 83.937,
+      "max_drawdown": -14304.019531,
+      "win_rate": 0.499,
+      "profit_factor": 1.1692,
+      "avg_win": 438.10083008,
+      "avg_loss": -413.88143921,
+      "ratio_avg_win_loss": 1.059,
+      "number_of_trades": 491,
+      "avg_holding_bars": 1.7,
+      "turnover": 0.2137,
+      "spearman_ic": 0.0172,
+      "spearman_ic_pvalue": 0.611269,
+      "benchmark_sharpe": 19.042,
+      "benchmark_max_drawdown": -0.008964,
+      "correlation_with_benchmark": 0.6628,
+      "year": "2024_split_2"
+    },
+    {
+      "total_pnl": -31007.205078,
+      "total_return_percent": -3100720.5078,
+      "sharpe_annualized": -23.601,
+      "sortino_annualized": -25.851,
+      "calmar_ratio": -75.442,
+      "max_drawdown": -32670.138672,
+      "win_rate": 0.4524,
+      "profit_factor": 0.7278,
+      "avg_win": 348.6852417,
+      "avg_loss": -431.00463867,
+      "ratio_avg_win_loss": 0.809,
+      "number_of_trades": 519,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.1894,
+      "spearman_ic": 0.0091,
+      "spearman_ic_pvalue": 0.789121,
+      "benchmark_sharpe": -6.937,
+      "benchmark_max_drawdown": -0.029626,
+      "correlation_with_benchmark": 0.5004,
+      "year": "2024_split_3"
+    },
+    {
+      "total_pnl": 12925.821289,
+      "total_return_percent": 1292582.1289,
+      "sharpe_annualized": 11.162,
+      "sortino_annualized": 16.979,
+      "calmar_ratio": 102.623,
+      "max_drawdown": -11303.676758,
+      "win_rate": 0.4744,
+      "profit_factor": 1.1533,
+      "avg_win": 388.26300049,
+      "avg_loss": -339.47824097,
+      "ratio_avg_win_loss": 1.144,
+      "number_of_trades": 511,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.203,
+      "spearman_ic": 0.0117,
+      "spearman_ic_pvalue": 0.744505,
+      "benchmark_sharpe": 16.434,
+      "benchmark_max_drawdown": -0.011617,
+      "correlation_with_benchmark": 0.6709,
+      "year": "2024_split_4"
+    },
+    {
+      "total_pnl": 14640.070312,
+      "total_return_percent": 1464007.0312,
+      "sharpe_annualized": 13.237,
+      "sortino_annualized": 14.834,
+      "calmar_ratio": 120.823,
+      "max_drawdown": -11688.703125,
+      "win_rate": 0.5191,
+      "profit_factor": 1.1953,
+      "avg_win": 379.00039673,
+      "avg_loss": -389.5980835,
+      "ratio_avg_win_loss": 0.973,
+      "number_of_trades": 450,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.2265,
+      "spearman_ic": -0.1358,
+      "spearman_ic_pvalue": 0.000258,
+      "benchmark_sharpe": 22.046,
+      "benchmark_max_drawdown": -0.012169,
+      "correlation_with_benchmark": 0.6935,
+      "year": "2024_split_5"
+    },
+    {
+      "total_pnl": 17766.787109,
+      "total_return_percent": 1776678.7109,
+      "sharpe_annualized": 15.162,
+      "sortino_annualized": 19.502,
+      "calmar_ratio": 147.625,
+      "max_drawdown": -11545.685547,
+      "win_rate": 0.5119,
+      "profit_factor": 1.2376,
+      "avg_win": 418.38699341,
+      "avg_loss": -401.58218384,
+      "ratio_avg_win_loss": 1.042,
+      "number_of_trades": 423,
+      "avg_holding_bars": 1.7,
+      "turnover": 0.2344,
+      "spearman_ic": 0.0351,
+      "spearman_ic_pvalue": 0.345076,
+      "benchmark_sharpe": 16.085,
+      "benchmark_max_drawdown": -0.010776,
+      "correlation_with_benchmark": 0.7305,
+      "year": "2024_split_6"
     }
   ]
 }
@@ -2249,28 +2572,28 @@ risk:
 
 --- START OF FILE: output\aggregated\ES_metrics.json ---
 {
-  "total_pnl": 76164.039062,
-  "total_return_percent": 7616403.9062,
-  "sharpe_annualized": 1.793,
-  "sortino_annualized": 1.773,
-  "calmar_ratio": 4.055,
-  "max_drawdown": -47219.34375,
-  "win_rate": 0.4839,
-  "profit_factor": 1.0266,
-  "avg_win": 341.95620728,
-  "avg_loss": -356.7350769,
-  "ratio_avg_win_loss": 0.959,
-  "number_of_trades": 17469,
-  "avg_holding_bars": 1.6,
-  "turnover": 0.0252,
-  "spearman_ic": 0.0236,
-  "spearman_ic_pvalue": 8.7e-05,
-  "benchmark_sharpe": 13.705,
+  "total_pnl": 100101.046875,
+  "total_return_percent": 10010104.6875,
+  "sharpe_annualized": 1.928,
+  "sortino_annualized": 1.914,
+  "calmar_ratio": 3.888,
+  "max_drawdown": -54331.398438,
+  "win_rate": 0.4862,
+  "profit_factor": 1.031,
+  "avg_win": 373.36804199,
+  "avg_loss": -384.94354248,
+  "ratio_avg_win_loss": 0.97,
+  "number_of_trades": 18082,
+  "avg_holding_bars": 1.8,
+  "turnover": 0.0223,
+  "spearman_ic": 0.0202,
+  "spearman_ic_pvalue": 0.000247,
+  "benchmark_sharpe": 13.16,
   "benchmark_max_drawdown": -0.04457,
-  "correlation_with_benchmark": 0.5731,
+  "correlation_with_benchmark": 0.5896,
   "market": "ES",
-  "num_years": 1,
-  "total_rows": 27669,
+  "num_years": 7,
+  "total_rows": 32961,
   "years_breakdown": [
     {
       "total_pnl": 76164.039062,
@@ -2293,6 +2616,138 @@ risk:
       "benchmark_max_drawdown": -0.04457,
       "correlation_with_benchmark": 0.5731,
       "year": "2024"
+    },
+    {
+      "total_pnl": -3024.363525,
+      "total_return_percent": -302436.3525,
+      "sharpe_annualized": -1.633,
+      "sortino_annualized": -1.638,
+      "calmar_ratio": -17.078,
+      "max_drawdown": -16271.290039,
+      "win_rate": 0.5,
+      "profit_factor": 0.9767,
+      "avg_win": 561.76947021,
+      "avg_loss": -621.17791748,
+      "ratio_avg_win_loss": 0.904,
+      "number_of_trades": 490,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.0396,
+      "spearman_ic": -0.0018,
+      "spearman_ic_pvalue": 0.959838,
+      "benchmark_sharpe": -1.883,
+      "benchmark_max_drawdown": -0.01446,
+      "correlation_with_benchmark": 0.699,
+      "year": "2024_split_1"
+    },
+    {
+      "total_pnl": 9793.404297,
+      "total_return_percent": 979340.4297,
+      "sharpe_annualized": 6.599,
+      "sortino_annualized": 6.308,
+      "calmar_ratio": 79.348,
+      "max_drawdown": -8679.833984,
+      "win_rate": 0.5032,
+      "profit_factor": 1.1094,
+      "avg_win": 320.9289856,
+      "avg_loss": -334.527771,
+      "ratio_avg_win_loss": 0.959,
+      "number_of_trades": 636,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.0294,
+      "spearman_ic": 0.034,
+      "spearman_ic_pvalue": 0.286202,
+      "benchmark_sharpe": 19.828,
+      "benchmark_max_drawdown": -0.007547,
+      "correlation_with_benchmark": 0.7088,
+      "year": "2024_split_2"
+    },
+    {
+      "total_pnl": -5887.337402,
+      "total_return_percent": -588733.7402,
+      "sharpe_annualized": -5.469,
+      "sortino_annualized": -5.854,
+      "calmar_ratio": -38.224,
+      "max_drawdown": -10897.686523,
+      "win_rate": 0.4828,
+      "profit_factor": 0.9227,
+      "avg_win": 258.36611938,
+      "avg_loss": -289.86349487,
+      "ratio_avg_win_loss": 0.891,
+      "number_of_trades": 613,
+      "avg_holding_bars": 1.5,
+      "turnover": 0.0287,
+      "spearman_ic": -0.0296,
+      "spearman_ic_pvalue": 0.353365,
+      "benchmark_sharpe": 34.791,
+      "benchmark_max_drawdown": -0.008084,
+      "correlation_with_benchmark": 0.388,
+      "year": "2024_split_3"
+    },
+    {
+      "total_pnl": -12122.823242,
+      "total_return_percent": -1212282.3242,
+      "sharpe_annualized": -9.781,
+      "sortino_annualized": -10.518,
+      "calmar_ratio": -59.887,
+      "max_drawdown": -16505.492188,
+      "win_rate": 0.468,
+      "profit_factor": 0.8756,
+      "avg_win": 305.769104,
+      "avg_loss": -346.72958374,
+      "ratio_avg_win_loss": 0.882,
+      "number_of_trades": 596,
+      "avg_holding_bars": 1.4,
+      "turnover": 0.0208,
+      "spearman_ic": 0.0121,
+      "spearman_ic_pvalue": 0.723365,
+      "benchmark_sharpe": 5.072,
+      "benchmark_max_drawdown": -0.010117,
+      "correlation_with_benchmark": 0.422,
+      "year": "2024_split_4"
+    },
+    {
+      "total_pnl": 4176.155273,
+      "total_return_percent": 417615.5273,
+      "sharpe_annualized": 2.353,
+      "sortino_annualized": 2.334,
+      "calmar_ratio": 28.621,
+      "max_drawdown": -11545.361328,
+      "win_rate": 0.505,
+      "profit_factor": 1.0342,
+      "avg_win": 420.84799194,
+      "avg_loss": -457.79067993,
+      "ratio_avg_win_loss": 0.919,
+      "number_of_trades": 609,
+      "avg_holding_bars": 1.3,
+      "turnover": 0.0238,
+      "spearman_ic": -0.0571,
+      "spearman_ic_pvalue": 0.090723,
+      "benchmark_sharpe": -9.432,
+      "benchmark_max_drawdown": -0.015842,
+      "correlation_with_benchmark": 0.6709,
+      "year": "2024_split_5"
+    },
+    {
+      "total_pnl": 31001.974609,
+      "total_return_percent": 3100197.4609,
+      "sharpe_annualized": 19.131,
+      "sortino_annualized": 23.257,
+      "calmar_ratio": 144.296,
+      "max_drawdown": -17982.226562,
+      "win_rate": 0.5209,
+      "profit_factor": 1.3331,
+      "avg_win": 418.28286743,
+      "avg_loss": -379.83023071,
+      "ratio_avg_win_loss": 1.101,
+      "number_of_trades": 577,
+      "avg_holding_bars": 1.4,
+      "turnover": 0.0249,
+      "spearman_ic": -0.0164,
+      "spearman_ic_pvalue": 0.636153,
+      "benchmark_sharpe": 20.265,
+      "benchmark_max_drawdown": -0.009385,
+      "correlation_with_benchmark": 0.7902,
+      "year": "2024_split_6"
     }
   ]
 }
@@ -2300,28 +2755,28 @@ risk:
 
 --- START OF FILE: output\aggregated\ZB_metrics.json ---
 {
-  "total_pnl": -33243.96875,
-  "total_return_percent": -3324396.875,
-  "sharpe_annualized": -1.061,
-  "sortino_annualized": -1.235,
-  "calmar_ratio": -1.651,
-  "max_drawdown": -63874.964844,
-  "win_rate": 0.4003,
-  "profit_factor": 0.9833,
-  "avg_win": 500.10443115,
-  "avg_loss": -527.70141602,
-  "ratio_avg_win_loss": 0.948,
-  "number_of_trades": 10231,
-  "avg_holding_bars": 2.1,
-  "turnover": 0.0828,
-  "spearman_ic": 0.014,
-  "spearman_ic_pvalue": 0.038169,
-  "benchmark_sharpe": 6.299,
-  "benchmark_max_drawdown": -0.047713,
-  "correlation_with_benchmark": 0.6201,
+  "total_pnl": -18783.613281,
+  "total_return_percent": -1878361.3281,
+  "sharpe_annualized": -0.536,
+  "sortino_annualized": -0.629,
+  "calmar_ratio": -0.763,
+  "max_drawdown": -69639.609375,
+  "win_rate": 0.4055,
+  "profit_factor": 0.9909,
+  "avg_win": 525.66064453,
+  "avg_loss": -545.53070068,
+  "ratio_avg_win_loss": 0.964,
+  "number_of_trades": 10382,
+  "avg_holding_bars": 2.4,
+  "turnover": 0.0753,
+  "spearman_ic": 0.0199,
+  "spearman_ic_pvalue": 0.00177,
+  "benchmark_sharpe": 5.364,
+  "benchmark_max_drawdown": -0.055168,
+  "correlation_with_benchmark": 0.6217,
   "market": "ZB",
-  "num_years": 1,
-  "total_rows": 21929,
+  "num_years": 7,
+  "total_rows": 24597,
   "years_breakdown": [
     {
       "total_pnl": -33243.96875,
@@ -2344,26 +2799,206 @@ risk:
       "benchmark_max_drawdown": -0.047713,
       "correlation_with_benchmark": 0.6201,
       "year": "2024"
+    },
+    {
+      "total_pnl": 9089.330078,
+      "total_return_percent": 908933.0078,
+      "sharpe_annualized": 20.143,
+      "sortino_annualized": 32.461,
+      "calmar_ratio": 411.788,
+      "max_drawdown": -4723.728516,
+      "win_rate": 0.396,
+      "profit_factor": 1.3474,
+      "avg_win": 584.72576904,
+      "avg_loss": -441.43313599,
+      "ratio_avg_win_loss": 1.325,
+      "number_of_trades": 151,
+      "avg_holding_bars": 2.0,
+      "turnover": 0.1113,
+      "spearman_ic": NaN,
+      "spearman_ic_pvalue": NaN,
+      "benchmark_sharpe": 0.779,
+      "benchmark_max_drawdown": -0.008411,
+      "correlation_with_benchmark": 0.6866,
+      "year": "2024_split_1"
+    },
+    {
+      "total_pnl": -1619.153564,
+      "total_return_percent": -161915.3564,
+      "sharpe_annualized": -2.276,
+      "sortino_annualized": -2.847,
+      "calmar_ratio": -23.211,
+      "max_drawdown": -8902.511719,
+      "win_rate": 0.4077,
+      "profit_factor": 0.9516,
+      "avg_win": 439.96429443,
+      "avg_loss": -471.21447754,
+      "ratio_avg_win_loss": 0.934,
+      "number_of_trades": 263,
+      "avg_holding_bars": 1.9,
+      "turnover": 0.0963,
+      "spearman_ic": -0.0215,
+      "spearman_ic_pvalue": 0.617483,
+      "benchmark_sharpe": -1.545,
+      "benchmark_max_drawdown": -0.008018,
+      "correlation_with_benchmark": 0.5622,
+      "year": "2024_split_2"
+    },
+    {
+      "total_pnl": 1274.96228,
+      "total_return_percent": 127496.228,
+      "sharpe_annualized": 1.929,
+      "sortino_annualized": 1.825,
+      "calmar_ratio": 27.113,
+      "max_drawdown": -7284.09082,
+      "win_rate": 0.399,
+      "profit_factor": 1.0253,
+      "avg_win": 525.63446045,
+      "avg_loss": -506.27166748,
+      "ratio_avg_win_loss": 1.038,
+      "number_of_trades": 200,
+      "avg_holding_bars": 2.0,
+      "turnover": 0.0805,
+      "spearman_ic": NaN,
+      "spearman_ic_pvalue": NaN,
+      "benchmark_sharpe": -6.563,
+      "benchmark_max_drawdown": -0.011798,
+      "correlation_with_benchmark": 0.692,
+      "year": "2024_split_3"
+    },
+    {
+      "total_pnl": -9187.338867,
+      "total_return_percent": -918733.8867,
+      "sharpe_annualized": -14.587,
+      "sortino_annualized": -20.819,
+      "calmar_ratio": -86.377,
+      "max_drawdown": -16047.24707,
+      "win_rate": 0.379,
+      "profit_factor": 0.809,
+      "avg_win": 482.52667236,
+      "avg_loss": -568.99346924,
+      "ratio_avg_win_loss": 0.848,
+      "number_of_trades": 220,
+      "avg_holding_bars": 1.8,
+      "turnover": 0.0567,
+      "spearman_ic": NaN,
+      "spearman_ic_pvalue": NaN,
+      "benchmark_sharpe": 4.342,
+      "benchmark_max_drawdown": -0.009459,
+      "correlation_with_benchmark": 0.6405,
+      "year": "2024_split_4"
+    },
+    {
+      "total_pnl": 12126.041016,
+      "total_return_percent": 1212604.1016,
+      "sharpe_annualized": 15.742,
+      "sortino_annualized": 21.02,
+      "calmar_ratio": 249.817,
+      "max_drawdown": -6430.543945,
+      "win_rate": 0.4721,
+      "profit_factor": 1.2381,
+      "avg_win": 452.73431396,
+      "avg_loss": -515.99554443,
+      "ratio_avg_win_loss": 0.877,
+      "number_of_trades": 272,
+      "avg_holding_bars": 1.8,
+      "turnover": 0.1045,
+      "spearman_ic": 0.039,
+      "spearman_ic_pvalue": 0.372949,
+      "benchmark_sharpe": -7.726,
+      "benchmark_max_drawdown": -0.013089,
+      "correlation_with_benchmark": 0.6484,
+      "year": "2024_split_5"
+    },
+    {
+      "total_pnl": 2776.506592,
+      "total_return_percent": 277650.6592,
+      "sharpe_annualized": 6.186,
+      "sortino_annualized": 10.832,
+      "calmar_ratio": 62.388,
+      "max_drawdown": -8527.141602,
+      "win_rate": 0.3871,
+      "profit_factor": 1.0786,
+      "avg_win": 572.31066895,
+      "avg_loss": -558.54144287,
+      "ratio_avg_win_loss": 1.025,
+      "number_of_trades": 156,
+      "avg_holding_bars": 2.3,
+      "turnover": 0.0742,
+      "spearman_ic": NaN,
+      "spearman_ic_pvalue": NaN,
+      "benchmark_sharpe": -5.562,
+      "benchmark_max_drawdown": -0.00906,
+      "correlation_with_benchmark": 0.6001,
+      "year": "2024_split_6"
     }
   ]
 }
 --- END OF FILE: output\aggregated\ZB_metrics.json ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_1f3125ac3f33.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_54cdaed9f5f3.parquet ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_793df9163439.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_7f22063a0371.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_91458bddb8e3.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_91d9b764b17c.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_a00b4c0cb7a7.parquet ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_aa6e302e19f5.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_b3c47247939f.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_1f3125ac3f33.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_54cdaed9f5f3.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_793df9163439.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_7f22063a0371.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91458bddb8e3.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91d9b764b17c.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_a00b4c0cb7a7.parquet ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_aa6e302e19f5.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_b3c47247939f.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024\backtest_results.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_1\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_3\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_5\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_6\backtest_results.parquet ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_1\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_3\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_5\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_6\backtest_results.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\CL_2024.parquet ---
 
@@ -2371,7 +3006,55 @@ risk:
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\ZB_2024.parquet ---
 
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\ZB_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\ZB_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\ZB_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\ZB_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\ZB_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\CL_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\ES_2024.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\ZB_2024.parquet ---
+
 --- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_1\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_2\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_3\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_4\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_5\backtest_results.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_6\backtest_results.parquet ---
 
 --- START OF FILE: quant\align.py ---
 """
@@ -2522,10 +3205,14 @@ def main():
     run_parser.add_argument('--data', required=True)
     run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_parser.add_argument('--out', required=True)
+    run_parser.add_argument('--start', default=None, help='Start date (ISO format)')
+    run_parser.add_argument('--end', default=None, help='End date (ISO format)')
     run_hmm_parser = subparsers.add_parser('run-hmm')
     run_hmm_parser.add_argument('--data', required=True)
     run_hmm_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_hmm_parser.add_argument('--out', required=True)
+    run_hmm_parser.add_argument('--start', default=None, help='Start date (ISO format)')
+    run_hmm_parser.add_argument('--end', default=None, help='End date (ISO format)')
     run_hmm_parser.add_argument('--retrain-interval', type=int, default=5,
                                 help='Retrain HMM every N folds (default: 5).')
     aggregate_parser = subparsers.add_parser('aggregate')
@@ -2584,6 +3271,23 @@ def main():
         else:
             print('[CLI] Discovery disabled -- skipping manifest pruning, using baseline features only.', flush=True)
             df_pruned = df_features
+        # Per-split date window filtering (for single-year walkforward isolation)
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            from datetime import datetime as _dt, timezone
+            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+            before = df_pruned.height
+            df_pruned = df_pruned.filter(
+                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+            )
+            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+            if df_pruned.height == 0:
+                print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
+                os.makedirs(args.out, exist_ok=True)
+                placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
+                print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                return
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -2637,8 +3341,17 @@ def main():
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
-            print('[CLI] Discovery disabled — skipping manifest pruning.', flush=True)
+            print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            from datetime import datetime as _dt, timezone
+            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+            before = df_pruned.height
+            df_pruned = df_pruned.filter(
+                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+            )
+            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
