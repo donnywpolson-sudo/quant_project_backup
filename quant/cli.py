@@ -86,6 +86,12 @@ def main():
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign'  # 1-bar execution-aligned target
+        cache_dir = Path('output/cache')
+        data_tag = _stable_data_tag(args.data)
+        aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print('[CLI] Loading aligned data...', flush=True)
+        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
