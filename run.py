@@ -385,10 +385,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
-    kw = {'check': True, 'env': env}
+    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE}
     if not _VERBOSE:
         kw['stdout'] = subprocess.DEVNULL
-        kw['stderr'] = subprocess.PIPE
     if config.pipeline.enable_discovery:
         subprocess.run([sys.executable, '-m', 'quant.cli', 'discover',
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
@@ -411,7 +410,33 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                '--manifest', str(manifest_path), '--out', str(out_dir)]
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
-        subprocess.run(cmd, **kw)
+        try:
+            subprocess.run(cmd, **kw)
+        except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
+            err_lines = stderr_text.strip().split('\n')
+            print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
+            for line in err_lines[-3:]:
+                print(f'  > {line}')
+            logger.warning(
+                'run-hmm failed for %s split=%d (rc=%d)',
+                symbol, split_idx, e.returncode,
+            )
+            # Safe fallback: retry with plain run (no HMM)
+            logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
+            cmd_fb = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+                       '--manifest', str(manifest_path), '--out', str(out_dir)]
+            if test_start and test_end:
+                cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+            try:
+                subprocess.run(cmd_fb, **kw)
+            except subprocess.CalledProcessError as e2:
+                stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
+                err2_lines = stderr2.strip().split('\n')
+                print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
+                for line in err2_lines[-3:]:
+                    print(f'  > {line}')
+                logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results_hmm.parquet'
         if not bt_path.exists():

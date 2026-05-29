@@ -1,0 +1,81 @@
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 7.2338,
+    "annualized_sortino": 7.1395,
+    "max_drawdown": -8679.832596,
+    "calmar_ratio": 82.5946,
+    "total_return_percent": 1535817.4267,
+    "win_rate": 0.4969,
+    "profit_factor": 1.1156,
+    "number_of_trades": 962,
+    "avg_trade_pnl": 16.15022573,
+    "turnover": 0.0245,
+    "volatility_annualized": 99105.447442
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 9.3401,
+    "annualized_sortino": 5.8772,
+    "max_drawdown": -8679.832596,
+    "calmar_ratio": 89.0763,
+    "total_return_percent": 1656342.416,
+    "win_rate": 0.5298,
+    "profit_factor": 1.2147,
+    "number_of_trades": 436,
+    "avg_trade_pnl": 34.41930845,
+    "turnover": 0.0385,
+    "volatility_annualized": 82779.371617
+  },
+  "psr_result": {
+    "psr": 0.9908,
+    "base_sharpe": 7.2338,
+    "filtered_sharpe": 9.3401,
+    "sharpe_difference": 2.1063,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.009211
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 326,
+      "pct_time": 21.88,
+      "total_pnl": 14167.209427,
+      "avg_pnl_per_bar": 43.45769763,
+      "sharpe_contribution": 46.2966
+    },
+    "LowVol_Range": {
+      "bars": 674,
+      "pct_time": 45.23,
+      "total_pnl": -44.65625,
+      "avg_pnl_per_bar": -0.06625556,
+      "sharpe_contribution": -1.6022
+    },
+    "HighVol_Correction": {
+      "bars": 167,
+      "pct_time": 11.21,
+      "total_pnl": -886.682007,
+      "avg_pnl_per_bar": -5.30947309,
+      "sharpe_contribution": -20.4692
+    },
+    "HighVol_Expansion": {
+      "bars": 323,
+      "pct_time": 21.68,
+      "total_pnl": 3327.55299,
+      "avg_pnl_per_bar": 10.30202164,
+      "sharpe_contribution": 4.3589
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=0.9908, \u0394SR=+2.1063). Calmar improved from 82.5946 to 89.0763. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 312,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}
