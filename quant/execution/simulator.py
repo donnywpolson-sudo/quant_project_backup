@@ -164,26 +164,19 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     eps = config.EPS
 
     # ------------------------------------------------------------------------
-    # 1. Generate trading signal from prediction probability via z-score
-    #    Compute rolling z-score of prediction_prob (1000-bar window ≈ 3.6d)
-    #    Enter signal when |z| > Z_SCORE_ENTRY_THRESHOLD (default 1.5)
-    #    This adapts thresholds to the prevailing signal distribution rather
-    #    than using fixed 0.6/0.4 cutoffs that suppress signal dispersion.
+    # 1. Generate trading signal from prediction probability.
+    #    Use absolute probability thresholds: prob > 0.55 → long,
+    #    prob < 0.45 → short.  This preserves the model's directional
+    #    prediction directly, unlike z-score which measures prediction
+    #    SURPRISE (deviation from recent average) — a metric that goes
+    #    to zero when the model is consistently correct, suppressing all
+    #    signals.
     # ------------------------------------------------------------------------
-    # Use a rolling window that fits within a single walkforward fold
-    # (wf_test_days=1 ≈ 264 bars).  Window=50 with min_samples=20 ensures
-    # z-scores are available for most bars inside the fold.
     prob = pl.col('prediction_prob').fill_null(0.5)
-    prob_lagged = prob.shift(1)
-    prob_mean = prob_lagged.rolling_mean(window_size=50, min_samples=20)
-    prob_std = prob_lagged.rolling_std(window_size=50, min_samples=20).clip(1e-06, None)
-    z_score = ((prob - prob_mean) / prob_std).fill_null(0.0)
-
-    z_thresh = pl.lit(config.Z_SCORE_ENTRY_THRESHOLD, dtype=pl.Float32)
     signal_expr = (
-        pl.when(z_score > z_thresh)
+        pl.when(prob > 0.55)
         .then(pl.lit(1.0, dtype=pl.Float32))
-        .when(z_score < -z_thresh)
+        .when(prob < 0.45)
         .then(pl.lit(-1.0, dtype=pl.Float32))
         .otherwise(pl.lit(0.0, dtype=pl.Float32))
     )

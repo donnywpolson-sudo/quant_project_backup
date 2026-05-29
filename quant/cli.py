@@ -109,6 +109,7 @@ def main():
         y = df_pruned[target_col]
         X = df_pruned.drop(target_col)
         _exclude = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime', 'date', 'benchmark_pnl'}
+        _exclude |= {c for c in X.columns if c.startswith('target_')}
         _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
         feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
@@ -157,6 +158,7 @@ def main():
             'ts_event', 'open', 'high', 'low', 'close', 'volume',
             'session_id', 'regime', 'date', 'benchmark_pnl',
         }
+        _exclude |= {c for c in X.columns if c.startswith('target_')}
         _numeric_types = (
             pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
             pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,

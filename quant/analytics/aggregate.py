@@ -237,7 +237,7 @@ def aggregate_market(dfs: list) -> pl.DataFrame:
 def compute_year_breakdown(year_dfs: list) -> list:
     breakdown = []
     for year, df in year_dfs:
-        predictions = df['prediction_prob'] if 'prediction_prob' in df.columns else None
+        predictions = df['prediction_prob'].shift(1) if 'prediction_prob' in df.columns else None
         targets = df['ret_exec'] if 'ret_exec' in df.columns else None
         metrics = compute_pro_metrics(
             df['pnl'],
@@ -293,7 +293,7 @@ def run_aggregation(artifacts_root='output'):
         combined = aggregate_market(year_dfs)
         if combined.is_empty():
             continue
-        predictions = combined['prediction_prob'] if 'prediction_prob' in combined.columns else None
+        predictions = combined['prediction_prob'].shift(1) if 'prediction_prob' in combined.columns else None
         targets = combined['ret_exec'] if 'ret_exec' in combined.columns else None
         metrics = compute_pro_metrics(
             combined['pnl'],

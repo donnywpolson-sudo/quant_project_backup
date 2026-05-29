@@ -49,11 +49,13 @@ def calculate_metrics(file_path: str):
             hit_rate = correct / nonzero.sum()
 
     # --- Spearman IC: prediction_prob vs realized forward return ---
+    # Shift prediction by 1: prob[t-1] was trained to predict ret_exec[t].
+    # Without the shift, IC measures prob[t] vs ret_exec[t] — a 1-bar mismatch.
     spearman_ic = None
     if 'prediction_prob' in df.columns and 'ret_exec' in df.columns:
         from scipy.stats import spearmanr as _spearmanr
         try:
-            pred = df['prediction_prob'].to_numpy().astype(np.float64)
+            pred = df['prediction_prob'].shift(1).to_numpy().astype(np.float64)
             targ = df['ret_exec'].to_numpy().astype(np.float64)
             mask = np.isfinite(pred) & np.isfinite(targ)
             if mask.sum() >= 3:
