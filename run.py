@@ -11,6 +11,8 @@ from quant.config_manager import load_config, RootConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')
+_VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
+_MIN_TRAIN_DAYS = 90
 
 def get_files(data_dir: str, config: RootConfig) -> list[Path]:
     files = list(Path(data_dir).rglob('*.parquet'))
@@ -265,7 +267,24 @@ def _validate_symbol_data(f: Path, config) -> bool:
     return True
 
 
-def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
+def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
+    if not per_symbol:
+        return
+    h = '\u2500'
+    tl, tr, bl, br, v, c = '\u250c', '\u2510', '\u2514', '\u2518', '\u2502', '\u251c'
+    r = '\u2524'
+    check, cross, warn = '\u2705', '\u274c', '\u26a0\ufe0f'
+    print(f'\n{tl}{h * 52}{tr}')
+    print(f'{v} [SPLIT {split_idx}/{total}] Processing Assets...{" " * 3}{v}')
+    print(f'{c}{h * 52}{r}')
+    combined_sharpe = 0.0
+    for symbol, (sharpe, pnl, hit) in sorted(per_symbol.items()):
+        icon = check if sharpe > 0 else cross
+        print(f'{v}  {icon} {symbol:<4s}  Sharpe={sharpe:+.2f}  PnL={pnl:+,.2f}  Hit={hit:.1%} {"":>6s}{v}')
+        combined_sharpe += sharpe
+    status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
+    print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
+    print(f'{bl}{h * 52}{br}\n', flush=True)
     bt_path = out_dir / 'backtest_results.parquet'
     if not bt_path.exists():
         raise RuntimeError('BACKTEST FAILURE: %s no output at %s' % (symbol, bt_path))
@@ -292,20 +311,28 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
         )
 
 
-def process_split(train_years: list[int], test_years: list[int], files: list[Path], config: RootConfig) -> None:
+def process_split(train_years: list[int], test_years: list[int], files: list[Path],
+                  config: RootConfig, split_idx: int, total_splits: int) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
+    # ---- Config safeguard: bootstrap discovery needs enough samples ----
+    wf_train = getattr(config.walkforward, 'wf_train_days', 30)
+    if wf_train < _MIN_TRAIN_DAYS:
+        logger.warning(
+            'wf_train_days=%d < %d — discovery may have insufficient samples. '
+            'Consider wf_train_days >= %d for stable bootstrap.',
+            wf_train, _MIN_TRAIN_DAYS, _MIN_TRAIN_DAYS
+        )
     train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}"
     train_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f'Preparing TRAIN dataset for years {train_years}')
+    logger.info('Preparing TRAIN dataset for years %s', train_years)
     for f in train_files:
         dst = train_dir / f'{f.parent.name}_{f.name}'
         if dst.exists():
             continue
-        logger.info(f'Linking train file: {f}')
         if os.name != 'nt':
             try:
                 os.symlink(f.resolve(), dst)
@@ -315,33 +342,46 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}.json"
+    # Silence subprocess output unless verbose mode
+    env = os.environ.copy()
+    env['TQDM_DISABLE'] = '1'
+    kw = {'check': True, 'env': env}
+    if not _VERBOSE:
+        kw['stdout'] = subprocess.DEVNULL
+        kw['stderr'] = subprocess.PIPE
     if config.pipeline.enable_discovery:
-        logger.info('Running feature discovery on TRAIN data...')
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
-        time.sleep(0.2)  # NTFS lock release
+        subprocess.run([sys.executable, '-m', 'quant.cli', 'discover',
+                        '--data', train_glob, '--out', str(manifest_path)], **kw)
+        time.sleep(0.2)
     else:
-        logger.info('Discovery disabled — generating placeholder manifest from baseline features.')
         import json
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        placeholder = {
-            'version': '1.0',
-            'feature_names': [],
-            'selection_seed': config.preprocessing.seed,
-            'selection_date': 'placeholder',
-            'discovery_status': 'disabled',
-        }
         with open(manifest_path, 'w') as f:
-            json.dump(placeholder, f)
+            json.dump({'version': '1.0', 'feature_names': [], 'selection_seed': config.preprocessing.seed,
+                       'selection_date': 'placeholder', 'discovery_status': 'disabled'}, f)
+    per_symbol = {}
     for f in test_files:
         symbol = f.parent.name
-        logger.info(f'Evaluating TEST file: {f}')
         if not _validate_symbol_data(f, config):
             continue
-        out_dir = Path('output') / f.parent.name / f.stem
+        out_dir = Path('output') / symbol / f.stem
         out_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
-        time.sleep(0.2)  # NTFS lock release
-        _validate_backtest_output(out_dir, symbol)
+        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+                        '--manifest', str(manifest_path), '--out', str(out_dir)], **kw)
+        time.sleep(0.2)
+        bt_path = out_dir / 'backtest_results.parquet'
+        if bt_path.exists():
+            try:
+                bt = pl.read_parquet(bt_path)
+                pnl = bt['pnl'].sum()
+                sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
+                pos = bt['position'].abs().mean() if 'position' in bt.columns else 0
+                hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
+                per_symbol[symbol] = (sharpe, pnl, hit)
+            except Exception:
+                per_symbol[symbol] = (0.0, 0.0, 0.0)
+    # ---- Master dashboard ----
+    _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
     config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
     data_dir = 'data'
@@ -350,7 +390,11 @@ if __name__ == '__main__':
         logger.warning('No files found after filtering')
         sys.exit(0)
     splits = generate_walkforward_splits(files, config)
+    total = len(splits)
+    if not _VERBOSE:
+        logging.getLogger().setLevel(logging.WARNING)
+        logging.getLogger('quant').setLevel(logging.WARNING)
     for i, (train, test) in enumerate(splits, 1):
-        logger.info(f'[Split {i}] Train({len(train)}): {train} | Test({len(test)}): {test}')
-        process_split(train, test, files, config)
+        process_split(train, test, files, config, i, total)
+    logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')
