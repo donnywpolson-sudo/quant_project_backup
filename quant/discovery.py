@@ -40,10 +40,13 @@ def _fit_discovery_fold(
     """
     clamp_to_single_threaded()
 
+    n_samples = X.shape[0]
+    if n_samples == 0:
+        return dict.fromkeys(feature_cols, 0.0), dict.fromkeys(feature_cols, 0.0)
+
     if psutil.Process().memory_info().rss > rss_stop:
         raise MemoryError(f'RSS stop limit exceeded in fold {fold_idx}')
 
-    n_samples = X.shape[0]
     rng = np.random.RandomState(
         int(hashlib.sha256(f'{seed}_fold_{fold_idx}'.encode()).hexdigest(), 16) % 2 ** 32
     )
@@ -96,27 +99,19 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     if df_ts.height == 0:
         logger.warning('Empty ts_event — skipping window trim, using all rows')
         cutoff_date = None
+        cutoff_utc = None
     else:
         latest_ts = df_ts['ts_event'].to_list()[-1]
         if latest_ts.tzinfo is None:
             latest_ts = pytz.utc.localize(latest_ts)
+        local_tz = pytz.timezone(config.TIMEZONE)
         latest_local = latest_ts.astimezone(local_tz)
         cutoff_local_date = latest_local.date()
         cutoff_date = cutoff_local_date - timedelta(days=config.DISCOVERY_WINDOW_DAYS)
-
-    local_tz = pytz.timezone(config.TIMEZONE)
-
-    if latest_ts.tzinfo is None:
-        latest_ts = pytz.utc.localize(latest_ts)
-
-    latest_local = latest_ts.astimezone(local_tz)
-
-    cutoff_local_date = latest_local.date()
-    cutoff_date = cutoff_local_date - timedelta(days=config.DISCOVERY_WINDOW_DAYS)
-    cutoff_local_dt = local_tz.localize(
-        datetime(cutoff_date.year, cutoff_date.month, cutoff_date.day)
-    )
-    cutoff_utc = cutoff_local_dt.astimezone(pytz.utc)
+        cutoff_local_dt = local_tz.localize(
+            datetime(cutoff_date.year, cutoff_date.month, cutoff_date.day)
+        )
+        cutoff_utc = cutoff_local_dt.astimezone(pytz.utc)
 
     # Free the first-pass frame before loading full data
     del df_ts, lf_ts
@@ -125,7 +120,8 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     # pl.scan_parquet supports predicate pushdown on raw columns.
     # Filtering on ts_event >= cutoff_utc allows parquet row-group pruning.
     lf = pl.scan_parquet(data_path)
-    lf = lf.filter(pl.col('ts_event') >= cutoff_utc)
+    if cutoff_utc is not None:
+        lf = lf.filter(pl.col('ts_event') >= cutoff_utc)
 
     try:
         df_features = lf.collect(engine='streaming')
@@ -143,12 +139,12 @@ def run_feature_discovery(data_path: str, manifest_out: str):
 
     # Secondary precise filter on local date (handles edge cases where the
     # UTC boundary doesn't perfectly align with local-date boundaries)
-    df_features = df_features.filter(pl.col('date') >= cutoff_date)
-
-    logger.info(
-        f'Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days '
-        f'(from {cutoff_date.isoformat()} onwards)'
-    )
+    if cutoff_date is not None:
+        df_features = df_features.filter(pl.col('date') >= cutoff_date)
+        logger.info(
+            f'Discovery limited to {config.DISCOVERY_WINDOW_DAYS} days '
+            f'(from {cutoff_date.isoformat()} onwards)'
+        )
 
     df_features = df_features.drop('date')
 
@@ -211,6 +207,24 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     # Materialize feature matrix and target once — sklearn models need numpy
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
+
+    if X.shape[0] < 2:
+        logger.warning(
+            'Discovery skipped: only %d samples available '
+            '(need at least 2 for bootstrap).', X.shape[0]
+        )
+        # Produce a minimal manifest with empty feature list
+        os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
+        placeholder = {
+            'version': '1.0', 'feature_names': [],
+            'selected_K': 0, 'selection_seed': config.SEED,
+            'selection_date': datetime.utcnow().isoformat() + 'Z',
+            'discovery_status': 'skipped',
+            'reason': f'only {X.shape[0]} samples available (need >= 2)',
+        }
+        with open(manifest_out, 'w') as f:
+            json.dump(placeholder, f, indent=4)
+        return
 
     results = Parallel(n_jobs=-1, backend='loky')(
         delayed(_fit_discovery_fold)(

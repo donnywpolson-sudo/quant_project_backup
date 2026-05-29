@@ -1,0 +1,9 @@
+{
+    "version": "1.0",
+    "feature_names": [],
+    "selected_K": 0,
+    "selection_seed": 42,
+    "selection_date": "2026-05-29T05:28:22.511835Z",
+    "discovery_status": "skipped",
+    "reason": "only 0 samples available (need >= 2)"
+}
