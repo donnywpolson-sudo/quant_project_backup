@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import logging
+import time
 from pathlib import Path
 import shutil
 import polars as pl
@@ -214,7 +215,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
-    train_dir = Path('artifacts') / f"train_{'_'.join(map(str, train_years))}"
+    train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}"
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f'Preparing TRAIN dataset for years {train_years}')
     for f in train_files:
@@ -230,10 +231,11 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('artifacts') / f"manifest_{'_'.join(map(str, train_years))}.json"
+    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}.json"
     if config.pipeline.enable_discovery:
         logger.info('Running feature discovery on TRAIN data...')
         subprocess.run([sys.executable, '-m', 'quant.cli', 'discover', '--data', train_glob, '--out', str(manifest_path)], check=True)
+        time.sleep(0.2)  # NTFS lock release
     else:
         logger.info('Discovery disabled — generating placeholder manifest from baseline features.')
         import json
@@ -249,9 +251,10 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             json.dump(placeholder, f)
     for f in test_files:
         logger.info(f'Evaluating TEST file: {f}')
-        out_dir = Path('artifacts') / f.parent.name / f.stem
+        out_dir = Path('output') / f.parent.name / f.stem
         out_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f), '--manifest', str(manifest_path), '--out', str(out_dir)], check=True)
+        time.sleep(0.2)  # NTFS lock release
 if __name__ == '__main__':
     config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
     data_dir = 'data'

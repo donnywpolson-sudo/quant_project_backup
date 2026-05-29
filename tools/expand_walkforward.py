@@ -11,7 +11,7 @@ from scipy.special import expit
 from tqdm import tqdm
 
 DATA_PATH = Path(".kilo/worktrees/invited-coconut/artifacts/train_2024/ES_2024.parquet")
-OUTPUT_REPORT = Path("artifacts/expand_walkforward_report.txt")
+OUTPUT_REPORT = Path("output/expand_walkforward_report.txt")
 CONFIG = dict(WF_TRAIN_DAYS=30, WF_TEST_DAYS=1, WF_STEP_DAYS=3,
               RIDGE_ALPHA=1.0, BURN_IN_BARS=64, SEED=42,
               VOL_MULT_UPPER=1.0, VOL_MULT_LOWER=1.0, H_BARS=64,

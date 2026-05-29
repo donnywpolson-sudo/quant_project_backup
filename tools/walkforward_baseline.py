@@ -11,7 +11,7 @@ from scipy.special import expit
 from tqdm import tqdm
 
 DATA_PATH = Path(".kilo/worktrees/invited-coconut/artifacts/train_2024/ES_2024.parquet")
-OUTPUT_REPORT = Path("artifacts/walkforward_baseline_report.txt")
+OUTPUT_REPORT = Path("output/walkforward_baseline_report.txt")
 
 CONFIG = {
     "WF_TRAIN_DAYS": 30,

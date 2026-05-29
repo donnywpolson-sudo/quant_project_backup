@@ -19,7 +19,7 @@ CONFIG = {
     "BURN_IN_BARS": 64,
     "SEED": 42,
 }
-OUTPUT_REPORT = Path("artifacts/primary_retrain_report.txt")
+OUTPUT_REPORT = Path("output/primary_retrain_report.txt")
 # ---------------------------------------------------------------------------
 
 # --- Triple-barrier (from updated quant/features/triple_barrier.py) ---

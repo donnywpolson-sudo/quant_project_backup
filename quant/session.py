@@ -7,6 +7,7 @@ import tempfile
 import glob
 import shutil
 from quant.config_manager import config, load_config
+from quant.io.atomic import atomic_write_parquet
 from tqdm import tqdm
 
 load_config()  # ensure config is populated (idempotent)
@@ -99,7 +100,7 @@ def process_one_file(file_path: str, out_temp_dir: str, freq: str) -> str | None
         return None
     out_file = Path(out_temp_dir) / f'{Path(file_path).stem}_{freq}.parquet'
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    df_resampled.write_parquet(out_file)
+    atomic_write_parquet(df_resampled, out_file)
     return str(out_file)
 
 

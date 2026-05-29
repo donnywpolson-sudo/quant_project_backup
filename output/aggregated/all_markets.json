@@ -1,0 +1,27 @@
+{
+  "total_pnl": -0.166129,
+  "total_return_percent": -16.6129,
+  "sharpe_annualized": -0.634,
+  "sortino_annualized": -0.733,
+  "calmar_ratio": -1.853,
+  "max_drawdown": -1.078716,
+  "win_rate": 0.0,
+  "profit_factor": 0.0,
+  "avg_win": 0.0,
+  "avg_loss": 0.0,
+  "ratio_avg_win_loss": 0.0,
+  "number_of_trades": 0,
+  "avg_holding_bars": 0.0,
+  "turnover": 0.0,
+  "spearman_ic": null,
+  "spearman_ic_pvalue": null,
+  "benchmark_sharpe": null,
+  "benchmark_max_drawdown": null,
+  "correlation_with_benchmark": null,
+  "description": "Sum of all markets",
+  "markets": [
+    "CL",
+    "ES",
+    "ZB"
+  ]
+}

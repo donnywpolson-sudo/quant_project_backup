@@ -18,7 +18,7 @@ from scipy.stats import pearsonr
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DATA_PATH = Path("artifacts/full_feature_matrix_6192112e6e77.parquet")
+DATA_PATH = Path("output/full_feature_matrix_6192112e6e77.parquet")
 OUTPUT_REPORT = Path("leakage_audit_report.md")
 
 # Columns to exclude from feature analysis (OHLCV, timestamps, targets, metadata)

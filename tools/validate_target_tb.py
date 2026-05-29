@@ -10,7 +10,7 @@ import polars as pl
 
 # ---------------------------------------------------------------------------
 CACHED_FEATURE_MATRIX = Path("output/cache/full_feature_matrix_aa6e302e19f5.parquet")
-OUTPUT_REPORT = Path("artifacts/target_tb_validation_report.txt")
+OUTPUT_REPORT = Path("output/target_tb_validation_report.txt")
 FALLBACK_DATA = [
     Path(".kilo/worktrees/invited-coconut/artifacts/train_2024/ES_2024.parquet"),
 ]

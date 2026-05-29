@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 import json
 import hashlib
+from quant.io.atomic import atomic_write_parquet, atomic_write_json
 from quant.config_manager import config, load_config
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
@@ -116,14 +117,14 @@ def main():
         result_df = run_walkforward(X, y, feature_cols, target_col)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results.parquet')
-        result_df.write_parquet(out_path)
+        atomic_write_parquet(result_df, out_path)
         print(f'[CLI] Results saved to {out_path}', flush=True)
         print('\n================ METRICS ================')
         calculate_metrics(out_path)
         print('========================================\n')
         try:
             print('[CLI] Running aggregation...', flush=True)
-            run_aggregation('artifacts')
+            run_aggregation('output')
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
@@ -179,12 +180,11 @@ def main():
         )
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
-        result_df.write_parquet(out_path)
+        atomic_write_parquet(result_df, out_path)
         print(f'[CLI] HMM-filtered results saved to {out_path}', flush=True)
         # Save validation report
         val_path = os.path.join(args.out, 'hmm_validation_report.json')
-        with open(val_path, 'w') as f:
-            json.dump(validation, f, indent=2, default=str)
+        atomic_write_json(validation, val_path)
         print(f'[CLI] Validation report saved to {val_path}', flush=True)
         print('\n================ HMM METRICS ================')
         calculate_metrics(out_path)
@@ -204,7 +204,7 @@ def main():
         print(f"[CLI] Recommendation: {validation.get('recommendation', 'N/A')}", flush=True)
         try:
             print('[CLI] Running aggregation...', flush=True)
-            run_aggregation('artifacts')
+            run_aggregation('output')
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'aggregate':
