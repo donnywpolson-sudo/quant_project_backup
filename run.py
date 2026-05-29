@@ -389,7 +389,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     if not _VERBOSE:
         kw['stdout'] = subprocess.DEVNULL
     if config.pipeline.enable_discovery:
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'discover',
+        subprocess.run([sys.executable, '-m', 'pipeline.cli', 'discover',
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
         time.sleep(0.2)
     else:
@@ -406,7 +406,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, '-m', 'quant.cli', 'run-hmm', '--data', str(f),
+        cmd = [sys.executable, '-m', 'pipeline.cli', 'run-hmm', '--data', str(f),
                '--manifest', str(manifest_path), '--out', str(out_dir)]
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
@@ -424,7 +424,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             )
             # Safe fallback: retry with plain run (no HMM)
             logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
-            cmd_fb = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+            cmd_fb = [sys.executable, '-m', 'pipeline.cli', 'run', '--data', str(f),
                        '--manifest', str(manifest_path), '--out', str(out_dir)]
             if test_start and test_end:
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])

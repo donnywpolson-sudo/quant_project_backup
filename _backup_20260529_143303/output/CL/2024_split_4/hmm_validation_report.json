@@ -1,0 +1,81 @@
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": 0.3107,
+    "annualized_sortino": 0.3819,
+    "max_drawdown": -12153.84926,
+    "calmar_ratio": 2.7363,
+    "total_return_percent": 61012.4687,
+    "win_rate": 0.4791,
+    "profit_factor": 1.0174,
+    "number_of_trades": 812,
+    "avg_trade_pnl": 3.07776913,
+    "turnover": 0.2186,
+    "volatility_annualized": 107020.395347
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": 8.4653,
+    "annualized_sortino": 9.7164,
+    "max_drawdown": -6601.6982,
+    "calmar_ratio": 108.217,
+    "total_return_percent": 1310666.3027,
+    "win_rate": 0.4852,
+    "profit_factor": 1.1697,
+    "number_of_trades": 542,
+    "avg_trade_pnl": 26.34663615,
+    "turnover": 0.2367,
+    "volatility_annualized": 84393.837767
+  },
+  "psr_result": {
+    "psr": 1.0,
+    "base_sharpe": 0.3107,
+    "filtered_sharpe": 8.4653,
+    "sharpe_difference": 8.1545,
+    "confidence_level": 0.95,
+    "significant": true,
+    "p_value": 0.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 326,
+      "pct_time": 25.55,
+      "total_pnl": 1482.811279,
+      "avg_pnl_per_bar": 4.54850086,
+      "sharpe_contribution": 7.1577
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 292,
+      "pct_time": 22.88,
+      "total_pnl": -269.064796,
+      "avg_pnl_per_bar": -0.92145478,
+      "sharpe_contribution": -2.0339
+    },
+    "HighVol_Expansion": {
+      "bars": 658,
+      "pct_time": 51.57,
+      "total_pnl": 11892.916544,
+      "avg_pnl_per_bar": 18.07434125,
+      "sharpe_contribution": 11.2919
+    }
+  },
+  "fallback_triggered": false,
+  "fallback_reason": null,
+  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+8.1545). Calmar improved from 2.7363 to 108.2170. Deploy with regime-aware position sizing.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 280,
+      "success": true,
+      "fallback": false
+    }
+  ],
+  "n_folds": 2
+}

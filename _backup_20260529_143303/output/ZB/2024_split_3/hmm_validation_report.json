@@ -1,0 +1,81 @@
+{
+  "base_metrics": {
+    "label": "Base",
+    "annualized_sharpe": -1.6154,
+    "annualized_sortino": -1.5239,
+    "max_drawdown": -10801.938492,
+    "calmar_ratio": -14.2693,
+    "total_return_percent": -210532.1228,
+    "win_rate": 0.3699,
+    "profit_factor": 0.9816,
+    "number_of_trades": 419,
+    "avg_trade_pnl": -3.3776063,
+    "turnover": 0.0882,
+    "volatility_annualized": 95418.677941
+  },
+  "hmm_metrics": {
+    "label": "HMM-Filtered",
+    "annualized_sharpe": -1.6154,
+    "annualized_sortino": -1.5239,
+    "max_drawdown": -10801.938492,
+    "calmar_ratio": -14.2693,
+    "total_return_percent": -210532.1228,
+    "win_rate": 0.3699,
+    "profit_factor": 0.9816,
+    "number_of_trades": 419,
+    "avg_trade_pnl": -3.3776063,
+    "turnover": 0.0882,
+    "volatility_annualized": 95418.677941
+  },
+  "psr_result": {
+    "psr": 0.0,
+    "base_sharpe": -1.6154,
+    "filtered_sharpe": -1.6154,
+    "sharpe_difference": 0.0,
+    "confidence_level": 0.95,
+    "significant": false,
+    "p_value": 1.0
+  },
+  "regime_attribution": {
+    "LowVol_Bullish": {
+      "bars": 950,
+      "pct_time": 100.0,
+      "total_pnl": -2105.321228,
+      "avg_pnl_per_bar": -2.21612761,
+      "sharpe_contribution": -1.6154
+    },
+    "LowVol_Range": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Correction": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    },
+    "HighVol_Expansion": {
+      "bars": 0,
+      "pct_time": 0.0,
+      "total_pnl": 0.0,
+      "avg_pnl_per_bar": 0.0,
+      "sharpe_contribution": 0.0
+    }
+  },
+  "fallback_triggered": true,
+  "fallback_reason": null,
+  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
+  "hmm_training_log": [
+    {
+      "phase": "initialize",
+      "bars": 181,
+      "success": false,
+      "fallback": true
+    }
+  ],
+  "n_folds": 2
+}

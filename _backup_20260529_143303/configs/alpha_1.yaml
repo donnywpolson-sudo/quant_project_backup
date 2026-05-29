@@ -1,0 +1,18 @@
+# Sandbox tier: minimal data, zero friction — detect signal fast
+data_years: 1
+folds: 1
+start_year: 2024
+end_year: 2024
+
+discovery:
+  bootstrap_folds: 3
+  discovery_window_days: 30
+
+execution:
+  slippage_k: 0.0
+  vol_penalty: 0.0
+  tx_cost_per_roundturn: 0.0
+  commission_per_trade: 0.0
+  max_leverage: 10.0
+  htf_trend_alignment: false
+  htf_vol_scaling: false

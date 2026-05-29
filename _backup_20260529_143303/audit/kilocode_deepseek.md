@@ -1,0 +1,1 @@
+turn this into a kilo code inline agent prompt which uses Deepseek V4 Pro.  make the prompt and all token usage extremely efficient without sacrificing quality.  Make it completely globe safe and anything else so the prompt doesn't hang.
