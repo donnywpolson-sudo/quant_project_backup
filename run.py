@@ -285,6 +285,9 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
     print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
     print(f'{bl}{h * 52}{br}\n', flush=True)
+
+
+def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
     bt_path = out_dir / 'backtest_results.parquet'
     if not bt_path.exists():
         raise RuntimeError('BACKTEST FAILURE: %s no output at %s' % (symbol, bt_path))
