@@ -179,6 +179,8 @@ class WalkforwardConfig(BaseModel):
     corr_threshold: float = 0.95
     wf_parallel_folds: int = 1
     burn_in_bars: int = 500
+    enable_meta_labeling: bool = False
+    meta_threshold: float = 0.5
 
 
 class ExecutionConfig(BaseModel):
@@ -409,6 +411,8 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.CORR_THRESHOLD = c.walkforward.corr_threshold
     config.WF_PARALLEL_FOLDS = c.walkforward.wf_parallel_folds
     config.BURN_IN_BARS = c.walkforward.burn_in_bars
+    config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
+    config.META_THRESHOLD = c.walkforward.meta_threshold
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at

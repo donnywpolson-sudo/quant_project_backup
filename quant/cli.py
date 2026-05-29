@@ -85,7 +85,7 @@ def main():
         run_feature_discovery(str(feature_cache), args.out)
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
-        target_col = 'target_sign'  # 1-bar execution-aligned target
+        target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data)
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
@@ -128,7 +128,7 @@ def main():
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
-        target_col = 'target_sign'  # 1-bar execution-aligned target
+        target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data)
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'

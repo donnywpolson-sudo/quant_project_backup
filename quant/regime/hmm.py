@@ -416,9 +416,10 @@ def _compute_hmm_features(df_1h: "pl.DataFrame") -> np.ndarray:
     log_close = pl.col("close").log()
     log_return = (log_close - log_close.shift(1)).fill_null(0.0)
 
-    # 2. Volume Z-score (rolling)
-    vol_mean = pl.col("volume").rolling_mean(window_size=20, min_periods=5)
-    vol_std = pl.col("volume").rolling_std(window_size=20, min_periods=5)
+    # 2. Volume Z-score (rolling, strictly past data via shift(1))
+    vol_lagged = pl.col("volume").shift(1)
+    vol_mean = vol_lagged.rolling_mean(window_size=20, min_periods=5)
+    vol_std = vol_lagged.rolling_std(window_size=20, min_periods=5)
     volume_z = ((pl.col("volume") - vol_mean) / (vol_std + eps)).fill_null(0.0)
 
     # 3. Range percentage

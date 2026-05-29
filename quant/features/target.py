@@ -1,6 +1,10 @@
 import polars as pl
 from quant.config_manager import config
 
+# Re-export triple-barrier and meta-label for engine.py imports
+from quant.features.triple_barrier import add_triple_barrier_target
+from quant.features.meta_label import add_meta_label_target
+
 def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
     horizon = config.TARGET_5M_HORIZON
     # Execution-aligned target: enter at open[t+1], exit at close[t+1]
@@ -19,7 +23,7 @@ def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
 
 def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
     filter_expr = None
-    for target_col in ('target_5m', 'target_4h', 'target_1h'):
+    for target_col in ('target_5m', 'target_4h', 'target_1h', 'target_tb'):
         if target_col in df.columns:
             col_filter = pl.col(target_col).is_not_null()
             filter_expr = col_filter if filter_expr is None else filter_expr & col_filter

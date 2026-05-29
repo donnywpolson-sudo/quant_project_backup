@@ -54,6 +54,9 @@ def simulate_intrabar_stops(
     adj_position = position_arr.copy()
     intrabar_pnl = np.zeros(n, dtype=np.float64)
 
+    if stop_pct <= 0.0 and target_pct <= 0.0:
+        return adj_position, intrabar_pnl
+
     for i in range(n):
         pos = position_arr[i]
         if abs(pos) < eps:

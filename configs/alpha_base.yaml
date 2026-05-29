@@ -64,6 +64,8 @@ walkforward:
   probability_smoothing_alpha: 0.0
   corr_threshold: 0.99
   wf_parallel_folds: 1
+  enable_meta_labeling: false
+  meta_threshold: 0.5
 
 preprocessing:
   clip_min: -10.0
@@ -98,3 +100,6 @@ execution:
   htf_vol_window: 10
   z_score_entry_threshold: 1.5
   target_risk_per_trade: 0.01
+  stop_loss_pct: 0.01
+  take_profit_pct: 0.01
+  gap_slippage_pct: 0.0

@@ -176,7 +176,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         ).drop('_row')
 
     # --- Feature column selection ---
-    target_col = 'target_5m'
+    target_col = 'target_tb'
     if target_col not in df_features.columns:
         raise ValueError(f'Target column {target_col} not found.')
 
@@ -184,6 +184,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         'ts_event', 'open', 'high', 'low', 'close', 'volume',
         'session_id', target_col, 'regime', 'benchmark_pnl',
     }
+    exclude_cols |= {c for c in df_features.columns if c.startswith('target_')}
     feature_cols = [
         c for c in df_features.columns
         if c not in exclude_cols and (not c.startswith('_'))

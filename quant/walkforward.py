@@ -13,6 +13,8 @@ from quant.config_manager import config
 from quant.execution.simulator import simulate_execution_classification
 from quant.features.corr_prune import correlation_prune
 from quant.features.variance_filter import remove_constant_features
+from quant.features.meta_label import add_meta_label_target
+from quant.features.meta_gate import train_meta_model, apply_meta_gate
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -123,7 +125,49 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
         probs = smooth_probabilities(probs, session_ids, alpha=config.PROBABILITY_SMOOTHING_ALPHA)
     result = test_original.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
+
+    # Meta-labeling: compute primary prediction direction, train meta-model
+    # on held-out portion of training data, gate target_exec by meta-prob.
+    enable_meta = getattr(config, 'ENABLE_META_LABELING', False)
+    meta_model = None
+    if enable_meta:
+        pred_dir = np.where(probs > 0.55, 1, np.where(probs < 0.45, -1, 0)).astype(np.int8)
+        unique_preds = np.unique(pred_dir).size
+        if unique_preds < 2:
+            # Meta-target collapses to primary target when primary has
+            # zero directional variation. Meta-model adds only noise.
+            logger.info('Meta skipped: primary model predicts single direction')
+            enable_meta = False
+    if enable_meta:
+        result = result.with_columns(pl.Series('primary_prediction', pred_dir))
+        result = add_meta_label_target(result, 'primary_prediction')
+        meta_threshold = getattr(config, 'META_THRESHOLD', 0.5)
+
+        if train_X.height >= 40:
+            split = max(train_X.height // 3, 20)
+            train_primary_X = train_X.slice(0, split)
+            train_primary_y = train_y.slice(0, split)
+            train_val_X = train_X.slice(split)
+            train_val_y = train_y.slice(split)
+            probs_val = train_and_predict(train_primary_X, train_primary_y, train_val_X, feature_cols)
+            meta_val_pred = np.where(probs_val > 0.55, 1, np.where(probs_val < 0.45, -1, 0)).astype(np.int8)
+            meta_val_df = pl.DataFrame({'primary_prediction': meta_val_pred})
+            meta_val_actual = np.where(
+                train_val_y.to_numpy().astype(np.float32).ravel() > 0, 1, -1
+            ).astype(np.int8)
+            meta_val_df = meta_val_df.with_columns(pl.Series('target_tb', meta_val_actual))
+            meta_val_df = add_meta_label_target(meta_val_df, 'primary_prediction')
+            meta_train_y = meta_val_df['target_meta'].to_numpy().astype(np.float32)
+            meta_train_X = train_val_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+            meta_model = train_meta_model(meta_train_X, meta_val_pred.astype(np.float32), meta_train_y)
+
     result = simulate_execution_classification(result)
+
+    if meta_model is not None:
+        test_X_np = test_original.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+        result = apply_meta_gate(result, meta_model, test_X_np, meta_threshold=meta_threshold)
+        result = _recompute_pnl_after_gate(result)
+
     return exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
 
 # ============================================================================
