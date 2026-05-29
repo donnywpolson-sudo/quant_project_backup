@@ -1,0 +1,36 @@
+======================================================================
+EXPANDED FEATURE WALKFORWARD REPORT
+======================================================================
+  Features: 239 (base=14, lags=165, zscore=14, pairwise=50)
+  Walkforward: train=30d test=1d step=3d
+  target_tb: VOL_MULT_UPPER=1.0 VOL_MULT_LOWER=1.0
+
+Class balance: +1=24.0% -1=24.8% 0=51.2%
+
+## IC Comparison (14 vs expanded features)
+  IC target_tb:       +0.0160  (was +0.0094 with 14 features)
+  IC target_sign_4h:  +0.0276  (was +0.0333 with 14 features)
+
+## Per-Fold IC (expanded)
+  target_tb  mean=+0.0113  std=0.1661  n=95
+  target_4h  mean=+0.0374  std=0.1601  n=95
+  IC trend:           -0.0001
+  Dir variation:      0.0372 (was 0.003)
+  Sharpe proxy:       -0.05 (was +0.16)
+
+## Leakage
+  contemp_corr=-0.000382  past_corr=0.006153  -> OK
+
+  Fold   Train    Test   IC_tb    IC_4h   DV_tb   Shp_tb
+     0   30,107  1,380  +0.1560  +0.0133  0.0623    +1.07
+     1   28,663     64  +0.7290  +0.3504  0.3750   -10.71
+     2   30,107  1,380  +0.0757  +0.1181  0.0304    +2.17
+     4   28,777  1,376  -0.1388  -0.1110  0.0414    -1.45
+     5   30,329  1,315  -0.1566  -0.1999  0.0897    -2.01
+     6   27,632  1,136  -0.0572  -0.0989  0.0062    -3.23
+     7   30,084  1,380  -0.1130  -0.0012  0.0058    +2.34
+     8   28,642     64  -0.1107  -0.4440  0.0625   -10.74
+     9   30,085  1,379  -0.0496  +0.0865  0.0000    -0.88
+    11   28,765  1,380  -0.1750  +0.0535  0.0080    -1.22
+
+CONFIDENCE: 100%

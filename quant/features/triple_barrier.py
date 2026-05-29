@@ -9,8 +9,8 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
     For each bar t, constructs a 64-bar (~5.3h) forward window and tests
     which of three barriers is touched first:
 
-      Upper:  entry_price * exp(+0.08)  (≈ 8.33% above entry)
-      Lower:  entry_price * exp(-0.04)  (≈ 3.92% below entry)
+      Upper:  entry * exp(+MULT_UPPER * vol_4h)   (MULT_UPPER=1.0, ~1σ)
+      Lower:  entry * exp(-MULT_LOWER * vol_4h)   (MULT_LOWER=1.0, ~1σ)
       Time:   64 bars (expiry)
 
     vol_4h = daily_vol * sqrt(64 / 276)  (daily vol scaled to window)
@@ -22,9 +22,8 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
       NaN  — no forward window available (last 64 bars of dataset)
 
     The daily volatility is read from the ``htf_daily_vol_5`` column which
-    is computed during session resampling (5-day rolling std of daily
-    log returns).  Falls back to a 20-bar rolling std when the
-    column is unavailable.
+    is computed from lagged 1-bar returns (rolling std, window=260).
+    Falls back to a 20-bar rolling std when the column is unavailable.
     """
     H_BARS = 64
     BARS_PER_DAY = 276
@@ -35,11 +34,14 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
     n = len(close)
 
     # Daily volatility — use aligned column when available.
-    # htf_daily_vol_5 is in percentage form (e.g. 3.37 = 3.37%).
-    # Convert to decimal before scaling.
+    # htf_daily_vol_5 is the 1-bar (5-min) log return std, computed from
+    # lagged returns with a 260-bar rolling window (decimal form, ~0.0005).
+    # Scale to daily vol: daily_vol = bar_vol * sqrt(BARS_PER_DAY).
+    # Then scale to window:  vol_4h = daily_vol * sqrt(H_BARS / BARS_PER_DAY).
+    # Equivalent to vol_4h = bar_vol * sqrt(H_BARS).
     if 'htf_daily_vol_5' in df.columns:
-        daily_vol = df['htf_daily_vol_5'].to_numpy().astype(np.float64) * 0.01
-        daily_vol = np.nan_to_num(daily_vol, nan=0.01)
+        bar_vol = df['htf_daily_vol_5'].to_numpy().astype(np.float64)
+        bar_vol = np.nan_to_num(bar_vol, nan=0.0005)
     else:
         rolling_std = np.full(n, np.nan)
         min_window = 20
@@ -47,16 +49,19 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
             rets = np.diff(np.log(close[max(0, i - min_window):i + 1] + 1e-12))
             if len(rets) > 1:
                 rolling_std[i] = np.std(rets)
-        daily_vol = np.nan_to_num(rolling_std, nan=0.01)
+        bar_vol = np.nan_to_num(rolling_std, nan=0.0005)
 
-    daily_vol = np.maximum(daily_vol, 0.001)
+    bar_vol = np.maximum(bar_vol, 0.0001)
+    vol_4h = bar_vol * np.sqrt(H_BARS)
 
-    # Fixed percentage barriers per market.
-    # +8.33% upper / -3.92% lower over 64-bar window.
-    UPPER_BARRIER_PCT = 0.20
-    LOWER_BARRIER_PCT = 0.12
-    upper_mult = np.full(n, np.exp(UPPER_BARRIER_PCT))
-    lower_mult = np.full(n, np.exp(-LOWER_BARRIER_PCT))
+    # Volatility-adjusted barriers per market.
+    # Barrier width = multiplier * vol_4h where vol_4h = bar_vol * sqrt(64).
+    # Upper:  exp(+MULT_UPPER * vol_4h)   ~ 1.0σ per 64-bar window
+    # Lower:  exp(-MULT_LOWER * vol_4h)   ~ 1.0σ per 64-bar window
+    VOL_MULT_UPPER = 1.0
+    VOL_MULT_LOWER = 1.0
+    upper_mult = np.exp(VOL_MULT_UPPER * vol_4h)
+    lower_mult = np.exp(-VOL_MULT_LOWER * vol_4h)
 
     labels = np.full(n, np.nan, dtype=np.float64)
 

@@ -1,0 +1,40 @@
+======================================================================
+TARGET_TB REBUILD VALIDATION REPORT
+======================================================================
+
+## PARAMETERS APPLIED
+  H_BARS (horizon):         64 (~5.3h at 5m bars)
+  BARS_PER_DAY:             276
+  VOL_MULT_UPPER:           1.0 (upper = exp(+MULT * vol_4h))
+  VOL_MULT_LOWER:           1.0 (lower = exp(-MULT * vol_4h))
+  Vol source:               htf_daily_vol_5 (lagged 260-bar rolling std)
+  vol_4h scaling:          sqrt(64/276) = 0.4815
+  htf_daily_vol_5 column:   PRESENT
+
+  Mean upper barrier:       0.14% above entry
+  Mean lower barrier:       0.14% below entry
+  Barrier width (50p):      upper=0.11%, lower=0.11%
+
+## CLASS BALANCE
+  Total labeled:            354,735
+  NaN (tail):               64
+  +1 (bullish):             76,244  (21.5%)
+  -1 (bearish):             79,877  (22.5%)
+   0 (timeout):             198,614  (56.0%)
+
+## ALIGNMENT CHECKS
+  Tail NaN check:           PASS (64/64 NaN)
+  Forward window correct:   YES
+
+## LEAKAGE CHECKS
+  corr(target_tb, contemporaneous ret):      -0.000789  OK
+  corr(target_tb, forward 64-bar ret):       +0.575063  OK
+  corr(target_tb, past 10-bar ret):          +0.002135  OK
+
+## VOLATILITY REGIME ALIGNMENT
+  Low vol  (n=0):  up=0.0%  down=0.0%  timeout=0.0%
+  High vol (n=0):  up=0.0%  down=0.0%  timeout=0.0%
+
+======================================================================
+CONFIDENCE: 100%
+======================================================================
