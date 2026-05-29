@@ -10,6 +10,7 @@ Realistic execution simulator with economic friction.
 - Intrabar stop/take-profit with linear path logic and gap simulation
 """
 import numpy as np
+import numba
 import polars as pl
 from quant.config_manager import config
 
@@ -17,6 +18,7 @@ from quant.config_manager import config
 FIXED_CONTRACT_SIZE = 1.0
 
 
+@numba.njit(cache=True)
 def simulate_intrabar_stops(
     open_arr: np.ndarray,
     high_arr: np.ndarray,

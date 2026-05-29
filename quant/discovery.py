@@ -10,19 +10,63 @@ import hashlib
 from datetime import datetime, timedelta
 import pytz
 from sklearn.ensemble import ExtraTreesRegressor
-from quant.config_manager import config
-from tqdm import tqdm
+from quant.config_manager import config, clamp_to_single_threaded
+from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 
 
-def get_fold_seed(fold_idx: int) -> int:
-    seed_str = f'{config.SEED}_fold_{fold_idx}'
-    return int(hashlib.sha256(seed_str.encode()).hexdigest(), 16) % 2 ** 32
-
-
 def check_rss(limit_bytes):
     return psutil.Process().memory_info().rss > limit_bytes
+
+
+def _fit_discovery_fold(
+    fold_idx: int,
+    feature_cols: list,
+    et_params: dict,
+    seed: int,
+    rss_stop: int,
+    X: np.ndarray,
+    y: np.ndarray,
+):
+    """Fit a single ExtraTreesRegressor on a bootstrapped sample.
+
+    Standalone function for joblib parallelization.  Clamps threading
+    to single-threaded before fitting for reproducibility.
+
+    X and y are pre-materialized numpy arrays shared across workers
+    via fork/Copy-on-Write; each worker only materializes its own
+    bootstrapped subset inside this function.
+    """
+    clamp_to_single_threaded()
+
+    if psutil.Process().memory_info().rss > rss_stop:
+        raise MemoryError(f'RSS stop limit exceeded in fold {fold_idx}')
+
+    n_samples = X.shape[0]
+    rng = np.random.RandomState(
+        int(hashlib.sha256(f'{seed}_fold_{fold_idx}'.encode()).hexdigest(), 16) % 2 ** 32
+    )
+    indices = rng.choice(n_samples, size=n_samples, replace=True)
+    X_boot = X[indices]
+    y_boot = y[indices]
+
+    fold_et_params = et_params.copy()
+    fold_et_params['random_state'] = int(
+        hashlib.sha256(f'{seed}_fold_{fold_idx}'.encode()).hexdigest(), 16
+    ) % 2 ** 32
+    et = ExtraTreesRegressor(**fold_et_params)
+    et.fit(X_boot, y_boot)
+
+    importances = dict(zip(feature_cols, et.feature_importances_))
+    signs = {}
+    for i, f in enumerate(feature_cols):
+        with np.errstate(invalid='ignore'):
+            corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
+        if np.isnan(corr):
+            corr = 0.0
+        signs[f] = np.sign(corr)
+    return importances, signs
 
 
 def run_feature_discovery(data_path: str, manifest_out: str):
@@ -125,45 +169,25 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
     ]
 
+    logger.info(f'Discovery using {df_features.height} rows, {len(feature_cols)} features.')
+
+    n_folds = config.BOOTSTRAP_FOLDS
+    et_params = dict(config.EXTRA_TREES_PARAMS)
+
+    # Materialize feature matrix and target once — sklearn models need numpy
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
 
-    logger.info(f'Discovery using {X.shape[0]} rows, {X.shape[1]} features.')
-
-    rss_stop = config.RSS_STOP_BYTES
-    n_folds = config.BOOTSTRAP_FOLDS
-    importances_list = []
-    signs_list = []
-
-    for fold_idx in tqdm(range(n_folds), desc='Bootstrap folds', unit='fold'):
-        print(
-            "Fold " + str(fold_idx + 1) + " started at "
-            + datetime.now().strftime('%H:%M:%S'), flush=True
+    results = Parallel(n_jobs=-1, backend='loky')(
+        delayed(_fit_discovery_fold)(
+            fold_idx, feature_cols, et_params, config.SEED,
+            config.RSS_STOP_BYTES, X, y,
         )
-        if check_rss(rss_stop):
-            raise MemoryError(f'RSS stop limit exceeded in fold {fold_idx}')
+        for fold_idx in range(n_folds)
+    )
 
-        n_samples = X.shape[0]
-        rng = np.random.RandomState(get_fold_seed(fold_idx))
-        indices = rng.choice(n_samples, size=n_samples, replace=True)
-        X_boot = X[indices]
-        y_boot = y[indices]
-
-        et_params = config.EXTRA_TREES_PARAMS.copy()
-        et_params['random_state'] = get_fold_seed(fold_idx)
-        et = ExtraTreesRegressor(**et_params)
-        et.fit(X_boot, y_boot)
-
-        importances = dict(zip(feature_cols, et.feature_importances_))
-        signs = {}
-        for i, f in enumerate(feature_cols):
-            with np.errstate(invalid='ignore'):
-                corr = np.corrcoef(X_boot[:, i], y_boot)[0, 1]
-            if np.isnan(corr):
-                corr = 0.0
-            signs[f] = np.sign(corr)
-        importances_list.append(importances)
-        signs_list.append(signs)
+    importances_list = [r[0] for r in results]
+    signs_list = [r[1] for r in results]
 
     importances_sum = {f: 0.0 for f in feature_cols}
     selection_count = {f: 0 for f in feature_cols}

@@ -43,30 +43,47 @@ from pydantic import BaseModel, Field, ValidationError
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Thread-limiting environment variables — must be set BEFORE any numeric
-# library (numpy, scipy, polars, etc.) is imported.  Executes at module
-# import time so that anything importing config_manager gets the
-# enforcement automatically.
+# Thread-limiting environment variables — default to full multi-threading
+# for data ingestion and feature engineering.  Call clamp_to_single_threaded()
+# before model fitting (ExtraTrees, GaussianHMM, etc.) where deterministic
+# reproducibility is required.  Executes at module import time so that
+# anything importing config_manager gets the default (multi-threaded).
 # ============================================================================
-def _enforce_single_threaded() -> None:
-    """Force known threading env vars to '1' so heavy numeric libs stay
-    single-threaded.  Uses direct assignment (os.environ[key] = …) to
-    override any pre-existing values."""
-    _THREAD_VARS = {
-        "OMP_NUM_THREADS": "1",
-        "OPENBLAS_NUM_THREADS": "1",
-        "MKL_NUM_THREADS": "1",
-        "POLARS_MAX_THREADS": "1",
-    }
-    for var, val in _THREAD_VARS.items():
-        os.environ[var] = val
+_THREAD_VARS = {
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "POLARS_MAX_THREADS",
+}
+
+
+def _enable_multi_threading() -> None:
+    """Enable full CPU utilisation by clearing thread-limiting env vars.
+    Called at module import time so data ingestion and feature engineering
+    benefit from multi-threading by default."""
+    for var in _THREAD_VARS:
+        os.environ.pop(var, None)
     logger.debug(
-        "Thread-limiting environment variables enforced: %s",
-        list(_THREAD_VARS.keys()),
+        "Multi-threading enabled (thread-limiting vars cleared): %s",
+        list(_THREAD_VARS),
     )
 
 
-_enforce_single_threaded()
+def clamp_to_single_threaded() -> None:
+    """Force numeric libraries to single-threaded mode for model fitting
+    where deterministic reproducibility is required.
+
+    Call this before fitting ExtraTreesRegressor, GaussianHMM, or any
+    other estimator where thread-level nondeterminism matters."""
+    for var in _THREAD_VARS:
+        os.environ[var] = "1"
+    logger.debug(
+        "Thread-limiting env vars clamped to single-threaded: %s",
+        list(_THREAD_VARS),
+    )
+
+
+_enable_multi_threading()
 
 # ============================================================================
 # Module-level config namespace (SimpleNamespace with flat attributes)
