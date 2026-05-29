@@ -76,10 +76,14 @@ def main():
     run_parser.add_argument('--data', required=True)
     run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_parser.add_argument('--out', required=True)
+    run_parser.add_argument('--start', default=None, help='Start date (ISO format)')
+    run_parser.add_argument('--end', default=None, help='End date (ISO format)')
     run_hmm_parser = subparsers.add_parser('run-hmm')
     run_hmm_parser.add_argument('--data', required=True)
     run_hmm_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_hmm_parser.add_argument('--out', required=True)
+    run_hmm_parser.add_argument('--start', default=None, help='Start date (ISO format)')
+    run_hmm_parser.add_argument('--end', default=None, help='End date (ISO format)')
     run_hmm_parser.add_argument('--retrain-interval', type=int, default=5,
                                 help='Retrain HMM every N folds (default: 5).')
     aggregate_parser = subparsers.add_parser('aggregate')
@@ -138,6 +142,23 @@ def main():
         else:
             print('[CLI] Discovery disabled -- skipping manifest pruning, using baseline features only.', flush=True)
             df_pruned = df_features
+        # Per-split date window filtering (for single-year walkforward isolation)
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            from datetime import datetime as _dt, timezone
+            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+            before = df_pruned.height
+            df_pruned = df_pruned.filter(
+                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+            )
+            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+            if df_pruned.height == 0:
+                print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
+                os.makedirs(args.out, exist_ok=True)
+                placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
+                print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                return
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -191,8 +212,17 @@ def main():
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
-            print('[CLI] Discovery disabled — skipping manifest pruning.', flush=True)
+            print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            from datetime import datetime as _dt, timezone
+            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+            before = df_pruned.height
+            df_pruned = df_pruned.filter(
+                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+            )
+            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]

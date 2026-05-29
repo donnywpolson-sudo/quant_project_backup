@@ -3,6 +3,7 @@ import sys
 import subprocess
 import logging
 import time
+import json
 from pathlib import Path
 import shutil
 import polars as pl
@@ -136,7 +137,8 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             ]
 
             if train_files and test_files:
-                splits.append((sorted(train_files), sorted(test_files)))
+                splits.append((sorted(train_files), sorted(test_files),
+                               test_start, test_end))
                 logger.debug(
                     'Split %d: train=%s→%s (%d files) | test=%s→%s (%d files)',
                     len(splits),
@@ -314,8 +316,40 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
         )
 
 
+def load_all_splits_for_year(year: int) -> list:
+    """Load per-split manifests and backtest results for a given year."""
+    import glob as _glob
+    manifests = sorted(_glob.glob(f'output/manifest_{year}_split_*.json'))
+    if not manifests:
+        fallback = Path(f'output/manifest_{year}.json')
+        if fallback.exists():
+            manifests = [str(fallback)]
+    summaries = []
+    for mpath in manifests:
+        with open(mpath, 'r', encoding='utf-8') as f:
+            mf = json.load(f)
+        out_path = mf.get('output_path')
+        if out_path and Path(out_path).exists():
+            try:
+                df = pl.read_parquet(out_path)
+                summaries.append({
+                    'symbol': mf.get('symbol'),
+                    'year': mf.get('year'),
+                    'split_idx': mf.get('split_idx'),
+                    'rows': df.height,
+                })
+            except Exception as e:
+                summaries.append({'symbol': mf.get('symbol'), 'year': mf.get('year'),
+                                  'split_idx': mf.get('split_idx'), 'error': str(e)})
+        else:
+            summaries.append({'symbol': mf.get('symbol'), 'year': mf.get('year'),
+                              'split_idx': mf.get('split_idx'), 'error': 'backtest file missing'})
+    return summaries
+
+
 def process_split(train_years: list[int], test_years: list[int], files: list[Path],
-                  config: RootConfig, split_idx: int, total_splits: int) -> None:
+                  config: RootConfig, split_idx: int, total_splits: int,
+                  test_start=None, test_end=None) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
     if not train_files or not test_files:
@@ -329,7 +363,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             'Consider wf_train_days >= %d for stable bootstrap.',
             wf_train, _MIN_TRAIN_DAYS, _MIN_TRAIN_DAYS
         )
-    train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}"
+    train_dir = Path('output') / f"train_{'_'.join(map(str, train_years))}_split_{split_idx}"
     train_dir.mkdir(parents=True, exist_ok=True)
     logger.info('Preparing TRAIN dataset for years %s', train_years)
     for f in train_files:
@@ -344,7 +378,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}.json"
+    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
@@ -357,20 +391,24 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
         time.sleep(0.2)
     else:
-        import json
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(manifest_path, 'w') as f:
+        tmp = str(manifest_path) + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump({'version': '1.0', 'feature_names': [], 'selection_seed': config.preprocessing.seed,
                        'selection_date': 'placeholder', 'discovery_status': 'disabled'}, f)
+        os.replace(tmp, str(manifest_path))
     per_symbol = {}
     for f in test_files:
         symbol = f.parent.name
         if not _validate_symbol_data(f, config):
             continue
-        out_dir = Path('output') / symbol / f.stem
+        out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run([sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
-                        '--manifest', str(manifest_path), '--out', str(out_dir)], **kw)
+        cmd = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+               '--manifest', str(manifest_path), '--out', str(out_dir)]
+        if test_start and test_end:
+            cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        subprocess.run(cmd, **kw)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results.parquet'
         if bt_path.exists():
@@ -397,7 +435,10 @@ if __name__ == '__main__':
     if not _VERBOSE:
         logging.getLogger().setLevel(logging.WARNING)
         logging.getLogger('quant').setLevel(logging.WARNING)
-    for i, (train, test) in enumerate(splits, 1):
-        process_split(train, test, files, config, i, total)
+    for i, split_data in enumerate(splits, 1):
+        train, test = split_data[0], split_data[1]
+        test_start = split_data[2] if len(split_data) > 2 else None
+        test_end = split_data[3] if len(split_data) > 3 else None
+        process_split(train, test, files, config, i, total, test_start, test_end)
     logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')
