@@ -417,6 +417,35 @@ def main():
 
     print_results(results, spec, symbol, year)
 
+
+def find_optimal_threshold(sweep_results: list[dict], metric: str = 'sharpe') -> float:
+    """Auto-calculate optimal z-score threshold from sweep knee-point.
+
+    Finds the threshold that maximizes the selected metric (Sharpe by default)
+    using the elbow method: picks the point where marginal gain drops below
+    half of the average gain across all thresholds.
+
+    Args:
+        sweep_results: List of dicts with keys 'z_threshold', 'sharpe', 'hit_rate'.
+        metric: 'sharpe' or 'hit_rate'.
+
+    Returns:
+        Optimal z_score_entry_threshold as float.
+    """
+    if not sweep_results or len(sweep_results) < 3:
+        return 1.5
+    thresholds = np.array([r['z_threshold'] for r in sweep_results])
+    values = np.array([r.get(metric, 0.0) for r in sweep_results])
+    gains = np.diff(values)
+    avg_gain = np.mean(gains[gains > 0]) if np.any(gains > 0) else 0.01
+    if avg_gain <= 0:
+        return float(thresholds[np.argmax(values)])
+    half_gain = avg_gain * 0.5
+    for i in range(len(gains)):
+        if gains[i] < half_gain and i > 0:
+            return float(thresholds[i])
+    return float(thresholds[np.argmax(values)])
+
     if args.save:
         save_results(results, spec, symbol, year)
 

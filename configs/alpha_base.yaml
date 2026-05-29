@@ -101,5 +101,5 @@ execution:
   z_score_entry_threshold: 1.5
   target_risk_per_trade: 0.01
   stop_loss_pct: 0.01
-  take_profit_pct: 0.01
+  take_profit_pct: 0.005
   gap_slippage_pct: 0.0

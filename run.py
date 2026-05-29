@@ -280,9 +280,12 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     print(f'{v} [SPLIT {split_idx}/{total}] Processing Assets...{" " * 3}{v}')
     print(f'{c}{h * 52}{r}')
     combined_sharpe = 0.0
-    for symbol, (sharpe, pnl, hit) in sorted(per_symbol.items()):
+    for symbol, entry in sorted(per_symbol.items()):
+        sharpe = entry[0]; pnl = entry[1]; hit = entry[2]
+        hmm_delta = entry[3] if len(entry) > 3 else 0.0
         icon = check if sharpe > 0 else cross
-        print(f'{v}  {icon} {symbol:<4s}  Sharpe={sharpe:+.2f}  PnL={pnl:+,.2f}  Hit={hit:.1%} {"":>6s}{v}')
+        delta_str = f' HMM_delta={hmm_delta:+.2f}' if abs(hmm_delta) > 0.001 else ''
+        print(f'{v}  {icon} {symbol:<4s}  Sharpe={sharpe:+.2f}  PnL={pnl:+,.2f}  Hit={hit:.1%}{delta_str} {"":>6s}{v}')
         combined_sharpe += sharpe
     status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
     print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
@@ -404,23 +407,34 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, '-m', 'quant.cli', 'run', '--data', str(f),
+        cmd = [sys.executable, '-m', 'quant.cli', 'run-hmm', '--data', str(f),
                '--manifest', str(manifest_path), '--out', str(out_dir)]
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
         subprocess.run(cmd, **kw)
         time.sleep(0.2)
-        bt_path = out_dir / 'backtest_results.parquet'
+        bt_path = out_dir / 'backtest_results_hmm.parquet'
+        if not bt_path.exists():
+            bt_path = out_dir / 'backtest_results.parquet'
         if bt_path.exists():
             try:
                 bt = pl.read_parquet(bt_path)
                 pnl = bt['pnl'].sum()
                 sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
-                pos = bt['position'].abs().mean() if 'position' in bt.columns else 0
                 hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
-                per_symbol[symbol] = (sharpe, pnl, hit)
+                # HMM delta: compare with raw (non-HMM) baseline if available
+                hmm_delta = 0.0
+                raw_path = out_dir / 'backtest_results.parquet'
+                if raw_path.exists() and raw_path != bt_path:
+                    try:
+                        raw = pl.read_parquet(raw_path)
+                        raw_sharpe = float(raw['pnl'].mean() / max(raw['pnl'].std(), 1e-9) * np.sqrt(252))
+                        hmm_delta = sharpe - raw_sharpe
+                    except Exception:
+                        hmm_delta = 0.0
+                per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
             except Exception:
-                per_symbol[symbol] = (0.0, 0.0, 0.0)
+                per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
