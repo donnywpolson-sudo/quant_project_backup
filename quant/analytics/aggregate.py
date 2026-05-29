@@ -4,10 +4,9 @@ import numpy as np
 from pathlib import Path
 from scipy.stats import spearmanr
 
-# Number of 5-minute bars in a trading year (~252 days * ~23.5 hours of continuous futures)
-# ES trades ~23 hours/day = 276 bars/day * 252 = 69,552
-# More conservative: 264 bars/day * 252 = 66,528
-ANNUAL_FACTOR = 66528
+# Number of 5-minute bars in a trading year (~23h * 12 bars/h * 252 trading days)
+# Overridable via config.ANNUAL_FACTOR if set before aggregate import.
+ANNUAL_FACTOR = 69552
 RISK_FREE_RATE = 0.0
 
 # Column projection for loading backtest results: only read columns that

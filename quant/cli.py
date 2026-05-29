@@ -66,6 +66,7 @@ def main():
         from quant.market_config import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
+        config.CURRENT_SYMBOL = symbol
     if args.command == 'discover':
         print('\n[CLI] === PHASE 1: FEATURE DISCOVERY ===', flush=True)
         cache_dir = Path('output/cache')
@@ -84,13 +85,7 @@ def main():
         run_feature_discovery(str(feature_cache), args.out)
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
-        target_col = 'target_sign_4h'
-        cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data)
-        aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
-        feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
-        print('[CLI] Loading aligned data...', flush=True)
-        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        target_col = 'target_sign'  # 1-bar execution-aligned target
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -126,7 +121,7 @@ def main():
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
-        target_col = 'target_sign_4h'
+        target_col = 'target_sign'  # 1-bar execution-aligned target
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data)
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'

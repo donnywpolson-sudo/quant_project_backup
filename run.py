@@ -98,14 +98,13 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         window = wf_cfg.wf_train_days + wf_cfg.wf_test_days
 
         if total_days < window:
-            logger.warning(
+            logger.error(
                 'Insufficient date range for day-based walkforward: '
-                'need at least %d days, have %d days (%s → %s)',
+                'need at least %d days, have %d days (%s → %s). '
+                'No splits generated.',
                 window, total_days, data_start, data_end,
             )
-            # Fallback: single split covering the whole range
-            all_years = sorted(file_bounds.keys())
-            return [(all_years, all_years)]
+            return []
 
         splits: list[tuple[list[int], list[int]]] = []
         cursor = 0  # day offset from data_start
@@ -116,14 +115,17 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             test_start  = train_end
             test_end    = data_start + _dt.timedelta(days=cursor + window)
 
-            # Find files that overlap each window
+            # Strict window containment — a file MUST be entirely within
+            # the window to avoid training on future data (CRITICAL #1).
+            # Files that span beyond the window are excluded; they cannot
+            # be safely assigned to either train or test without date-slicing.
             train_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
-                if fmax >= train_start and fmin < train_end
+                if fmin >= train_start and fmax < train_end
             ]
             test_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
-                if fmax >= test_start and fmin < test_end
+                if fmin >= test_start and fmax < test_end
             ]
 
             if train_files and test_files:
@@ -151,13 +153,14 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             )
             return splits
 
-        # Fallback: single merged split if no valid rolling windows produced
-        all_years = sorted(file_bounds.keys())
-        logger.warning(
-            'No day-based splits generated (step may be too large for range). '
-            'Falling back to single merged split.',
+        # No valid rolling windows produced — do NOT create a fallback
+        # split that would contaminate train/test boundaries.
+        logger.error(
+            'No day-based splits generated (step %d may be too large for '
+            'the %d-day range). No splits produced.',
+            wf_cfg.wf_step_days, total_days,
         )
-        return [(all_years, all_years)]
+        return []
 
     # ---- Legacy year-count mode ------------------------------------------
     train_years = config.data_years
@@ -182,14 +185,18 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         splits.append((train_range, test_range))
 
     if not splits:
-        train_range = years[:train_years] if len(years) >= train_years else years[:]
-        test_range = [years[-1]] if years else []
-        if not train_range:
-            logger.warning('No train range could be formed — no splits generated')
+        train_range = years[:train_years] if len(years) >= train_years else years[:-1] if len(years) > 1 else []
+        test_range = years[train_years:] if len(years) > train_years else []
+        if not train_range or not test_range:
+            logger.error(
+                'Insufficient years for walkforward: need at least %d years '
+                '(train=%d + test=%d), have %d. No splits generated.',
+                min_years_needed, train_years, wf_years, len(years),
+            )
             return []
         logger.warning(
             'Insufficient years for walkforward: need %d (train=%d + test=%d), '
-            'have %d. Falling back to single split: train=%s, test=%s',
+            'have %d. Falling back to reduced split: train=%s, test=%s',
             min_years_needed, train_years, wf_years, len(years),
             train_range, test_range,
         )

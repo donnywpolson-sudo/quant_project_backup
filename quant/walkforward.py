@@ -91,27 +91,24 @@ def smooth_probabilities(probs: np.ndarray, session_ids: np.ndarray, alpha: floa
     return smoothed.astype(np.float32)
 
 def compute_benchmark(df: pl.DataFrame) -> pl.Series:
-    close = df['close'].to_numpy().astype(np.float32)
-    open_ = df['open'].to_numpy().astype(np.float32)
-    close_lagged = np.roll(close, 1)
-    close_lagged[0] = close[0]
-    sma20 = np.full(len(close), np.nan, dtype=np.float32)
-    for i in range(20, len(close)):
-        sma20[i] = np.mean(close_lagged[i - 19:i + 1])
-    signal = np.where(close_lagged > sma20, 1.0, 0.0).astype(np.float32)
-    position = np.roll(signal, 1)
-    position[0] = 0.0
-    ret_exec = (close - open_) / np.maximum(open_, config.EPS)
-    pnl = position * safe_replace(ret_exec)
-    return pl.Series('benchmark_pnl', safe_replace(pnl).astype(np.float32), dtype=pl.Float32)
+    close = pl.col('close').cast(pl.Float32)
+    open_ = pl.col('open').cast(pl.Float32)
+    close_lagged = close.shift(1)
+    sma20 = close_lagged.rolling_mean(window_size=20, min_periods=20)
+    signal = pl.when(close_lagged > sma20).then(pl.lit(1.0, dtype=pl.Float32)).otherwise(pl.lit(0.0, dtype=pl.Float32))
+    position = signal.shift(1).fill_null(0.0)
+    ret_exec = (close - open_) / open_.clip(config.EPS, None)
+    pnl = position * ret_exec.fill_nan(0.0).fill_null(0.0)
+    return df.select(pnl.cast(pl.Float32).alias('benchmark_pnl')).to_series()
 
 def exclude_warmup(df: pl.DataFrame, burn_in_bars: int) -> pl.DataFrame:
-    """Drop the first *burn_in_bars* rows so they are excluded from metrics
-    aggregation (PnL, Sharpe, etc.). Returns the trimmed DataFrame unchanged
-    if burn_in_bars <= 0 or the DataFrame is shorter than burn_in_bars."""
+    """Drop the first *burn_in_bars* rows plus one extra bar (position carry-over
+    from the warmup period). Returns the trimmed DataFrame unchanged
+    if burn_in_bars <= 0 or the DataFrame is shorter than burn_in_bars + 1."""
     if burn_in_bars <= 0 or df.height <= burn_in_bars:
         return df
-    return df.slice(burn_in_bars)
+    trim = min(burn_in_bars + 1, df.height)
+    return df.slice(trim)
 
 
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
@@ -264,15 +261,11 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     Preserves all HMM columns (hmm_regime_*, hmm_trade_gate).
     """
-    import os
     import yaml
     from pathlib import Path
     from quant.execution.simulator import _compute_pnl_from_target_exec
-    from quant.market_config import detect_symbol_from_path
 
-    # Resolve contract_multiplier (same logic as simulate_execution_classification)
-    data_path = os.environ.get('QUANT_DATA_PATH', 'data/ES')
-    symbol = detect_symbol_from_path(data_path)
+    symbol = getattr(config, 'CURRENT_SYMBOL', None) or 'ES'
     market_cfg_path = config.MARKET_CONFIGS.get(symbol)
     if market_cfg_path and Path(market_cfg_path).exists():
         with open(market_cfg_path, 'r') as f:
@@ -335,8 +328,13 @@ def _build_ts_folds(
     window_days = train_days + test_days
 
     if total_days < window_days:
-        # Not enough data — return single fold covering all data
-        return [(0, df.height, 0, df.height)]
+        logger.warning(
+            'Insufficient date range (%d days) for walkforward window '
+            '(%d days). Folding requires at least window_days of data. '
+            'No folds generated.',
+            total_days, window_days,
+        )
+        return []
 
     # ---- Vectorized searchsorted for window boundaries ----
     # Build candidate window start timestamps (one per step)
@@ -377,10 +375,13 @@ def _build_ts_folds(
              for i0, i1, i2, i3 in indices]
 
     if not folds and df.height > 0:
-        # Sparse-data fallback: total_days >= window_days but no individual
-        # window satisfied the non-empty train+test constraint.  Return a
-        # single fold covering all available data.
-        return [(0, df.height, 0, df.height)]
+        logger.warning(
+            'Total days (%d) >= window_days (%d) but no individual '
+            'window satisfied the non-empty train+test constraint '
+            '(likely sparse data). No folds generated.',
+            total_days, window_days,
+        )
+        return []
 
     return folds
 

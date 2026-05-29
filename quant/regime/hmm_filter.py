@@ -131,9 +131,9 @@ class HMMRegimeFilter:
             hourly_probs = np.ones((n, self.config.n_states)) / self.config.n_states
             self._last_1h_probs = hourly_probs
 
-        # Bridge to 5-min
+        # Bridge to 5-min — pass df_1h_test for timestamp-based alignment
         df_5min_test = self.detector.bridge_to_5min(
-            hourly_probs, df_5min_test
+            hourly_probs, df_5min_test, df_1h_test
         )
 
         # Apply trade gate

@@ -830,6 +830,7 @@ class HMMRegimeDetector:
         self,
         hourly_probs: np.ndarray,
         df_5min: "pl.DataFrame",
+        df_1h: "pl.DataFrame" = None,
     ) -> "pl.DataFrame":
         """
         Forward-fill hourly regime probabilities into 5-minute data.
@@ -838,9 +839,14 @@ class HMMRegimeDetector:
         1-hour bar (causal: no future information used). The regime
         probabilities are added as columns with prefix 'hmm_regime_'.
 
+        Uses timestamp-based alignment when df_1h is provided (replacing a
+        prior positional-indexing approach that misaligned on missing hours).
+        Falls back to positional mapping when df_1h is None.
+
         Args:
             hourly_probs: (n_1h, 4) regime probabilities from filter().
             df_5min: 5-minute Polars DataFrame with 'ts_event' column.
+            df_1h: 1-hour Polars DataFrame (used for timestamp alignment).
 
         Returns:
             df_5min with added columns: hmm_regime_0, ..., hmm_regime_3
@@ -848,49 +854,49 @@ class HMMRegimeDetector:
         import polars as pl
 
         n_hours = hourly_probs.shape[0]
-        n_5min = df_5min.height
+        col_names = [f"hmm_regime_{i}" for i in range(self.config.n_states)]
 
-        # Build an array: for each 5-min bar, find the most recent hourly bar
-        # Strategy: use timestamps. Each 5-min bar maps to the 1H bar whose
-        # ts_event is <= the 5-min bar's ts_event, truncated to the hour.
+        if df_1h is not None and df_1h.height > 0:
+            # Timestamp-based alignment: build a 1H frame with probs,
+            # truncate 5-min ts_event to the hour, and join.
+            prob_cols = {
+                col_names[i]: hourly_probs[:, i].astype(np.float32)
+                for i in range(self.config.n_states)
+            }
+            df_1h_probs = df_1h.select('ts_event').with_columns([
+                pl.Series(name, prob_cols[name]) for name in col_names
+            ])
+            df_5min = df_5min.with_columns(
+                pl.col('ts_event').dt.truncate('1h').alias('_ts_hour')
+            )
+            df_5min = df_5min.join(df_1h_probs, left_on='_ts_hour', right_on='ts_event', how='left')
+            df_5min = df_5min.drop(['_ts_hour'])
+            # Forward-fill any gaps (hours missing from 1H data)
+            for col in col_names:
+                if col in df_5min.columns:
+                    df_5min = df_5min.with_columns(pl.col(col).fill_null(strategy='forward').fill_null(0.0))
+            return df_5min
+
+        # Fallback: positional mapping (legacy path when df_1h is unavailable)
         ts_5min = df_5min["ts_event"].to_numpy()
         ts_1h_floor = ts_5min.astype("datetime64[h]")
 
-        # We need the corresponding hourly timestamps from the 1H df.
-        # Since we don't have that reference here, we use a simpler approach:
-        # create a mapping from hour-floor to row index.
-        # Each block of ~12 5-min bars (in a complete hour) maps to the same
-        # 1H bar index. We forward-fill hourly probs along the 5-min axis.
-
-        # Simpler and more robust: use cumulative repeat based on hour transitions.
-        # Count unique hour floors and map each to a sequential index.
         unique_hours, inverse, counts = np.unique(
             ts_1h_floor, return_inverse=True, return_counts=True
         )
 
         n_unique_hours = len(unique_hours)
         if n_unique_hours > n_hours:
-            # More unique hours in 5min than hourly probs — truncate to available
             logger.warning(
                 f"5-min data has {n_unique_hours} unique hours but only "
                 f"{n_hours} hourly prob rows. Truncating to available."
             )
             n_unique_hours = min(n_unique_hours, n_hours)
 
-        # Build hourly-prob array aligned to unique hours
-        # If n_unique_hours < n_hours, take the most recent n_unique_hours
         aligned_probs = hourly_probs[-n_unique_hours:] if n_unique_hours <= n_hours else hourly_probs
-
-        # Map each 5-min bar to its hourly prob index
-        # inverse gives the index into unique_hours for each 5-min bar
-        # But we need to ensure inverse values don't exceed aligned_probs
         hour_index = np.clip(inverse, 0, aligned_probs.shape[0] - 1)
-
-        # Forward-fill: assign hourly prob to each 5-min bar
         probs_5min = aligned_probs[hour_index]
 
-        # Add columns to DataFrame
-        col_names = [f"hmm_regime_{i}" for i in range(self.config.n_states)]
         for i in range(self.config.n_states):
             df_5min = df_5min.with_columns(
                 pl.Series(col_names[i], probs_5min[:, i].astype(np.float32))

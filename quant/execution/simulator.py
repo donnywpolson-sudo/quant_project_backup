@@ -309,15 +309,15 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     # ------------------------------------------------------------------------
     # 6b. Position clipping: max_position_size and notional cap
     #     using per-market contract_multiplier from market config.
+    #     Symbol is resolved from config.CURRENT_SYMBOL, set by cli.py
+    #     when the command is invoked. Falls back to 'ES' if unset.
     # ------------------------------------------------------------------------
-    import os
     import yaml
     from pathlib import Path
-    from quant.market_config import detect_symbol_from_path
+    from quant.config_manager import config as _cfg
 
-    data_path = os.environ.get('QUANT_DATA_PATH', 'data/ES')
-    symbol = detect_symbol_from_path(data_path)
-    market_cfg_path = config.MARKET_CONFIGS.get(symbol)
+    symbol = getattr(_cfg, 'CURRENT_SYMBOL', None) or 'ES'
+    market_cfg_path = _cfg.MARKET_CONFIGS.get(symbol)
     if market_cfg_path and Path(market_cfg_path).exists():
         with open(market_cfg_path, 'r') as f:
             market_cfg = yaml.safe_load(f)

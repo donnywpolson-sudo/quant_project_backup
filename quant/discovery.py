@@ -143,13 +143,37 @@ def run_feature_discovery(data_path: str, manifest_out: str):
 
     df_features = df_features.drop('date')
 
-    # --- Memory cap ---
-    if df_features.height > 200000:
+    # --- Memory cap: time-stratified sampling to avoid regime bias ---
+    # Previously used df.tail(200000) which dropped the oldest rows
+    # deterministically, discarding historical regimes.
+    max_rows = 200000
+    if df_features.height > max_rows:
         logger.info(
-            f'Capping discovery rows from {df_features.height} to 200000 '
-            f'for memory safety'
+            f'Capping discovery rows from {df_features.height} to {max_rows} '
+            f'via time-stratified sampling'
         )
-        df_features = df_features.tail(200000)
+        n = df_features.height
+        # Stratify into 3 equal time segments (old/mid/recent), then
+        # sample evenly from each to preserve diverse regimes.
+        seg_size = n // 3
+        indices = []
+        for seg_start in (0, seg_size, 2 * seg_size):
+            seg_end = min(seg_start + seg_size, n)
+            seg_count = seg_end - seg_start
+            sample_count = min(seg_count, max_rows // 3)
+            if seg_count > 1:
+                step = max(1, seg_count // sample_count)
+                indices.extend(range(seg_start, seg_end, step))
+        if len(indices) > max_rows:
+            step = max(1, len(indices) // max_rows)
+            indices = indices[::step][:max_rows]
+        df_features = df_features.select(
+            pl.int_range(pl.len()).alias('_row')
+        ).with_columns(
+            df_features.select(pl.all())
+        ).filter(
+            pl.col('_row').is_in(indices)
+        ).drop('_row')
 
     # --- Feature column selection ---
     target_col = 'target_5m'

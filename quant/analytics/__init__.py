@@ -2,7 +2,10 @@ import sys
 import polars as pl
 import numpy as np
 
+from quant.config_manager import config
 from .aggregate import run_aggregation
+
+ANNUAL_FACTOR = 69552  # 23h * 12 bars/h * 252 days
 
 
 def calculate_metrics(file_path: str):
@@ -19,7 +22,7 @@ def calculate_metrics(file_path: str):
     avg_pnl = pnl.mean()
     std_pnl = pnl.std()
     if std_pnl > 0:
-        sharpe = avg_pnl / std_pnl * np.sqrt(252 * 264)
+        sharpe = avg_pnl / std_pnl * np.sqrt(ANNUAL_FACTOR)
     else:
         sharpe = 0.0
     cum_pnl = np.cumsum(pnl)

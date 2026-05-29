@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Annualization factor for 5-minute bars
 # ~23 hours * 12 bars/hour * 252 days = 69,552 bars/year
-ANNUAL_FACTOR: float = 66528.0
+ANNUAL_FACTOR: float = 69552.0
 RISK_FREE_RATE: float = 0.0
 EPS: float = 1e-12
 
