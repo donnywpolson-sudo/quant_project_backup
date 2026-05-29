@@ -45,16 +45,16 @@ discovery:
     max_depth: 4
     max_features: 0.3
     bootstrap: false
-  selection_freq_threshold: 0.75
-  sign_consistency_threshold: 0.8
+  selection_freq_threshold: 0.50
+  sign_consistency_threshold: 0.5
   cumulative_importance_threshold: 0.95
   min_selected_features: 5
   max_selected_features: 50
 
 walkforward:
-  wf_train_days: 30
-  wf_test_days: 1
-  wf_step_days: 10
+  wf_train_days: 180
+  wf_test_days: 30
+  wf_step_days: 30
   ridge_params:
     alpha: 1.0
     solver: "cholesky"

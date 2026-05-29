@@ -54,6 +54,14 @@ def _fit_discovery_fold(
     X_boot = X[indices]
     y_boot = y[indices]
 
+    # Defense-in-depth: strip any NaN y that survived upstream filtering
+    if np.any(np.isnan(y_boot)):
+        valid = ~np.isnan(y_boot)
+        X_boot = X_boot[valid]
+        y_boot = y_boot[valid]
+        if len(y_boot) < 2:
+            return dict.fromkeys(feature_cols, 0.0), dict.fromkeys(feature_cols, 0.0)
+
     fold_et_params = et_params.copy()
     fold_et_params['random_state'] = int(
         hashlib.sha256(f'{seed}_fold_{fold_idx}'.encode()).hexdigest(), 16
@@ -235,6 +243,13 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     # Materialize feature matrix and target once — sklearn models need numpy
     X = df_features.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
     y = df_features.select(target_col).to_numpy().astype(np.float32).ravel()
+
+    # Drop rows where target is NaN (trailing shift-NaN from horizon windows).
+    # Must be aligned on both X and y to preserve row indexing.
+    nan_mask = ~np.isnan(y)
+    logger.info('[DIAG] target NaN rows: %d / %d', int((~nan_mask).sum()), len(y))
+    X = X[nan_mask]
+    y = y[nan_mask]
 
     if X.shape[0] < 2:
         logger.warning(

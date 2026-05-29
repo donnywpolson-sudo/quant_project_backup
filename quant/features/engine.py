@@ -2,6 +2,7 @@ pass
 import polars as pl
 import logging
 import numpy as np
+from datetime import timedelta
 from quant.config_manager import config
 from quant.features.baseline import compute_baseline_features, load_baseline_feature_names
 from quant.features.expansion import expand_features, add_cross_timeframe_interactions
@@ -84,31 +85,32 @@ def fill_intraday_gaps(df: pl.DataFrame, bar_seconds: int = 300,
                        max_gap_minutes: int = 60, max_fill_minutes: int = 480) -> pl.DataFrame:
     """Forward-fill missing intraday bars within [max_gap_minutes, max_fill_minutes].
 
-    Resamples to a uniform 5-min (by default) grid. Gaps larger than
+    Detects gaps in ts_event, generates fill rows at 5-min intervals, and
+    forward-fills OHLCV from the preceding bar. Gaps larger than
     max_fill_minutes (weekends, holidays) are left as genuine closures.
     """
-    ts = df['ts_event'].sort().to_list()
-    n = len(ts)
-    new_rows = []
+    ts = df['ts_event'].to_list()
+    n, new_rows = len(ts), []
     for i in range(n - 1):
         gap_sec = (ts[i + 1] - ts[i]).total_seconds()
         gap_min = gap_sec / 60.0
         if max_gap_minutes < gap_min <= max_fill_minutes:
             missing_steps = int(gap_sec / bar_seconds) - 1
-            if missing_steps > 0:
-                base_ts = ts[i]
-                row_i = df.row(i, named=True)
-                for step in range(1, missing_steps + 1):
-                    fill_ts = base_ts + pl.duration(seconds=step * bar_seconds)
-                    new_rows.append({**row_i, 'ts_event': fill_ts})
+            if missing_steps <= 0:
+                continue
+            row_i = {col: df[col][i] for col in df.columns}
+            for step in range(1, missing_steps + 1):
+                fill_ts = ts[i] + timedelta(seconds=step * bar_seconds)
+                new_rows.append({**row_i, 'ts_event': fill_ts})
     if not new_rows:
         return df
-    fill_df = pl.DataFrame(new_rows, schema=df.schema).cast(df.schema)
+    fill_df = pl.DataFrame(new_rows).cast(df.schema)
     result = pl.concat([df, fill_df]).sort('ts_event')
     added = len(new_rows)
+    gap_count = sum(1 for i in range(n - 1)
+                    if max_gap_minutes < (ts[i + 1] - ts[i]).total_seconds() / 60.0 <= max_fill_minutes)
     logger.warning('[FILL-GAPS] Forward-filled %d missing intraday rows across %d gaps',
-                   added, sum(1 for i in range(len(ts) - 1)
-                              if max_gap_minutes < (ts[i + 1] - ts[i]).total_seconds() / 60.0 <= max_fill_minutes))
+                   added, gap_count)
     return result
 
 
@@ -157,22 +159,34 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     logger.info('[CANONICAL] Step 4 features built: %d rows, %d cols', df.height, len(df.columns))
 
     # ---- STEP 5: FILTER (explicit mask on target NaNs) ----
-    # Build mask from all target columns BEFORE filtering — preserves alignment
+    # Build mask from all target columns BEFORE filtering — preserves alignment.
+    # Skip target columns that are entirely NaN (e.g., target_1h when HTF data
+    # is unavailable) to avoid a single null column collapsing the whole dataset.
     filter_cols = [c for c in ('target_5m', 'target_4h', 'target_1h', 'target_tb') if c in df.columns]
-    if filter_cols:
-        mask = df[filter_cols[0]].is_not_null()
-        for tc in filter_cols[1:]:
-            mask = mask & df[tc].is_not_null()
-        before = df.height
+    before = df.height
+    mask = None
+    full_nan_cols = []
+    for tc in filter_cols:
+        null_count = df[tc].null_count()
+        if null_count == df.height:
+            full_nan_cols.append(tc)
+            logger.warning('[CANONICAL] Filter: %s is entirely null (%d rows) — excluding from mask', tc, df.height)
+            continue
+        col_mask = df[tc].is_not_null()
+        mask = col_mask if mask is None else mask & col_mask
+    if full_nan_cols:
+        logger.warning('[CANONICAL] Filter: skipped %d fully-null target columns: %s',
+                       len(full_nan_cols), ', '.join(full_nan_cols))
+    if mask is not None:
         df = df.filter(mask)
         after = df.height
         dropped = before - after
         logger.info('[CANONICAL] Step 5 filter: %d rows -> %d (dropped %d NaN)', before, after, dropped)
-        if after == 0 and before > 0:
-            raise RuntimeError(
-                'FEATURE FAIL: filter collapsed %d rows to 0 — '
-                'all target columns fully NaN. Check shift/horizon/cross-asset data.' % before
-            )
+    if before > 0 and df.height == 0:
+        raise RuntimeError(
+            'FEATURE FAIL: filter collapsed %d rows to 0 — '
+            'all target columns fully NaN. Check shift/horizon/cross-asset data.' % before
+        )
 
     # ---- STEP 6: VALIDATE (final contract) ----
     if df.height == 0:
