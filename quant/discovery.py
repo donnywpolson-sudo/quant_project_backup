@@ -93,7 +93,16 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         df_ts = lf_ts.collect(streaming=True)
 
     df_ts = df_ts.sort('ts_event')
-    latest_ts = df_ts[-1, 'ts_event']
+    if df_ts.height == 0:
+        logger.warning('Empty ts_event — skipping window trim, using all rows')
+        cutoff_date = None
+    else:
+        latest_ts = df_ts['ts_event'].to_list()[-1]
+        if latest_ts.tzinfo is None:
+            latest_ts = pytz.utc.localize(latest_ts)
+        latest_local = latest_ts.astimezone(local_tz)
+        cutoff_local_date = latest_local.date()
+        cutoff_date = cutoff_local_date - timedelta(days=config.DISCOVERY_WINDOW_DAYS)
 
     local_tz = pytz.timezone(config.TIMEZONE)
 
