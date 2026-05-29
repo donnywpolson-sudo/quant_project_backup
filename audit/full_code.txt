@@ -2,14 +2,15 @@
 =============================
 
 quant_project_backup/
-    git_sync.py
     README.md
     requirements.txt
     run.py
     audit/
         audit_prompt.md
         code_to_text.py
+        git_sync.py
         kilocode_deepseek.md
+        quant_flowchart.md
     configs/
         alpha_1.yaml
         alpha_2.yaml
@@ -268,6 +269,7 @@ quant_project_backup/
             full_feature_matrix_7f22063a0371.parquet
             full_feature_matrix_91458bddb8e3.parquet
             full_feature_matrix_91d9b764b17c.parquet
+            full_feature_matrix_91d9b764b17c.parquet.tmp
             full_feature_matrix_a00b4c0cb7a7.parquet
             full_feature_matrix_aa6e302e19f5.parquet
             full_feature_matrix_b3c47247939f.parquet
@@ -514,37 +516,6 @@ htmlcov/
 # Databento API Key
 .env
 --- END OF FILE: .gitignore ---
-
---- START OF FILE: git_sync.py ---
-import subprocess
-import sys
-from datetime import datetime
-
-def git_commit_and_push(commit_message=None):
-    # Set default message if none is provided
-    if not commit_message:
-        commit_message = f"updates - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    
-    try:
-        # 1. Stage all changes
-        subprocess.run(["git", "add", "."], check=True)
-        
-        # 2. Commit the changes
-        subprocess.run(["git", "commit", "-m", commit_message], check=True)
-        
-        # 3. Push to the current branch
-        subprocess.run(["git", "push"], check=True)
-        
-        print(f"Successfully committed: '{commit_message}' and pushed.")
-    
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e}")
-
-if __name__ == "__main__":
-    # If a message is passed, use it. Otherwise, use the default.
-    msg = sys.argv[1] if len(sys.argv) > 1 else None
-    git_commit_and_push(msg)
---- END OF FILE: git_sync.py ---
 
 --- START OF FILE: README.md ---
 # Deterministic Intraday Futures ML Backtester
@@ -1586,9 +1557,68 @@ if __name__ == "__main__":
     generate_context()
 --- END OF FILE: audit\code_to_text.py ---
 
+--- START OF FILE: audit\git_sync.py ---
+import subprocess
+import sys
+from datetime import datetime
+
+def git_commit_and_push(commit_message=None):
+    # Set default message if none is provided
+    if not commit_message:
+        commit_message = f"updates - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    try:
+        # 1. Stage all changes
+        subprocess.run(["git", "add", "."], check=True)
+        
+        # 2. Commit the changes
+        subprocess.run(["git", "commit", "-m", commit_message], check=True)
+        
+        # 3. Push to the current branch
+        subprocess.run(["git", "push"], check=True)
+        
+        print(f"Successfully committed: '{commit_message}' and pushed.")
+    
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
+
+if __name__ == "__main__":
+    # If a message is passed, use it. Otherwise, use the default.
+    msg = sys.argv[1] if len(sys.argv) > 1 else None
+    git_commit_and_push(msg)
+--- END OF FILE: audit\git_sync.py ---
+
 --- START OF FILE: audit\kilocode_deepseek.md ---
-turn this into a kilo code inline agent prompt which is using Deepseek V4 Pro.  make the prompt and all token usage extremely efficient without sacrificing quality.  Make it completely globe safe and anything else so the prompt doesn't hang.
+turn this into a kilo code inline agent prompt which uses Deepseek V4 Pro.  make the prompt and all token usage extremely efficient without sacrificing quality.  Make it completely globe safe and anything else so the prompt doesn't hang.
 --- END OF FILE: audit\kilocode_deepseek.md ---
+
+--- START OF FILE: audit\quant_flowchart.md ---
+RAW DATA
+    ↓
+INGESTION
+    ↓
+CONTINUOUS CONTRACTS
+    ↓
+SESSION NORMALIZATION
+    ↓
+ALIGNMENT
+    ↓
+FEATURE ENGINEERING
+    ↓
+TARGET GENERATION
+    ↓
+REGIME MODELING
+    ↓
+CLASSIFICATION / META LABEL
+    ↓
+EXECUTION SIMULATION
+    ↓
+WALKFORWARD VALIDATION
+    ↓
+ANALYTICS
+    ↓
+EXPERIMENT TRACKING
+--- END OF FILE: audit\quant_flowchart.md ---
 
 --- START OF FILE: configs\alpha_1.yaml ---
 # Sandbox tier: minimal data, zero friction — detect signal fast
@@ -3040,6 +3070,8 @@ risk:
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91458bddb8e3.parquet ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91d9b764b17c.parquet ---
+
+--- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91d9b764b17c.parquet.tmp ---
 
 --- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_a00b4c0cb7a7.parquet ---
 
