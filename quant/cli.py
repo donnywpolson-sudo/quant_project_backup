@@ -9,6 +9,14 @@ import polars as pl
 import json
 import hashlib
 from quant.io.atomic import atomic_write_parquet, atomic_write_json
+
+
+def _diag(df, stage):
+    """Pipeline diagnostic — row count and ts_event span at each stage."""
+    print(f'[DIAG] stage={stage} rows={df.height} cols={len(df.columns)}', flush=True)
+    if 'ts_event' in df.columns and df.height > 0:
+        t = df.select([pl.col('ts_event').min().alias('lo'), pl.col('ts_event').max().alias('hi')])
+        print(f'[DIAG]   ts_event min={t["lo"][0]} max={t["hi"][0]}', flush=True)
 from quant.config_manager import config, load_config
 from quant.ingest import load_and_clean_data
 from quant.features.engine import generate_features
@@ -77,8 +85,10 @@ def main():
         print('[CLI] Loading and cleaning data...', flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
         print(f'[CLI] Data loaded. Rows: {df_aligned.height}', flush=True)
+        _diag(df_aligned, 'post-ingest')
         print('[CLI] Generating feature matrix...', flush=True)
         df_features = generate_features(df_aligned)
+        _diag(df_features, 'post-generate-features')
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
         write_canonical_parquet(df_features, str(feature_cache))
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
@@ -96,6 +106,11 @@ def main():
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
+            ts_dtype = df_features['ts_event'].dtype
+            if ts_dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
+                df_features = df_features.with_columns(
+                    pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
+                )
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
@@ -142,6 +157,11 @@ def main():
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
+            ts_dtype = df_features['ts_event'].dtype
+            if ts_dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
+                df_features = df_features.with_columns(
+                    pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
+                )
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)

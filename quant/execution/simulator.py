@@ -281,16 +281,15 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
 
     # ------------------------------------------------------------------------
     # 6. ATR-Based Volatility-Parity Position Sizing
-    #    S = TARGET_RISK_PER_TRADE / ATR(14)
-    #    ATR computed as rolling mean of bar range (high - low) over 14 bars.
-    #    Position size capped at MAX_LEVERAGE to prevent blowups in low-vol
-    #    regimes. Falls back to FIXED_CONTRACT_SIZE when ATR is unavailable.
+    #    S = TARGET_RISK_PER_TRADE / ATR_pct(14)
+    #    ATR computed as rolling mean of bar range as percentage of close.
+    #    Position size capped at MAX_LEVERAGE. Falls back to FIXED_CONTRACT_SIZE.
     # ------------------------------------------------------------------------
-    bar_range = (pl.col('high') - pl.col('low')).clip(eps, None)
-    atr14 = bar_range.shift(1).rolling_mean(window_size=14, min_samples=5).clip(eps, None)
+    bar_range_pct = ((pl.col('high') - pl.col('low')) / pl.col('close').clip(eps, None)).clip(eps, None)
+    atr14_pct = bar_range_pct.shift(1).rolling_mean(window_size=14, min_samples=5).clip(eps, None)
 
     volatility_size = (
-        pl.lit(config.TARGET_RISK_PER_TRADE, dtype=pl.Float32) / atr14
+        pl.lit(config.TARGET_RISK_PER_TRADE, dtype=pl.Float32) / atr14_pct
     ).clip(
         pl.lit(0.1, dtype=pl.Float32),
         pl.lit(config.MAX_LEVERAGE, dtype=pl.Float32),
@@ -333,7 +332,7 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
 
     # Notional clip: |target_exec| <= MAX_LEVERAGE (equity-normalized)
     open_current = pl.col('open').clip(config.EPS, None)
-    equity = 1.0
+    equity = getattr(config, 'EQUITY', 100000.0)
     max_notional = equity * config.MAX_LEVERAGE
     df = df.with_columns(
         pl.col('target_exec')

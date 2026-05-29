@@ -96,6 +96,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         df_ts = lf_ts.collect(streaming=True)
 
     df_ts = df_ts.sort('ts_event')
+    logger.info('[DIAG] Pass 1 (ts_event scan) rows=%d', df_ts.height)
     if df_ts.height == 0:
         logger.warning('Empty ts_event — skipping window trim, using all rows')
         cutoff_date = None
@@ -127,6 +128,32 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         df_features = lf.collect(engine='streaming')
     except TypeError:
         df_features = lf.collect(streaming=True)
+
+    logger.info('[DIAG] Pass 2 (full scan) rows=%d', df_features.height)
+
+    # Normalize ts_event dtype after parquet reload (defense in depth)
+    if 'ts_event' in df_features.columns and df_features.height > 0:
+        ts_dtype = df_features['ts_event'].dtype
+        target_dtype = pl.Datetime(time_unit='us', time_zone='UTC')
+        if ts_dtype != target_dtype:
+            df_features = df_features.with_columns(
+                pl.col('ts_event').cast(target_dtype)
+            )
+
+    # Guard: if no rows loaded, skip discovery instead of crashing
+    if df_features.height == 0:
+        logger.warning('Discovery skipped: 0 rows after Pass 2 scan.')
+        os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
+        placeholder = {
+            'version': '1.0', 'feature_names': [],
+            'selected_K': 0, 'selection_seed': config.SEED,
+            'selection_date': datetime.utcnow().isoformat() + 'Z',
+            'discovery_status': 'skipped',
+            'reason': 'no rows available after scan',
+        }
+        with open(manifest_out, 'w') as f:
+            json.dump(placeholder, f, indent=4)
+        return
 
     # Now that rows are pruned, apply timezone conversion and date extraction
     # on the much smaller dataframe
@@ -200,6 +227,7 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     ]
 
     logger.info(f'Discovery using {df_features.height} rows, {len(feature_cols)} features.')
+    logger.info('[DIAG] post-date-filter rows=%d feature_cols=%d', df_features.height, len(feature_cols))
 
     n_folds = config.BOOTSTRAP_FOLDS
     et_params = dict(config.EXTRA_TREES_PARAMS)

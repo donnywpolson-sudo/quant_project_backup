@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 def generate_features(df: pl.DataFrame) -> pl.DataFrame:
     pass
+    # Normalize ts_event to consistent dtype (UTC, microsecond) to prevent
+    # schema mismatch errors in downstream joins and comparisons.
+    ts_dtype = df['ts_event'].dtype
+    if ts_dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
+        df = df.with_columns(
+            pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
+        )
     df = compute_baseline_features(df)
     baseline_names = load_baseline_feature_names()
     baseline_cols = [c for c in baseline_names if c in df.columns]
@@ -26,10 +33,15 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
         if htf_cols and ltf_cols:
             df = add_cross_timeframe_interactions(df, ltf_cols, htf_cols)
     df = add_target_5m(df)
+    logger.info('Post target_5m: %d rows', df.height)
     df = add_target_1h(df)
+    logger.info('Post target_1h: %d rows', df.height)
     df = add_target_4h(df)
+    logger.info('Post target_4h: %d rows', df.height)
     df = add_triple_barrier_target(df)
+    logger.info('Post triple_barrier: %d rows', df.height)
     df = drop_incomplete_target(df)
+    logger.info('Post drop_incomplete_target: %d rows', df.height)
     feature_cols = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
     df = df.with_columns([pl.col(c).cast(pl.Float32) for c in feature_cols])
     logger.info(f'Final feature matrix has {len(feature_cols)} features (expansion={"on" if config.ENABLE_EXPANSION else "off"}).')
