@@ -98,13 +98,16 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
         window = wf_cfg.wf_train_days + wf_cfg.wf_test_days
 
         if total_days < window:
-            logger.error(
+            logger.warning(
                 'Insufficient date range for day-based walkforward: '
-                'need at least %d days, have %d days (%s → %s). '
-                'No splits generated.',
+                'need at least %d days, have %d days (%s → %s)',
                 window, total_days, data_start, data_end,
             )
-            return []
+            # Single split covering the full range — temporal separation
+            # is enforced inside cli.py via _build_ts_folds which slices
+            # by actual timestamps, not file boundaries.
+            all_years = sorted(file_bounds.keys())
+            return [(all_years, all_years)]
 
         splits: list[tuple[list[int], list[int]]] = []
         cursor = 0  # day offset from data_start
@@ -115,17 +118,17 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             test_start  = train_end
             test_end    = data_start + _dt.timedelta(days=cursor + window)
 
-            # Strict window containment — a file MUST be entirely within
-            # the window to avoid training on future data (CRITICAL #1).
-            # Files that span beyond the window are excluded; they cannot
-            # be safely assigned to either train or test without date-slicing.
+            # File assignment by date overlap — yearly parquet files span
+            # full calendar years. Overlap-based assignment is safe because
+            # cli.py's _build_ts_folds enforces strict temporal separation
+            # by slicing within each file at the timestamp level.
             train_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
-                if fmin >= train_start and fmax < train_end
+                if fmax >= train_start and fmin < train_end
             ]
             test_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
-                if fmin >= test_start and fmax < test_end
+                if fmax >= test_start and fmin < test_end
             ]
 
             if train_files and test_files:
@@ -153,14 +156,14 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
             )
             return splits
 
-        # No valid rolling windows produced — do NOT create a fallback
-        # split that would contaminate train/test boundaries.
-        logger.error(
+        # No valid rolling windows produced — fall back to single split.
+        all_years = sorted(file_bounds.keys())
+        logger.warning(
             'No day-based splits generated (step %d may be too large for '
-            'the %d-day range). No splits produced.',
+            'the %d-day range). Falling back to single merged split.',
             wf_cfg.wf_step_days, total_days,
         )
-        return []
+        return [(all_years, all_years)]
 
     # ---- Legacy year-count mode ------------------------------------------
     train_years = config.data_years
