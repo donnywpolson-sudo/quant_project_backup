@@ -144,6 +144,7 @@ import logging
 import time
 import json
 import hashlib
+import threading
 from pathlib import Path
 import shutil
 import polars as pl
@@ -436,6 +437,84 @@ def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout
         f.write(f'--- STDOUT ---\n{stdout_text}\n--- STDERR ---\n{stderr_text}\n')
 
 
+def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> tuple:
+    """Run subprocess with real-time stdout/stderr streaming and idle timeout.
+
+    Returns (returncode, stdout_text, stderr_text).
+    On idle timeout (no output for *timeout_idle* seconds): terminates child,
+    prints diagnostics, and returns (-1, stdout, stderr).
+    """
+    env_out = env.copy()
+    env_out['PYTHONUNBUFFERED'] = '1'
+    full_cmd = [sys.executable, '-u'] + cmd[1:] if cmd[0] == sys.executable else cmd
+    proc = subprocess.Popen(
+        full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1, env=env_out,
+    )
+    stdout_lines = []
+    stderr_lines = []
+    last_output = time.time()
+    lock = threading.Lock()
+    done = threading.Event()
+
+    def _read_stream(stream, lines_list, prefix):
+        nonlocal last_output
+        try:
+            for line in iter(stream.readline, ''):
+                line = line.rstrip('\n\r')
+                with lock:
+                    lines_list.append(line)
+                    last_output = time.time()
+                print(f'[{prefix}] {line}', flush=True)
+        except Exception:
+            pass
+
+    t_stdout = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_lines, 'CHILD-OUT'), daemon=True)
+    t_stderr = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_lines, 'CHILD-ERR'), daemon=True)
+    t_stdout.start()
+    t_stderr.start()
+
+    # Idle timeout watchdog
+    def _watchdog():
+        while not done.is_set():
+            time.sleep(1)
+            with lock:
+                idle = time.time() - last_output
+            if idle > timeout_idle and not done.is_set():
+                print(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child', flush=True)
+                print(f'[TIMEOUT] cmd={" ".join(full_cmd)}', flush=True)
+                print(f'[TIMEOUT] cwd={os.getcwd()}', flush=True)
+                print(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}', flush=True)
+                with lock:
+                    if stdout_lines:
+                        print(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}', flush=True)
+                    if stderr_lines:
+                        print(f'[TIMEOUT] last stderr lines: {stderr_lines[-5:]}', flush=True)
+                proc.kill()
+                done.set()
+                break
+
+    t_watch = threading.Thread(target=_watchdog, daemon=True)
+    t_watch.start()
+
+    try:
+        ret = proc.wait(timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        ret = -1
+    done.set()
+    t_stdout.join(timeout=5)
+    t_stderr.join(timeout=5)
+    t_watch.join(timeout=5)
+    stdout_text = '\n'.join(stdout_lines)
+    stderr_text = '\n'.join(stderr_lines)
+    if ret == -1:
+        raise subprocess.CalledProcessError(-1, full_cmd, stdout_text, stderr_text)
+    if ret != 0:
+        raise subprocess.CalledProcessError(ret, full_cmd, stdout_text, stderr_text)
+    return ret, stdout_text, stderr_text
+
+
 _log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
 
 def _print_verification_table():
@@ -637,14 +716,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
-    # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
-    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'stdout': subprocess.PIPE, 'timeout': 300}
     if config.pipeline.enable_discovery:
-        subprocess.run([sys.executable, '-m', 'pipeline.cli', 'discover',
-                        '--data', train_glob, '--out', str(manifest_path)], **kw)
+        _run_subprocess_streaming([sys.executable, '-m', 'pipeline.cli', 'discover',
+                        '--data', train_glob, '--out', str(manifest_path)], env)
         time.sleep(0.2)
     else:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -673,26 +750,35 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             cmd.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        wf_mode = getattr(config, 'WF_MODE', '')
+        if wf_mode == 'outer_split':
+            assert train_start and train_end, 'outer_split mode but train_start/train_end not set'
+            assert '--train-start' in cmd and '--train-end' in cmd, '--train-start/--train-end missing from subprocess command'
+        print(f'[SUBPROCESS-CMD] {" ".join(cmd)}', flush=True)
         logger.info('[SUBPROCESS] split=%d symbol=%s start=%s end=%s cmd=%s',
                     split_idx, symbol,
                     test_start.isoformat() if test_start else 'None',
                     test_end.isoformat() if test_end else 'None',
                     ' '.join(cmd))
         try:
-            subprocess.run(cmd, **kw)
+            _run_subprocess_streaming(cmd, env)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
-            stdout_text = e.stdout.decode(errors='replace') if isinstance(e.stdout, bytes) else str(e.stdout or '')
-            err_lines = stderr_text.strip().split('\n')
+            stderr_text = e.stderr if hasattr(e, 'stderr') else ''
+            stdout_text = e.stdout if hasattr(e, 'stdout') else ''
+            if isinstance(stderr_text, bytes):
+                stderr_text = stderr_text.decode(errors='replace')
+            if isinstance(stdout_text, bytes):
+                stdout_text = stdout_text.decode(errors='replace')
+            err_lines = stderr_text.strip().split('\n') if stderr_text else ['(no stderr)']
             print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
             for line in err_lines[-3:]:
                 print(f'  > {line}')
             if _log_failures:
-                _log_subprocess_failure(cmd, e.returncode, stderr_text, stdout_text,
+                _log_subprocess_failure(cmd, getattr(e, 'returncode', -1), stderr_text, stdout_text,
                                         Path('output') / 'logs', symbol, split_idx, 'hmm')
             logger.warning(
                 'run-hmm failed for %s split=%d (rc=%d)',
-                symbol, split_idx, e.returncode,
+                symbol, split_idx, getattr(e, 'returncode', -1),
             )
             # Safe fallback: retry with plain run (no HMM)
             logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
@@ -703,16 +789,20 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             if test_start and test_end:
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
-                subprocess.run(cmd_fb, **kw)
+                _run_subprocess_streaming(cmd_fb, env)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
-                stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
-                stdout2 = e2.stdout.decode(errors='replace') if isinstance(e2.stdout, bytes) else str(e2.stdout or '')
-                err2_lines = stderr2.strip().split('\n')
+                stderr2 = e2.stderr if hasattr(e2, 'stderr') else ''
+                stdout2 = e2.stdout if hasattr(e2, 'stdout') else ''
+                if isinstance(stderr2, bytes):
+                    stderr2 = stderr2.decode(errors='replace')
+                if isinstance(stdout2, bytes):
+                    stdout2 = stdout2.decode(errors='replace')
+                err2_lines = stderr2.strip().split('\n') if stderr2 else ['(no stderr)']
                 print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
                 for line in err2_lines[-3:]:
                     print(f'  > {line}')
                 if _log_failures:
-                    _log_subprocess_failure(cmd_fb, e2.returncode, stderr2, stdout2,
+                    _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
@@ -1074,6 +1164,9 @@ end_year: 2024
 discovery:
   bootstrap_folds: 3
   discovery_window_days: 30
+
+walkforward:
+  mode: outer_split
 
 execution:
   slippage_k: 0.0
@@ -2244,6 +2337,8 @@ os.environ.setdefault("PYTHONUTF8", "1")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+print('[HEARTBEAT] pipeline.cli imported', flush=True)
+
 import argparse
 import logging
 import random
@@ -2253,6 +2348,7 @@ from pathlib import Path
 import polars as pl
 import json
 import hashlib
+import time
 from core.io.atomic import atomic_write_parquet, atomic_write_json
 
 
@@ -2333,6 +2429,7 @@ def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) ->
     return result
 
 def main():
+    print('[HEARTBEAT] pipeline.cli main entered', flush=True)
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='command', required=True)
     discover_parser = subparsers.add_parser('discover')
@@ -2360,6 +2457,10 @@ def main():
     aggregate_parser.add_argument('--artifacts', default='output')
     args = parser.parse_args()
     load_config()  # populate config namespace from config.yaml
+    wf_mode = getattr(config, 'WF_MODE', '')
+    env_name = os.environ.get('QUANT_ENV', 'default')
+    print(f'[CONFIG] env={env_name} WF_MODE={wf_mode!r} train_start={getattr(args, "train_start", None)} train_end={getattr(args, "train_end", None)} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
+    print(f'[BRANCH] command={args.command} using_outer_split={wf_mode == "outer_split"}', flush=True)
     random.seed(config.SEED)
     np.random.seed(config.SEED)
     check_memory_safety()
@@ -2461,6 +2562,8 @@ def main():
         feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
         if getattr(config, 'WF_MODE', '') == 'outer_split':
+            assert getattr(args, 'train_start', None), 'OUTER_SPLIT active but --train-start missing from CLI args'
+            assert getattr(args, 'train_end', None), 'OUTER_SPLIT active but --train-end missing from CLI args'
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
             test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
             result_df = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
@@ -2480,19 +2583,28 @@ def main():
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
+        t0 = time.perf_counter()
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
+        print('[HEARTBEAT] cli entered run-hmm', flush=True)
+        print(f'[HEARTBEAT] config loaded WF_MODE={getattr(config, "WF_MODE", "")!r}', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
         print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
-        print('[CLI] Loading aligned data...', flush=True)
+        print('[HEARTBEAT] loading aligned data start', flush=True)
+        t_load = time.perf_counter()
         df_aligned = load_and_clean_data(
             args.data,
             cache_path=str(aligned_cache) if aligned_cache.exists() else None,
         )
-        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
+        dt_load = time.perf_counter() - t_load
+        print(f'[HEARTBEAT] loading aligned data done rows={df_aligned.height} seconds={dt_load:.1f}', flush=True)
+        if dt_load > 60:
+            print(f'[SLOW] stage=load_aligned_data seconds={dt_load:.1f}', flush=True)
+        print('[HEARTBEAT] generating/loading feature matrix start', flush=True)
+        t_feat = time.perf_counter()
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -2504,7 +2616,13 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        dt_feat = time.perf_counter() - t_feat
+        print(f'[HEARTBEAT] feature matrix done rows={df_features.height} cols={len(df_features.columns)} seconds={dt_feat:.1f}', flush=True)
+        if dt_feat > 60:
+            print(f'[SLOW] stage=feature_matrix seconds={dt_feat:.1f}', flush=True)
         print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
+        print('[HEARTBEAT] applying manifest start', flush=True)
+        t_man = time.perf_counter()
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
@@ -2512,6 +2630,10 @@ def main():
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
         print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols', flush=True)
+        dt_man = time.perf_counter() - t_man
+        print(f'[HEARTBEAT] manifest done rows={df_pruned.height} cols={len(df_pruned.columns)} seconds={dt_man:.1f}', flush=True)
+        if dt_man > 60:
+            print(f'[SLOW] stage=manifest seconds={dt_man:.1f}', flush=True)
         # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
         if getattr(config, 'WF_MODE', '') != 'outer_split':
             if getattr(args, 'start', None) and getattr(args, 'end', None):
@@ -2564,11 +2686,25 @@ def main():
             flush=True,
         )
         if getattr(config, 'WF_MODE', '') == 'outer_split':
+            assert getattr(args, 'train_start', None), 'OUTER_SPLIT HMM active but --train-start missing from CLI args'
+            assert getattr(args, 'train_end', None), 'OUTER_SPLIT HMM active but --train-end missing from CLI args'
+            print('[HEARTBEAT] slicing train/test start', flush=True)
+            t_slice = time.perf_counter()
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
             test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            dt_slice = time.perf_counter() - t_slice
+            print(f'[HEARTBEAT] train rows={train_df.height} test rows={test_df.height} seconds={dt_slice:.1f}', flush=True)
+            if dt_slice > 60:
+                print(f'[SLOW] stage=slicing seconds={dt_slice:.1f}', flush=True)
+            print('[HEARTBEAT] walkforward+hmm start', flush=True)
+            t_wf = time.perf_counter()
             result_df, validation = run_outer_train_test_eval_with_hmm(
                 train_df, test_df, feature_cols, target_col,
             )
+            dt_wf = time.perf_counter() - t_wf
+            print(f'[HEARTBEAT] walkforward+hmm done rows={result_df.height} seconds={dt_wf:.1f}', flush=True)
+            if dt_wf > 60:
+                print(f'[SLOW] stage=walkforward+hmm seconds={dt_wf:.1f}', flush=True)
         else:
             result_df, validation = run_walkforward_with_hmm(
                 X, y, feature_cols, target_col,
@@ -2577,7 +2713,15 @@ def main():
         print(f'[CLI] HMM walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
+        print('[HEARTBEAT] writing parquet start', flush=True)
+        t_write = time.perf_counter()
         atomic_write_parquet(result_df, out_path)
+        dt_write = time.perf_counter() - t_write
+        print(f'[HEARTBEAT] writing parquet done path={out_path} seconds={dt_write:.1f}', flush=True)
+        if dt_write > 60:
+            print(f'[SLOW] stage=parquet_write seconds={dt_write:.1f}', flush=True)
+        dt_total = time.perf_counter() - t0
+        print(f'[HEARTBEAT] total run-hmm seconds={dt_total:.1f}', flush=True)
         print(f'[CLI] HMM-filtered results saved to {out_path}', flush=True)
         # Save validation report
         val_path = os.path.join(args.out, 'hmm_validation_report.json')
@@ -9045,6 +9189,7 @@ import importlib
 import json
 import os
 import hashlib
+import time
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -9807,14 +9952,24 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
     if target_col not in train_df.columns or target_col not in test_df.columns:
         raise KeyError(f"Target column '{target_col}' missing from train/test")
-    train_X = train_df.select(feature_cols)
     train_y = train_df[target_col]
-    test_X = test_df.select(feature_cols)
-    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    print('[HEARTBEAT] model fit+predict start', flush=True)
+    t_model = time.perf_counter()
+    probs = train_and_predict(train_df, train_y, test_df, feature_cols)
+    dt_model = time.perf_counter() - t_model
+    print(f'[HEARTBEAT] model fit+predict done seconds={dt_model:.1f}', flush=True)
+    if dt_model > 60:
+        print(f'[SLOW] stage=model_fit_predict seconds={dt_model:.1f}', flush=True)
     pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
     result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
+    print('[HEARTBEAT] execution simulation start', flush=True)
+    t_exec = time.perf_counter()
     result = simulate_execution_classification(result)
+    dt_exec = time.perf_counter() - t_exec
+    print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
+    if dt_exec > 60:
+        print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
     if _OUTER_BURN_IN > 0:
         result = exclude_warmup(result, _OUTER_BURN_IN)
     output_frac = result.height / max(test_df.height, 1)
@@ -9854,14 +10009,26 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
     if target_col not in train_df.columns or target_col not in test_df.columns:
         raise KeyError(f"Target column '{target_col}' missing")
-    train_X = train_df.select(feature_cols)
     train_y = train_df[target_col]
-    test_X = test_df.select(feature_cols)
-    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    print('[HEARTBEAT] model fit+predict start', flush=True)
+    t_model = time.perf_counter()
+    probs = train_and_predict(train_df, train_y, test_df, feature_cols)
+    dt_model = time.perf_counter() - t_model
+    print(f'[HEARTBEAT] model fit+predict done seconds={dt_model:.1f}', flush=True)
+    if dt_model > 60:
+        print(f'[SLOW] stage=model_fit_predict seconds={dt_model:.1f}', flush=True)
     pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
     result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
+    print('[HEARTBEAT] execution simulation start', flush=True)
+    t_exec = time.perf_counter()
     result = simulate_execution_classification(result)
+    dt_exec = time.perf_counter() - t_exec
+    print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
+    if dt_exec > 60:
+        print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
+    print('[HEARTBEAT] HMM fit start', flush=True)
+    t_hmm = time.perf_counter()
     hmm_filter = HMMRegimeFilter()
     df_1h_train = _resample_to_1h(train_df)
     if df_1h_train.height >= 60:
@@ -9871,6 +10038,10 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
         df_5min_base=result, df_1h_train=df_1h_train,
         df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
     )
+    dt_hmm = time.perf_counter() - t_hmm
+    print(f'[HEARTBEAT] HMM fit done seconds={dt_hmm:.1f}', flush=True)
+    if dt_hmm > 60:
+        print(f'[SLOW] stage=hmm_fit seconds={dt_hmm:.1f}', flush=True)
     if _OUTER_BURN_IN > 0:
         result = exclude_warmup(result, _OUTER_BURN_IN)
     output_frac = result.height / max(test_df.height, 1)

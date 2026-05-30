@@ -22,6 +22,13 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy.special import logsumexp
+import time as _time
+
+try:
+    from statsmodels.tsa.stattools import adfuller
+    _HAS_ADFULLER = True
+except ImportError:
+    _HAS_ADFULLER = False
 
 logger = logging.getLogger(__name__)
 
@@ -286,21 +293,31 @@ class GaussianHMM:
         self._init_params(X, rng)
 
         prev_log_lik = -np.inf
-
+        t0 = _time.perf_counter()
         for iteration in range(self.n_iter):
             gamma, xi, log_lik = self._e_step(X)
 
             # Convergence check
-            if abs(log_lik - prev_log_lik) < self.tol:
+            delta = abs(log_lik - prev_log_lik)
+            if delta < self.tol:
                 logger.debug(f"HMM converged at iteration {iteration + 1}, log_lik={log_lik:.2f}")
                 break
 
             prev_log_lik = log_lik
             self._m_step(X, gamma, xi)
+
+            # Per-iteration timing: log every 10 iterations so long runs are observable
+            if iteration > 0 and iteration % 10 == 0:
+                elapsed = _time.perf_counter() - t0
+                logger.info(
+                    '[HMM-TIMING] iter=%d/%d delta=%.6f elapsed=%.1fs',
+                    iteration + 1, self.n_iter, delta, elapsed,
+                )
         else:
+            elapsed = _time.perf_counter() - t0
             logger.warning(
-                f"HMM did not converge within {self.n_iter} iterations. "
-                f"Last delta: {abs(log_lik - prev_log_lik):.6f}"
+                f"HMM did not converge within {self.n_iter} iterations "
+                f"(last delta: {delta:.6f}, elapsed: {elapsed:.1f}s)"
             )
 
         self._fitted = True
@@ -463,9 +480,7 @@ def _check_stationarity(features: np.ndarray, threshold: float = 0.05) -> bool:
     Returns True only if ALL columns pass the ADF test (p-value < threshold).
     On import failure (no statsmodels), logs a warning and returns True (skip check).
     """
-    try:
-        from statsmodels.tsa.stattools import adfuller
-    except ImportError:
+    if not _HAS_ADFULLER:
         logger.warning(
             "statsmodels not available; skipping stationarity checks. "
             "Install with: pip install statsmodels"
@@ -691,6 +706,14 @@ class HMMRegimeDetector:
             True if fit succeeded, False if fallback was triggered.
         """
         features = _compute_hmm_features(df_1h)
+        logger.info(
+            '[HMM-TIMING] step=hmm_features rows=%d cols=%d '
+            'nan=%d inf=%d unique_counts=%s',
+            features.shape[0], features.shape[1],
+            int(np.sum(np.isnan(features))),
+            int(np.sum(np.isinf(features))),
+            [len(np.unique(features[:, i])) for i in range(features.shape[1])],
+        )
 
         if features.shape[0] < self.config.min_train_bars:
             logger.warning(

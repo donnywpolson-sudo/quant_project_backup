@@ -843,10 +843,18 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
         print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
     print('[HEARTBEAT] HMM fit start', flush=True)
     t_hmm = time.perf_counter()
-    hmm_filter = HMMRegimeFilter()
+    print(f'[HEARTBEAT] HMM resampling train 5m->1h start rows={train_df.height}', flush=True)
     df_1h_train = _resample_to_1h(train_df)
+    print(f'[HEARTBEAT] HMM resampled train 1h rows={df_1h_train.height}', flush=True)
+    hmm_filter = HMMRegimeFilter()
     if df_1h_train.height >= 60:
+        hmm_cfg = hmm_filter.config
+        print(f'[HEARTBEAT] HMM initializing: {df_1h_train.height} 1H bars, {len(hmm_cfg.feature_columns)} features, '
+              f'n_states={hmm_cfg.n_states} n_iter={hmm_cfg.n_iter} tol={hmm_cfg.tol}', flush=True)
         hmm_filter.initialize(df_1h_train)
+        print(f'[HEARTBEAT] HMM initialized', flush=True)
+    else:
+        print(f'[HEARTBEAT] HMM skipped – only {df_1h_train.height} 1H bars (<60)', flush=True)
     df_1h_test = _resample_to_1h(test_df)
     result, hmm_filter = apply_hmm_filter(
         df_5min_base=result, df_1h_train=df_1h_train,

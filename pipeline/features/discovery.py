@@ -216,9 +216,31 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         ).drop('_row')
 
     # --- Feature column selection ---
-    target_col = 'target_tb'
+    # Use same target as walkforward (configurable, defaults to target_sign_4h for
+    # consistency with the 4h-direction model). Previously hardcoded target_tb which
+    # was fully null in this dataset, causing 0-sample discovery.
+    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_sign_4h')
     if target_col not in df_features.columns:
-        raise ValueError(f'Target column {target_col} not found.')
+        logger.warning(
+            'Discovery target "%s" not found in feature matrix — falling back to target_tb',
+            target_col,
+        )
+        target_col = 'target_tb'
+        if target_col not in df_features.columns:
+            raise ValueError(f'No valid target column found (tried {getattr(config, "DISCOVERY_TARGET", "target_sign_4h")!r} and target_tb).')
+    # Hard-fail if the fallback target (target_tb) is fully null —
+    # a silent empty manifest causes downstream signal collapse.
+    if target_col == 'target_tb':
+        y_check = df_features.select(target_col).to_numpy().ravel()
+        nn_check = np.sum(~np.isnan(y_check))
+        if nn_check == 0:
+            raise RuntimeError(
+                f'DISCOVERY FAILURE: fallback target "{target_col}" is entirely NaN '
+                f'(0 non-null out of {len(y_check)} rows). The configured target '
+                f'"{getattr(config, "DISCOVERY_TARGET", "target_sign_4h")}" was not found '
+                f'in the feature matrix. Add the target column to feature generation or '
+                f'set walkforward.discovery_target to an available column.'
+            )
 
     exclude_cols = {
         'ts_event', 'open', 'high', 'low', 'close', 'volume',
@@ -252,22 +274,13 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     y = y[nan_mask]
 
     if X.shape[0] < 2:
-        logger.warning(
-            'Discovery skipped: only %d samples available '
-            '(need at least 2 for bootstrap).', X.shape[0]
+        raise RuntimeError(
+            f'DISCOVERY FAILURE: only {X.shape[0]} usable samples '
+            f'(from {df_features.height} total rows, target="{target_col}", '
+            f'{int((~nan_mask).sum())} NaN rows removed). '
+            f'Need at least 2 for bootstrap. '
+            f'Check that the discovery target column has sufficient non-NaN values.'
         )
-        # Produce a minimal manifest with empty feature list
-        os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
-        placeholder = {
-            'version': '1.0', 'feature_names': [],
-            'selected_K': 0, 'selection_seed': config.SEED,
-            'selection_date': datetime.utcnow().isoformat() + 'Z',
-            'discovery_status': 'skipped',
-            'reason': f'only {X.shape[0]} samples available (need >= 2)',
-        }
-        with open(manifest_out, 'w') as f:
-            json.dump(placeholder, f, indent=4)
-        return
 
     results = Parallel(n_jobs=-1, backend='loky')(
         delayed(_fit_discovery_fold)(

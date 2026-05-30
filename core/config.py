@@ -182,6 +182,7 @@ class WalkforwardConfig(BaseModel):
     enable_meta_labeling: bool = False
     meta_threshold: float = 0.5
     mode: str = ""  # "" = inner bar-fold walkforward, "outer_split" = single train→test pass
+    discovery_target: str = "target_sign_4h"
 
 
 class ExecutionConfig(BaseModel):
@@ -416,6 +417,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
     config.META_THRESHOLD = c.walkforward.meta_threshold
     config.WF_MODE = c.walkforward.mode
+    config.DISCOVERY_TARGET = getattr(c.walkforward, 'discovery_target', 'target_sign_4h')
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at
