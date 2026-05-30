@@ -69,12 +69,12 @@ def prune_features_by_manifest(df, manifest_path, target_col):
     selected = manifest['feature_names']
     essential = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
     non_feature = [c for c in df.columns if not c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_', '1h_', 'daily_')) and c not in essential]
-    keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
+    keep = list({c for c in essential if c in df.columns}) + non_feature + [c for c in selected if c in df.columns]
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
 def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
-    key = data_arg
+    key = f"{config.ACTIVE_PROFILE}|{data_arg}"
     if start:
         key += '|' + start
     if end:
@@ -128,7 +128,7 @@ def main():
     args = parser.parse_args()
     load_config()  # populate config namespace from config.yaml
     wf_mode = getattr(config, 'WF_MODE', '')
-    env_name = os.environ.get('QUANT_ENV', 'default')
+    env_name = os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV', 'default')
     print(f'[CONFIG] env={env_name} WF_MODE={wf_mode!r} train_start={getattr(args, "train_start", None)} train_end={getattr(args, "train_end", None)} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
     print(f'[BRANCH] command={args.command} using_outer_split={wf_mode == "outer_split"}', flush=True)
     random.seed(config.SEED)

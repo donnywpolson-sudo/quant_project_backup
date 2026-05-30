@@ -1,34 +1,37 @@
 """
 config_manager.py — Single-source-of-truth configuration.
 
-Pydantic-validated hierarchical config (base + tier deep-merge) with
-backward-compatible SimpleNamespace for all quant modules.
+Pydantic-validated hierarchical config with backward-compatible
+SimpleNamespace for all quant modules.
 
-Architecture:
-  - Pydantic RootConfig model: complete schema with defaults for every parameter.
-  - Module-level ``config`` SimpleNamespace: populated by ``load_config()``,
-    providing the flat UPPER_SNAKE_CASE attributes that all quant/* modules expect.
-  - ``load_config(env)``: reads configs/alpha_base.yaml, deep-merges tier YAML,
-    validates with Pydantic, resolves ${ENV_VAR} placeholders, populates the
-    SimpleNamespace, and returns the Pydantic RootConfig for callers that want
-    structured access (e.g. run.py).
+Architecture (profile-based, primary):
+  - ``load_config()``: reads configs/alpha.yaml, deep-merges
+    ``base`` + ``profiles[active_profile]``, validates with Pydantic,
+    resolves ${ENV_VAR} placeholders, populates the SimpleNamespace,
+    and returns the Pydantic RootConfig.
+
+  - ``CONFIG_ENV`` env var overrides ``active_profile`` at runtime.
+
+  - Falls back to old flat YAML tier loading (alpha_0.yaml + tier YAML)
+    if alpha.yaml is absent or not profile-based.
 
 Usage:
     # Structured (Pydantic) — run.py
     from core.config import load_config, RootConfig
-    cfg: RootConfig = load_config("alpha_1")
+    cfg: RootConfig = load_config()
     print(cfg.discovery.bootstrap_folds)
 
     # Flat (SimpleNamespace) — all quant modules
     from core.config import config
     print(config.BOOTSTRAP_FOLDS)
-    print(config.SEED)
+    print(config.ACTIVE_PROFILE)
 
     # Idempotent — safe to call multiple times
     from core.config import load_config
     load_config()  # no-op after first call
 """
 
+import copy
 import logging
 import os
 import re
@@ -315,7 +318,11 @@ _ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
 def _resolve_env_vars(obj: Any) -> Any:
     if isinstance(obj, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), obj)
+        m = _ENV_RE.fullmatch(obj)
+        if m:
+            # Single placeholder — resolve or return None
+            return os.environ.get(m.group(1))
+        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), obj)
     if isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -339,7 +346,7 @@ def _parse_time(raw: str) -> time | None:
 # ============================================================================
 # Populate SimpleNamespace from Pydantic RootConfig
 # ============================================================================
-def _populate_simple_namespace(cfg: RootConfig) -> None:
+def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config_source: str = "") -> None:
     """Convert a validated Pydantic RootConfig into flat UPPER_SNAKE_CASE
     attributes on the module-level ``config`` SimpleNamespace.
 
@@ -476,6 +483,10 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.WF_TEST_DAYS_YEARLY = c.wf_test_days_yearly
     config.MAX_MARKETS = c.max_markets
 
+    # -- config identity (set by loader) ----------------------------------
+    config.ACTIVE_PROFILE = active_profile
+    config.CONFIG_SOURCE = config_source
+
 
 # ============================================================================
 # Config resolution — locations for YAML files
@@ -490,16 +501,19 @@ def load_config(env: str | None = None, configs_dir: Path | None = None) -> Root
     """
     Load hierarchical config, validate with Pydantic, populate SimpleNamespace.
 
-    Resolution order:
-      1. Read configs/alpha_base.yaml
-      2. Deep-merge configs/{env}.yaml (e.g. alpha_1, alpha_2, alpha_production)
-      3. Resolve ${ENV_VAR} placeholders
-      4. Validate with Pydantic RootConfig model
-      5. Populate module-level ``config`` SimpleNamespace (flat attributes)
+    Primary path (profile-based):
+      1. Read configs/alpha.yaml
+      2. Identify active_profile from CONFIG_ENV env var or alpha.yaml default
+      3. Deep-merge ``base`` + ``profiles[active_profile]``
+      4. Resolve ${ENV_VAR} placeholders
+      5. Validate with Pydantic RootConfig model
+      6. Populate module-level ``config`` SimpleNamespace
+
+    Fallback path (legacy flat YAML):
+      Reads alpha_0.yaml, deep-merges tier YAML as before.
 
     Args:
-        env: Tier name ("alpha_1", "alpha_2", "production").
-             If None, reads QUANT_ENV env var (defaults to "alpha_1").
+        env: Override profile name (overrides default, overridden by CONFIG_ENV).
         configs_dir: Override configs directory (default: project-root/configs/)
 
     Returns:
@@ -507,53 +521,95 @@ def load_config(env: str | None = None, configs_dir: Path | None = None) -> Root
     """
     global _LOADED
     if _LOADED:
-        return None  # already populated — idempotent
-
-    if env is None:
-        env = os.environ.get("QUANT_ENV", "alpha_1")
+        return None
 
     base_dir = configs_dir or _CONFIGS_DIR
+    profile_env = os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV")
+    profile_override = env or profile_env
 
-    # ---- 1. Load base yaml -------------------------------------------------
-    base_path = base_dir / "alpha_base.yaml"
+    # ---- Primary: profile-based alpha.yaml ---------------------------------
+    alpha_path = base_dir / "alpha.yaml"
+    if alpha_path.exists():
+        with open(alpha_path) as f:
+            raw = yaml.safe_load(f) or {}
+
+        if isinstance(raw, dict) and "active_profile" in raw and "base" in raw and "profiles" in raw:
+            active = profile_override or raw["active_profile"]
+            profiles_section = raw.get("profiles", {})
+            if active not in profiles_section:
+                available = list(profiles_section.keys())
+                raise ValueError(
+                    f"active_profile '{active}' not found in alpha.yaml profiles. "
+                    f"Available: {available}"
+                )
+
+            merged = copy.deepcopy(raw["base"])
+            _deep_merge(merged, profiles_section[active])
+            merged = _resolve_env_vars(merged)
+
+            if "symbols" in merged and isinstance(merged["symbols"], list):
+                if "market_configs" not in merged:
+                    merged["market_configs"] = {}
+                for m in merged["symbols"]:
+                    merged["market_configs"][m] = f"configs/markets/{m}.yaml"
+
+            try:
+                root_cfg = RootConfig(**merged)
+            except ValidationError as e:
+                raise ValueError(
+                    f"Config validation failed (alpha.yaml profile={active}): {e}"
+                ) from e
+
+            config_source = f"alpha.yaml::{active}"
+            _populate_simple_namespace(root_cfg, active_profile=active, config_source=config_source)
+
+            _LOADED = True
+            logger.info("Configuration loaded from alpha.yaml (profile=%s)", active)
+            return root_cfg
+
+    # ---- Fallback: legacy flat YAML tier loading ----------------------------
+    if profile_override is None:
+        profile_override = "alpha_1"
+
+    base_path = base_dir / "alpha_0.yaml"
     if not base_path.exists():
-        raise FileNotFoundError(f"Base config not found: {base_path}")
+        raise FileNotFoundError(
+            f"Config not found: alpha.yaml or alpha_0.yaml in {base_dir}"
+        )
 
     with open(base_path) as f:
         merged: dict = yaml.safe_load(f) or {}
 
-    # ---- 2. Deep-merge tier yaml -------------------------------------------
-    tier_name = "alpha_production" if env == "production" else env
+    tier_name = "alpha_4" if profile_override == "production" else profile_override
     tier_path = base_dir / f"{tier_name}.yaml"
     if tier_path.exists():
         with open(tier_path) as f:
             tier_cfg = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, tier_cfg)
 
-    # ---- 3. Resolve env vars -----------------------------------------------
     merged = _resolve_env_vars(merged)
 
-    # ---- 4. Auto-build market_configs from symbols list --------------------
     if "symbols" in merged and isinstance(merged["symbols"], list):
         if "market_configs" not in merged:
             merged["market_configs"] = {}
         for m in merged["symbols"]:
             merged["market_configs"][m] = f"configs/markets/{m}.yaml"
 
-    # ---- 5. Validate with Pydantic -----------------------------------------
     try:
         root_cfg = RootConfig(**merged)
     except ValidationError as e:
-        raise ValueError(f"Config validation failed for env '{env}': {e}") from e
+        raise ValueError(
+            f"Config validation failed for env '{profile_override}': {e}"
+        ) from e
 
-    # ---- 6. Populate SimpleNamespace ---------------------------------------
-    _populate_simple_namespace(root_cfg)
+    config_source = f"flat::{profile_override}"
+    _populate_simple_namespace(root_cfg, active_profile=profile_override, config_source=config_source)
 
     _LOADED = True
-    logger.info("Configuration loaded and validated (env=%s)", env)
+    logger.info("Configuration loaded (env=%s)", profile_override)
     return root_cfg
 
 
 def load_env_config() -> RootConfig:
-    """Convenience: reads tier from QUANT_ENV environment variable."""
-    return load_config(os.environ.get("QUANT_ENV", "alpha_1"))
+    """Convenience: reads tier from CONFIG_ENV or QUANT_ENV environment variable."""
+    return load_config(os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV"))

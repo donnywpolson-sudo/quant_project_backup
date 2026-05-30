@@ -6,16 +6,13 @@ quant_project_backup/
     requirements.txt
     run.py
     audit/
-        audit_prompt.md
+        DeepseekV4Pro_prompt.md
         code_to_text.py
-        current_state.md
+        codex_custom_instructions.md
         git_sync.py
         quant_flowchart.md
     configs/
-        alpha_1.yaml
-        alpha_2.yaml
-        alpha_base.yaml
-        alpha_production.yaml
+        alpha.yaml
         baseline_features.yaml
         markets/
             CL.yaml
@@ -91,20 +88,6 @@ quant_project_backup/
         validate_target_tb.py
         verify_config.py
         walkforward_baseline.py
-    unused/
-        core/
-            utils/
-                manifest.py
-                types.py
-        pipeline/
-            orchestrator.py
-            runner.py
-            ingest/
-                stage.py
-            session/
-                normalization.py
-            tracking/
-                state.py
     _legacy/
         ingest.py
 
@@ -157,7 +140,7 @@ from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from core.config import load_config, RootConfig
+from core.config import load_config, RootConfig, config as _ns_cfg
 from core.market import get_contract_multiplier
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
@@ -167,7 +150,7 @@ _DEBUG = _LOG_MODE == 'debug'
 _VERBOSE = _LOG_MODE in {'verbose', 'debug'} or os.environ.get('QUANT_VERBOSE', '0') == '1'
 
 logging.basicConfig(
-    level=logging.DEBUG if _DEBUG else (logging.INFO if _VERBOSE else logging.WARNING),
+    level=logging.DEBUG if _DEBUG else (logging.INFO if _VERBOSE else logging.ERROR),
     format='%(asctime)s [%(levelname)s] %(message)s',
     encoding='utf-8',
     force=True,
@@ -205,7 +188,8 @@ class PipelineProgressLogger:
         self.mode = mode
         self.run_id = run_id
         self.context = {}
-        self.emitted = set()
+        self.stage_state = {}
+        self.flushed = False
         self.stage_start = time.time()
         self.log_path = Path('output') / 'logs' / f'run_{run_id}.log'
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +211,8 @@ class PipelineProgressLogger:
 
     def set_context(self, **kwargs) -> None:
         self.context = {k: v for k, v in kwargs.items() if v is not None}
-        self.emitted = set()
+        self.stage_state = {}
+        self.flushed = False
         self.stage_start = time.time()
 
     def raw(self, text: str) -> None:
@@ -237,11 +222,24 @@ class PipelineProgressLogger:
             print(text, flush=True)
 
     def stage(self, idx: int, message: str, once: bool = False) -> None:
-        if once and idx in self.emitted:
+        if once and idx in self.stage_state:
             return
         elapsed = time.time() - self.stage_start
-        print(f'[{idx:02d}/13 {self.STAGES[idx]}] {message} elapsed={elapsed:.1f}s', flush=True)
-        self.emitted.add(idx)
+        self.stage_state[idx] = (message, elapsed)
+
+    def flush_stages(self) -> None:
+        if self.flushed:
+            return
+        for idx in range(1, 14):
+            message, elapsed = self.stage_state.get(idx, ('not_observed', time.time() - self.stage_start))
+            self._print_stage(idx, message, elapsed)
+        self.flushed = True
+
+    def _print_stage(self, idx: int, message: str, elapsed: float) -> None:
+        lines = str(message).splitlines() or ['']
+        print(f'[{idx:02d}/13 {self.STAGES[idx]}] {lines[0]} elapsed={elapsed:.1f}s', flush=True)
+        for line in lines[1:]:
+            print(line, flush=True)
 
     def child_line(self, prefix: str, line: str) -> None:
         raw = f'[{prefix}] {line}'
@@ -251,7 +249,7 @@ class PipelineProgressLogger:
             print(raw, flush=True)
             return
         if any(p in line for p in self.ERROR_PATTERNS):
-            print(raw, flush=True)
+            self.context.setdefault('child_errors', []).append(line)
             return
         self._summarize_child_line(line)
 
@@ -268,7 +266,7 @@ class PipelineProgressLogger:
             return
         m = re.search(r'\[CLI\] Aligned data: ([\d,]+) rows', line)
         if m:
-            if 2 not in self.emitted:
+            if 2 not in self.stage_state:
                 self.stage(2, f'cache_or_ingest rows_out={m.group(1)}', once=True)
                 self._stage_contract_once()
             self.stage(5, f'rows_out={m.group(1)}', once=True)
@@ -359,7 +357,7 @@ class PipelineProgressLogger:
 
     def _stage_contract_once(self) -> None:
         msg = self.context.get('contract_summary')
-        if msg and 3 not in self.emitted:
+        if msg and 3 not in self.stage_state:
             self.stage(3, msg, once=True)
 
     def _stage_walkforward_rows(self) -> None:
@@ -693,7 +691,7 @@ def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> 
                 _PROGRESS.timeout(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child')
                 _PROGRESS.timeout(f'[TIMEOUT] cmd={" ".join(full_cmd)}')
                 _PROGRESS.timeout(f'[TIMEOUT] cwd={os.getcwd()}')
-                _PROGRESS.timeout(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}')
+                _PROGRESS.timeout(f'[TIMEOUT] env={os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV", "default")}')
                 with lock:
                     if stdout_lines:
                         _PROGRESS.timeout(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}')
@@ -798,6 +796,73 @@ def _print_final_summary_table() -> None:
             f"{row.get('status', 'OK')}",
             flush=True,
         )
+
+
+def _extract_error_summary(*texts) -> str:
+    patterns = (
+        r'^\s*([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception):\s*.+)$',
+        r'^\s*(RuntimeError:\s*.+)$',
+        r'^\s*(ValueError:\s*.+)$',
+        r'^\s*(NameError:\s*.+)$',
+    )
+    lines = []
+    for text in texts:
+        if not text:
+            continue
+        if isinstance(text, bytes):
+            text = text.decode(errors='replace')
+        lines.extend(str(text).splitlines())
+    for line in reversed(lines):
+        for pat in patterns:
+            m = re.search(pat, line)
+            if m:
+                return m.group(1).strip()
+    for line in reversed(lines):
+        line = line.strip()
+        if line:
+            return line[:240]
+    return 'unknown error'
+
+
+def _print_split_result(row: dict) -> None:
+    print('\n[SPLIT RESULT]', flush=True)
+    print(f"symbol={row.get('symbol', 'NA')}", flush=True)
+    print(f"split={row.get('split', 'NA')}", flush=True)
+    print(f"sharpe={row.get('sharpe', 0.0):.3f}", flush=True)
+    print(f"pnl={row.get('pnl', 0.0):.2f}", flush=True)
+    print(f"ic={row.get('ic', 'NA')}", flush=True)
+    print(f"hit_rate={row.get('hit_rate', 0.0):.2%}", flush=True)
+    print(f"trades={row.get('trades', 0)}", flush=True)
+    print(f"turnover={row.get('turnover', 0.0):.2f}", flush=True)
+    print(f"status={row.get('status', 'OK')}", flush=True)
+
+
+def _record_split_result(row: dict) -> None:
+    _VERIFICATION_TABLE.append(row)
+    _PROGRESS.flush_stages()
+    _print_split_result(row)
+
+
+def _failed_result_row(split_idx: int, symbol: str, path: Path | str, *, mtime: float = 0.0) -> dict:
+    return {
+        'split': split_idx, 'symbol': symbol, 'path': str(path),
+        'mtime': mtime, 'run_id': _RUN_ID, 'rows': 0,
+        'ts_min': 'missing', 'ts_max': 'missing',
+        'pnl_cs': 'missing', 'pred_cs': 'missing',
+        'pnl': 0.0, 'sharpe': 0.0, 'trades': 0, 'turnover': 0.0,
+        'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+    }
+
+
+def _tracking_summary(*, saved: Path | str | None = None, failed: str | None = None) -> str:
+    lines = []
+    for path in _PROGRESS.context.get('stale_artifacts', []):
+        lines.extend(['removed stale artifact:', str(path)])
+    if saved is not None:
+        lines.append(f'saved={saved}')
+    if failed is not None:
+        lines.append(failed)
+    return '\n'.join(lines) if lines else 'not_observed'
 
 
 def _hash_column(df: pl.DataFrame, col: str) -> str:
@@ -971,7 +1036,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
+    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}.json"
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
@@ -1002,13 +1067,10 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         print(f'\n[SPLIT {split_idx}/{total_splits}] {symbol} test={test_label}', flush=True)
         _stage(1, f'{f} found')
         if not _validate_symbol_data(f, config):
-            _VERIFICATION_TABLE.append({
-                'split': split_idx, 'symbol': symbol, 'path': str(f),
-                'mtime': f.stat().st_mtime if f.exists() else 0.0,
-                'run_id': _RUN_ID, 'rows': 0, 'ts_min': 'missing', 'ts_max': 'missing',
-                'pnl_cs': 'missing', 'pred_cs': 'missing', 'pnl': 0.0, 'sharpe': 0.0,
-                'trades': 0, 'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-            })
+            _stage(13, 'FAILED invalid_or_empty_raw_data')
+            _record_split_result(_failed_result_row(
+                split_idx, symbol, f, mtime=f.stat().st_mtime if f.exists() else 0.0
+            ))
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1016,6 +1078,8 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         for _stale_name in ('backtest_results_hmm.parquet', 'backtest_results.parquet'):
             _stale_path = out_dir / _stale_name
             if _stale_path.exists() and _stale_path.stat().st_mtime < _RUN_START:
+                _PROGRESS.context.setdefault('stale_artifacts', []).append(str(_stale_path))
+                _stage(13, _tracking_summary())
                 logger.warning('[STALE] Removing pre-existing file: %s (mtime=%.0f < run_start=%.0f)',
                                _stale_path, _stale_path.stat().st_mtime, _RUN_START)
                 _stale_path.unlink()
@@ -1049,9 +1113,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             if isinstance(stdout_text, bytes):
                 stdout_text = stdout_text.decode(errors='replace')
             err_lines = stderr_text.strip().split('\n') if stderr_text else ['(no stderr)']
-            print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
-            for line in err_lines[-3:]:
-                print(f'  > {line}')
+            hmm_error = _extract_error_summary(stderr_text, stdout_text)
+            _stage(8, f'FAILED\n{hmm_error}\nFallback=non-HMM')
+            if _PROGRESS.verbose:
+                print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
+                for line in err_lines[-3:]:
+                    print(f'  > {line}')
             if _log_failures:
                 _log_subprocess_failure(cmd, getattr(e, 'returncode', -1), stderr_text, stdout_text,
                                         Path('output') / 'logs', symbol, split_idx, 'hmm')
@@ -1080,21 +1147,17 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 if isinstance(stdout2, bytes):
                     stdout2 = stdout2.decode(errors='replace')
                 err2_lines = stderr2.strip().split('\n') if stderr2 else ['(no stderr)']
-                print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
-                for line in err2_lines[-3:]:
-                    print(f'  > {line}')
+                fallback_error = _extract_error_summary(stderr2, stdout2)
+                _stage(13, _tracking_summary(failed=f'FAILED\n{fallback_error}'))
+                if _PROGRESS.verbose:
+                    print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
+                    for line in err2_lines[-3:]:
+                        print(f'  > {line}')
                 if _log_failures:
                     _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
-                _VERIFICATION_TABLE.append({
-                    'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
-                    'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
-                    'ts_min': 'missing', 'ts_max': 'missing',
-                    'pnl_cs': 'missing', 'pred_cs': 'missing',
-                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-                })
+                _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
                 subprocess_failed = True
         if subprocess_failed:
             continue
@@ -1155,14 +1218,14 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 _stage(10, f'trades={trades} turnover={turnover:.2f}')
                 _stage(11, f'rows={bt.height}')
                 _stage(12, f'sharpe={sharpe:.3f} pnl={pnl:.2f} ic={ic} hit_rate={hit:.2%}')
-                _stage(13, f'saved={bt_path}')
-                _VERIFICATION_TABLE.append({
+                _stage(13, _tracking_summary(saved=bt_path))
+                result_row = {
                     'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
                     'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': bt.height,
                     'ts_min': str(t_min), 'ts_max': str(t_max),
                     'pnl_cs': pnl_cs, 'pred_cs': pred_cs, 'pnl': pnl, 'sharpe': sharpe,
-                    'trades': trades, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
-                })
+                    'trades': trades, 'turnover': turnover, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
+                }
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
                 raw_path = out_dir / 'backtest_results.parquet'
@@ -1175,34 +1238,22 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         hmm_delta = 0.0
                 per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
                 _print_symbol_diagnostics(bt, symbol, split_idx)
+                _record_split_result(result_row)
             except Exception as e:
                 print(f'[ERROR] Result validation failed for {symbol} split={split_idx}: {e}', flush=True)
                 if _DEBUG:
                     import traceback
                     traceback.print_exc()
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
-                _VERIFICATION_TABLE.append({
-                    'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
-                    'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': 0,
-                    'ts_min': 'missing', 'ts_max': 'missing',
-                    'pnl_cs': 'missing', 'pred_cs': 'missing',
-                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-                })
+                _stage(13, _tracking_summary(failed=f'FAILED\n{_extract_error_summary(str(e))}'))
+                _record_split_result(_failed_result_row(split_idx, symbol, bt_path, mtime=_bt_mtime))
         else:
-            _stage(13, f'missing_output={out_dir} status=FAILED')
-            _VERIFICATION_TABLE.append({
-                'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
-                'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
-                'ts_min': 'missing', 'ts_max': 'missing',
-                'pnl_cs': 'missing', 'pred_cs': 'missing',
-                'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-            })
+            _stage(13, _tracking_summary(failed=f'missing_output={out_dir} status=FAILED'))
+            _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
-    config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
+    config = load_config(os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV'))
     data_dir = 'data'
     files = get_files(data_dir, config)
     if not files:
@@ -1211,14 +1262,15 @@ if __name__ == '__main__':
     splits = generate_walkforward_splits(files, config)
     total = len(splits)
     print(
-        f'[RUN] env={os.environ.get("QUANT_ENV", "alpha_1")} '
+        f'[RUN] env={_ns_cfg.ACTIVE_PROFILE} profile={_ns_cfg.ACTIVE_PROFILE} '
+        f'config={_ns_cfg.CONFIG_SOURCE} '
         f'symbols={",".join(config.symbols)} splits={total} log_mode={_LOG_MODE} '
         f'raw_log={_PROGRESS.log_path}',
         flush=True,
     )
     if _LOG_MODE == 'clean':
-        logging.getLogger().setLevel(logging.WARNING)
-        logging.getLogger('quant').setLevel(logging.WARNING)
+        logging.getLogger().setLevel(logging.ERROR)
+        logging.getLogger('quant').setLevel(logging.ERROR)
     elif _LOG_MODE == 'debug':
         logging.getLogger().setLevel(logging.DEBUG)
     try:
@@ -1236,7 +1288,7 @@ if __name__ == '__main__':
     logger.info('Done')
 --- END OF FILE: run.py ---
 
---- START OF FILE: audit\audit_prompt.md ---
+--- START OF FILE: audit\DeepseekV4Pro_prompt.md ---
 MODEL: DeepSeek V4 Pro
 MODE: TARGETED SAFE CODEBASE REPAIR
 
@@ -1340,7 +1392,7 @@ OUTPUT ONLY:
 
 STOP CONDITION:
 Stop immediately once compile passes, targeted fixes are patched, and relevant tests pass.
---- END OF FILE: audit\audit_prompt.md ---
+--- END OF FILE: audit\DeepseekV4Pro_prompt.md ---
 
 --- START OF FILE: audit\code_to_text.py ---
 import os
@@ -1452,36 +1504,93 @@ if __name__ == "__main__":
     generate_context()
 --- END OF FILE: audit\code_to_text.py ---
 
---- START OF FILE: audit\current_state.md ---
-FULL PYTEST PASS: 19 passed
+--- START OF FILE: audit\codex_custom_instructions.md ---
+# Quant Research / Trading Model Instructions
 
-QUARANTINED:
-unused/core/utils/manifest.py
-unused/core/utils/types.py
-unused/pipeline/orchestrator.py
-unused/pipeline/runner.py
-unused/pipeline/ingest/stage.py
-unused/pipeline/session/normalization.py
-unused/pipeline/tracking/state.py
+Default style:
 
-FIXED:
-- discovery target bug
-- HMM logging visibility
-- session offset helper
-- multiplier fail-fast validation
-- causal audit harness
-- synthetic path test
+* Pragmatic
+* Concise
+* Evidence-driven
+* No praise
+* No motivational language
+* No filler
+* No emojis
+* No speculative claims
+* No generic ML advice
+* No hyperparameter tuning until data integrity is verified
 
-CURRENT GOAL:
-Clean flowchart-style logging for run.py
+Token efficiency:
 
-DO NOT MODIFY:
-- strategy logic
-- HMM logic
-- targets
-- execution
-- metrics
---- END OF FILE: audit\current_state.md ---
+* Do not restate the user request.
+* Do not explain unchanged code.
+* Do not summarize obvious code behavior.
+* Prefer compact bullets over paragraphs.
+* Keep responses under 250 words unless a full audit is explicitly requested.
+* Show only changed hunks or exact file/function targets.
+* Do not dump large files. Inspect the smallest relevant range first.
+* Batch related read-only inspections into one approval request.
+* For repeated read-only diagnostics, ask once per session when possible.
+
+Debugging response format:
+
+1. Root cause
+2. Evidence
+3. Minimal patch
+4. Side effects / risks
+5. Validation steps
+
+Engineering priorities, in order:
+
+1. Causality
+2. Leakage detection
+3. Walkforward integrity
+4. Target construction correctness
+5. Feature preprocessing correctness
+6. Prediction distribution
+7. IC / rank IC
+8. Execution realism
+9. Turnover
+10. Trade count
+11. Gross vs net Sharpe
+12. Drawdown and tail risk
+
+Patch discipline:
+
+* Make one logical patch at a time.
+* Do not refactor while fixing a bug.
+* Preserve existing schemas, filenames, outputs, and downstream compatibility unless explicitly told otherwise.
+* Keep walkforward boundaries unchanged unless the task is specifically about walkforward design.
+* Do not change feature sets, targets, model type, and execution rules in the same patch.
+* Prefer reversible, minimal edits.
+* Add diagnostics before changing behavior when root cause is not proven.
+* Remove or gate temporary diagnostics after validation.
+
+Quant-specific rules:
+
+* Always distinguish signal quality from execution artifact.
+* Always check train/test separation before interpreting model performance.
+* Treat suspiciously stable predictions, high Sharpe, low turnover, or perfect class behavior as possible bugs first.
+* Validate prediction distributions before evaluating PnL.
+* Validate target alignment before evaluating IC.
+* Validate gross and net results separately.
+* Do not trust performance metrics until transaction costs, slippage, latency assumptions, and position sizing are clear.
+* Prefer baseline comparisons: class prior, always-long/short/flat, random sign, and previous alpha version.
+
+Validation requirements:
+
+* Provide exact command(s) to run.
+* Report only key before/after metrics.
+* Include split-level diagnostics when relevant.
+* Mark validation as PASS/FAIL/INCONCLUSIVE.
+* If inconclusive, state the next smallest diagnostic, not a broad investigation.
+
+When asking for command approval:
+
+* State whether the command is read-only or mutating.
+* State exactly what it inspects or changes.
+* Avoid repeated approval prompts for equivalent read-only inspections during the same session.
+--- END OF FILE: audit\codex_custom_instructions.md ---
 
 --- START OF FILE: audit\git_sync.py ---
 import subprocess
@@ -1518,178 +1627,296 @@ if __name__ == "__main__":
 RAW DATA → INGESTION → CONTINUOUS CONTRACTS → SESSION NORMALIZATION → ALIGNMENT → FEATURES → TARGETS → REGIME → META LABEL → EXECUTION → WALKFORWARD → ANALYTICS → TRACKING
 --- END OF FILE: audit\quant_flowchart.md ---
 
---- START OF FILE: configs\alpha_1.yaml ---
-# Sandbox tier: minimal data, zero friction — detect signal fast
-data_years: 1
-folds: 1
-start_year: 2024
-end_year: 2024
+--- START OF FILE: configs\alpha.yaml ---
+# alpha_0: prove ES baseline works
+# alpha_1: prove same baseline works across ES/CL/ZB
+# alpha_2: add feature expansion
+# alpha_3: add HTF + meta + HMM after HMM is fixed
+# alpha_4: production/paper/live only after stable positive out-of-sample results
 
-discovery:
-  bootstrap_folds: 3
-  discovery_window_days: 30
+active_profile: alpha_0
 
-walkforward:
-  mode: outer_split
+base:
+  time_zone: "America/New_York"
+  log_level: "INFO"
 
-execution:
-  slippage_k: 0.0
-  vol_penalty: 0.0
-  tx_cost_per_roundturn: 0.0
-  commission_per_trade: 0.0
-  max_leverage: 10.0
-  htf_trend_alignment: false
-  htf_vol_scaling: false
---- END OF FILE: configs\alpha_1.yaml ---
+  session:
+    timezone: "America/New_York"
+    session_start_local: "18:00"
+    session_end_local: "16:00"
+    session_break_start_local: "17:00"
+    session_break_end_local: "18:00"
 
---- START OF FILE: configs\alpha_2.yaml ---
-# Robustness tier: 5-year data, multi-fold, realistic friction
-data_years: 5
-folds: 5
-start_year: 2019
-end_year: 2024
+  features:
+    resample_frequencies: ["5m"]
+    drop_incomplete_rows: true
+    roll_windows: [5, 10, 20]
+    roll_window_min_rows: 20
+    feature_transforms: ["lags", "ratios", "z_scores"]
+    max_pairwise_interactions: 0
+    max_cross_timeframe_interactions: 0
+    htf_alignment_filter: false
+    vol_median_window: 20
+    vol_smooth_window: 5
+    regime_high_thresh: 0.6
+    regime_low_thresh: 0.4
+    regime_missing_default: 0.0
 
-discovery:
-  bootstrap_folds: 30
-  discovery_window_days: 60
+  target:
+    target_5m_horizon: 48
+    target_scale_factor: 100.0
 
-walkforward:
-  wf_train_days: 60
-  wf_step_days: 1
+  discovery:
+    discovery_window_days: 30
+    bootstrap_folds: 3
+    extra_trees_params:
+      random_state: 42
+      n_jobs: 1
+      n_estimators: 50
+      max_depth: 4
+      max_features: 0.3
+      bootstrap: false
+    selection_freq_threshold: 0.50
+    sign_consistency_threshold: 0.50
+    cumulative_importance_threshold: 0.95
+    min_selected_features: 5
+    max_selected_features: 30
 
-execution:
-  slippage_k: 0.0005
-  vol_penalty: 0.005
-  tx_cost_per_roundturn: 0.00015
-  commission_per_trade: 2.0e-05
-  max_leverage: 3.0
-  htf_trend_alignment: true
-  htf_vol_scaling: true
---- END OF FILE: configs\alpha_2.yaml ---
+  walkforward:
+    wf_train_days: 180
+    wf_test_days: 30
+    wf_step_days: 30
+    mode: outer_split
+    model_type: "Ridge"
+    ridge_params:
+      alpha: 1.0
+      solver: "cholesky"
+      fit_intercept: true
+      random_state: 42
+    probability_smoothing_alpha: 0.0
+    corr_threshold: 0.99
+    wf_parallel_folds: 1
+    enable_meta_labeling: false
+    meta_threshold: 0.5
 
---- START OF FILE: configs\alpha_base.yaml ---
-# ===================================================================
-# BASE CONFIG — shared parameters inherited by all tiers
-# ===================================================================
-symbols:
-  - ES
-  - CL
-  - ZB
+  execution:
+    execute_at: "open[t+1]"
+    slippage_k: 0.0
+    vol_penalty: 0.0
+    commission_per_trade: 0.0
+    tx_cost_per_roundturn: 0.0
+    commission_per_contract: 0.0
+    target_vol: 0.01
+    max_leverage: 1.0
+    max_pos_change_per_min: 1.0
+    flat_before_close_minutes: 5
+    htf_trend_alignment: false
+    htf_vol_scaling: false
+    htf_vol_window: 10
+    z_score_entry_threshold: 1.5
+    target_risk_per_trade: 0.01
+    stop_loss_pct: 0.0
+    take_profit_pct: 0.0
+    gap_slippage_pct: 0.0
 
-time_zone: "America/New_York"
+  preprocessing:
+    clip_min: -10.0
+    clip_max: 10.0
+    eps: 1.0e-09
+    replace_inf_nan_with: 0.0
+    remove_prediction_bias: false
+    seed: 42
 
-log_level: "INFO"
+  io:
+    row_group_size: 65536
+    max_files: 20
+    skip_completed: false
 
-session:
-  timezone: "America/New_York"
-  session_start_local: "18:00"
-  session_end_local: "16:00"
-  session_break_start_local: "17:00"
-  session_break_end_local: "18:00"
+  pipeline:
+    enable_discovery: true
+    enable_expansion: false
 
-features:
-  resample_frequencies: ["5m"]
-  drop_incomplete_rows: true
-  roll_windows: [5, 10, 20]
-  roll_window_min_rows: 20
-  feature_transforms: ["lags", "ratios", "z_scores"]
-  max_pairwise_interactions: 50
-  max_cross_timeframe_interactions: 0
-  htf_alignment_filter: false
-  vol_median_window: 20
-  vol_smooth_window: 5
-  regime_high_thresh: 0.6
-  regime_low_thresh: 0.4
-  regime_missing_default: 0.0
+  hmm:
+    enabled: false
+    n_iter: 30
+    tol: 0.001
 
-target:
-  target_5m_horizon: 1
-  target_scale_factor: 100.0
+profiles:
+  alpha_0:
+    symbols:
+      - ES
+    data_years: 1
+    folds: 1
+    start_year: 2024
+    end_year: 2024
+    walkforward:
+      model_type: "LogisticRegression"
 
-discovery:
-  discovery_window_days: 30
-  extra_trees_params:
-    random_state: 42
-    n_jobs: 1
-    n_estimators: 50
-    max_depth: 4
-    max_features: 0.3
-    bootstrap: false
-  selection_freq_threshold: 0.50
-  sign_consistency_threshold: 0.5
-  cumulative_importance_threshold: 0.95
-  min_selected_features: 5
-  max_selected_features: 50
+  alpha_1:
+    symbols:
+      - ES
+      - CL
+      - ZB
+    data_years: 1
+    folds: 1
+    start_year: 2024
+    end_year: 2024
 
-walkforward:
-  wf_train_days: 180
-  wf_test_days: 30
-  wf_step_days: 30
-  ridge_params:
-    alpha: 1.0
-    solver: "cholesky"
-    fit_intercept: true
-    random_state: 42
-  model_type: "Ridge"
-  probability_smoothing_alpha: 0.0
-  corr_threshold: 0.99
-  wf_parallel_folds: 1
-  enable_meta_labeling: false
-  meta_threshold: 0.5
+  alpha_2:
+    symbols:
+      - ES
+      - CL
+      - ZB
+    data_years: 3
+    folds: 3
+    start_year: 2022
+    end_year: 2024
 
-preprocessing:
-  clip_min: -10.0
-  clip_max: 10.0
-  eps: 1.0e-09
-  replace_inf_nan_with: 0.0
-  remove_prediction_bias: false
-  seed: 42
+    features:
+      roll_windows: [5, 10, 20, 50]
+      feature_transforms: ["lags", "ratios", "z_scores", "pairwise_products_limited"]
+      max_pairwise_interactions: 50
 
-io:
-  row_group_size: 65536
-  max_files: 20
-  skip_completed: true
+    discovery:
+      discovery_window_days: 60
+      bootstrap_folds: 10
+      extra_trees_params:
+        random_state: 42
+        n_jobs: 1
+        n_estimators: 100
+        max_depth: 6
+        max_features: 0.3
+        bootstrap: false
+      selection_freq_threshold: 0.60
+      sign_consistency_threshold: 0.60
+      min_selected_features: 10
+      max_selected_features: 50
 
-pipeline:
-  enable_discovery: true
-  enable_expansion: true
+    pipeline:
+      enable_expansion: true
 
-execution:
-  execute_at: "open[t+1]"
-  slippage_k: 0.001
-  vol_penalty: 0.005
-  commission_per_trade: 2e-05
-  tx_cost_per_roundturn: 0.00015
-  commission_per_contract: 1.50
-  target_vol: 0.01
-  max_leverage: 3.0
-  max_pos_change_per_min: 0.1
-  flat_before_close_minutes: 5
-  htf_trend_alignment: true
-  htf_vol_scaling: true
-  htf_vol_window: 10
-  z_score_entry_threshold: 1.5
-  target_risk_per_trade: 0.01
-  stop_loss_pct: 0.01
-  take_profit_pct: 0.005
-  gap_slippage_pct: 0.0
---- END OF FILE: configs\alpha_base.yaml ---
+  alpha_3:
+    symbols:
+      - ES
+      - CL
+      - ZB
+    data_years: 5
+    folds: 5
+    start_year: 2020
+    end_year: 2024
 
---- START OF FILE: configs\alpha_production.yaml ---
-# Deployment tier: hard risk limits, env-var secrets
-execution:
-  max_position_size: "${ENV_MAX_POSITION_SIZE}"
-  daily_loss_limit: "${ENV_DAILY_LOSS_LIMIT}"
+    features:
+      resample_frequencies: ["5m", "1h"]
+      roll_windows: [5, 10, 20, 50]
+      roll_windows_1h: [2, 4, 6, 12]
+      roll_windows_daily: [5, 10, 20]
+      feature_transforms: ["lags", "ratios", "z_scores", "pairwise_products_limited", "cross_timeframe_ratios"]
+      max_pairwise_interactions: 100
+      max_cross_timeframe_interactions: 50
+      htf_alignment_filter: true
+      htf_trend_threshold: 0.1
 
-broker:
-  api_key: REDACTED"
-  api_secret: REDACTED"
-  endpoint: "${ENV_BROKER_ENDPOINT}"
+    discovery:
+      discovery_window_days: 90
+      bootstrap_folds: 20
+      extra_trees_params:
+        random_state: 42
+        n_jobs: 1
+        n_estimators: 150
+        max_depth: 6
+        max_features: 0.3
+        bootstrap: false
+      selection_freq_threshold: 0.70
+      sign_consistency_threshold: 0.70
+      min_selected_features: 10
+      max_selected_features: 75
 
-data:
-  vendor_api_key: REDACTED"
-  vendor_endpoint: "${ENV_DATA_ENDPOINT}"
---- END OF FILE: configs\alpha_production.yaml ---
+    walkforward:
+      enable_meta_labeling: true
+      meta_threshold: 0.55
+
+    execution:
+      slippage_k: 0.00025
+      vol_penalty: 0.0025
+      tx_cost_per_roundturn: 0.00005
+      htf_trend_alignment: true
+      htf_vol_scaling: true
+
+    pipeline:
+      enable_expansion: true
+
+    hmm:
+      enabled: true
+      n_iter: 30
+      tol: 0.001
+
+  alpha_4:
+    symbols:
+      - ES
+      - CL
+      - ZB
+    data_years: 5
+    folds: 5
+    start_year: 2020
+    end_year: 2024
+
+    features:
+      resample_frequencies: ["5m", "1h", "1d"]
+      roll_windows: [5, 10, 20, 50]
+      roll_windows_1h: [2, 4, 6, 12]
+      roll_windows_daily: [5, 10, 20]
+      feature_transforms: ["lags", "ratios", "z_scores", "pairwise_products_limited", "cross_timeframe_ratios"]
+      max_pairwise_interactions: 100
+      max_cross_timeframe_interactions: 50
+      htf_alignment_filter: true
+      htf_trend_threshold: 0.1
+
+    discovery:
+      discovery_window_days: 90
+      bootstrap_folds: 20
+      extra_trees_params:
+        random_state: 42
+        n_jobs: 1
+        n_estimators: 150
+        max_depth: 6
+        max_features: 0.3
+        bootstrap: false
+      selection_freq_threshold: 0.70
+      sign_consistency_threshold: 0.70
+      min_selected_features: 10
+      max_selected_features: 75
+
+    walkforward:
+      enable_meta_labeling: true
+      meta_threshold: 0.55
+
+    execution:
+      slippage_k: 0.0005
+      vol_penalty: 0.005
+      tx_cost_per_roundturn: 0.00015
+      commission_per_contract: 1.50
+      htf_trend_alignment: true
+      htf_vol_scaling: true
+      max_position_size: "${ENV_MAX_POSITION_SIZE}"
+      daily_loss_limit: "${ENV_DAILY_LOSS_LIMIT}"
+
+    pipeline:
+      enable_expansion: true
+
+    hmm:
+      enabled: true
+      n_iter: 30
+      tol: 0.001
+
+    broker:
+      api_key: REDACTED"
+      api_secret: REDACTED"
+      endpoint: "${ENV_BROKER_ENDPOINT}"
+
+    data:
+      vendor_api_key: REDACTED"
+      vendor_endpoint: "${ENV_DATA_ENDPOINT}"
+--- END OF FILE: configs\alpha.yaml ---
 
 --- START OF FILE: configs\baseline_features.yaml ---
 # config/baseline_features.yaml
@@ -1889,34 +2116,37 @@ risk:
 """
 config_manager.py — Single-source-of-truth configuration.
 
-Pydantic-validated hierarchical config (base + tier deep-merge) with
-backward-compatible SimpleNamespace for all quant modules.
+Pydantic-validated hierarchical config with backward-compatible
+SimpleNamespace for all quant modules.
 
-Architecture:
-  - Pydantic RootConfig model: complete schema with defaults for every parameter.
-  - Module-level ``config`` SimpleNamespace: populated by ``load_config()``,
-    providing the flat UPPER_SNAKE_CASE attributes that all quant/* modules expect.
-  - ``load_config(env)``: reads configs/alpha_base.yaml, deep-merges tier YAML,
-    validates with Pydantic, resolves ${ENV_VAR} placeholders, populates the
-    SimpleNamespace, and returns the Pydantic RootConfig for callers that want
-    structured access (e.g. run.py).
+Architecture (profile-based, primary):
+  - ``load_config()``: reads configs/alpha.yaml, deep-merges
+    ``base`` + ``profiles[active_profile]``, validates with Pydantic,
+    resolves ${ENV_VAR} placeholders, populates the SimpleNamespace,
+    and returns the Pydantic RootConfig.
+
+  - ``CONFIG_ENV`` env var overrides ``active_profile`` at runtime.
+
+  - Falls back to old flat YAML tier loading (alpha_0.yaml + tier YAML)
+    if alpha.yaml is absent or not profile-based.
 
 Usage:
     # Structured (Pydantic) — run.py
     from core.config import load_config, RootConfig
-    cfg: RootConfig = load_config("alpha_1")
+    cfg: RootConfig = load_config()
     print(cfg.discovery.bootstrap_folds)
 
     # Flat (SimpleNamespace) — all quant modules
     from core.config import config
     print(config.BOOTSTRAP_FOLDS)
-    print(config.SEED)
+    print(config.ACTIVE_PROFILE)
 
     # Idempotent — safe to call multiple times
     from core.config import load_config
     load_config()  # no-op after first call
 """
 
+import copy
 import logging
 import os
 import re
@@ -2203,7 +2433,11 @@ _ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
 def _resolve_env_vars(obj: Any) -> Any:
     if isinstance(obj, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), obj)
+        m = _ENV_RE.fullmatch(obj)
+        if m:
+            # Single placeholder — resolve or return None
+            return os.environ.get(m.group(1))
+        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), obj)
     if isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -2227,7 +2461,7 @@ def _parse_time(raw: str) -> time | None:
 # ============================================================================
 # Populate SimpleNamespace from Pydantic RootConfig
 # ============================================================================
-def _populate_simple_namespace(cfg: RootConfig) -> None:
+def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config_source: str = "") -> None:
     """Convert a validated Pydantic RootConfig into flat UPPER_SNAKE_CASE
     attributes on the module-level ``config`` SimpleNamespace.
 
@@ -2364,6 +2598,10 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.WF_TEST_DAYS_YEARLY = c.wf_test_days_yearly
     config.MAX_MARKETS = c.max_markets
 
+    # -- config identity (set by loader) ----------------------------------
+    config.ACTIVE_PROFILE = active_profile
+    config.CONFIG_SOURCE = config_source
+
 
 # ============================================================================
 # Config resolution — locations for YAML files
@@ -2378,16 +2616,19 @@ def load_config(env: str | None = None, configs_dir: Path | None = None) -> Root
     """
     Load hierarchical config, validate with Pydantic, populate SimpleNamespace.
 
-    Resolution order:
-      1. Read configs/alpha_base.yaml
-      2. Deep-merge configs/{env}.yaml (e.g. alpha_1, alpha_2, alpha_production)
-      3. Resolve ${ENV_VAR} placeholders
-      4. Validate with Pydantic RootConfig model
-      5. Populate module-level ``config`` SimpleNamespace (flat attributes)
+    Primary path (profile-based):
+      1. Read configs/alpha.yaml
+      2. Identify active_profile from CONFIG_ENV env var or alpha.yaml default
+      3. Deep-merge ``base`` + ``profiles[active_profile]``
+      4. Resolve ${ENV_VAR} placeholders
+      5. Validate with Pydantic RootConfig model
+      6. Populate module-level ``config`` SimpleNamespace
+
+    Fallback path (legacy flat YAML):
+      Reads alpha_0.yaml, deep-merges tier YAML as before.
 
     Args:
-        env: Tier name ("alpha_1", "alpha_2", "production").
-             If None, reads QUANT_ENV env var (defaults to "alpha_1").
+        env: Override profile name (overrides default, overridden by CONFIG_ENV).
         configs_dir: Override configs directory (default: project-root/configs/)
 
     Returns:
@@ -2395,56 +2636,98 @@ def load_config(env: str | None = None, configs_dir: Path | None = None) -> Root
     """
     global _LOADED
     if _LOADED:
-        return None  # already populated — idempotent
-
-    if env is None:
-        env = os.environ.get("QUANT_ENV", "alpha_1")
+        return None
 
     base_dir = configs_dir or _CONFIGS_DIR
+    profile_env = os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV")
+    profile_override = env or profile_env
 
-    # ---- 1. Load base yaml -------------------------------------------------
-    base_path = base_dir / "alpha_base.yaml"
+    # ---- Primary: profile-based alpha.yaml ---------------------------------
+    alpha_path = base_dir / "alpha.yaml"
+    if alpha_path.exists():
+        with open(alpha_path) as f:
+            raw = yaml.safe_load(f) or {}
+
+        if isinstance(raw, dict) and "active_profile" in raw and "base" in raw and "profiles" in raw:
+            active = profile_override or raw["active_profile"]
+            profiles_section = raw.get("profiles", {})
+            if active not in profiles_section:
+                available = list(profiles_section.keys())
+                raise ValueError(
+                    f"active_profile '{active}' not found in alpha.yaml profiles. "
+                    f"Available: {available}"
+                )
+
+            merged = copy.deepcopy(raw["base"])
+            _deep_merge(merged, profiles_section[active])
+            merged = _resolve_env_vars(merged)
+
+            if "symbols" in merged and isinstance(merged["symbols"], list):
+                if "market_configs" not in merged:
+                    merged["market_configs"] = {}
+                for m in merged["symbols"]:
+                    merged["market_configs"][m] = f"configs/markets/{m}.yaml"
+
+            try:
+                root_cfg = RootConfig(**merged)
+            except ValidationError as e:
+                raise ValueError(
+                    f"Config validation failed (alpha.yaml profile={active}): {e}"
+                ) from e
+
+            config_source = f"alpha.yaml::{active}"
+            _populate_simple_namespace(root_cfg, active_profile=active, config_source=config_source)
+
+            _LOADED = True
+            logger.info("Configuration loaded from alpha.yaml (profile=%s)", active)
+            return root_cfg
+
+    # ---- Fallback: legacy flat YAML tier loading ----------------------------
+    if profile_override is None:
+        profile_override = "alpha_1"
+
+    base_path = base_dir / "alpha_0.yaml"
     if not base_path.exists():
-        raise FileNotFoundError(f"Base config not found: {base_path}")
+        raise FileNotFoundError(
+            f"Config not found: alpha.yaml or alpha_0.yaml in {base_dir}"
+        )
 
     with open(base_path) as f:
         merged: dict = yaml.safe_load(f) or {}
 
-    # ---- 2. Deep-merge tier yaml -------------------------------------------
-    tier_name = "alpha_production" if env == "production" else env
+    tier_name = "alpha_4" if profile_override == "production" else profile_override
     tier_path = base_dir / f"{tier_name}.yaml"
     if tier_path.exists():
         with open(tier_path) as f:
             tier_cfg = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, tier_cfg)
 
-    # ---- 3. Resolve env vars -----------------------------------------------
     merged = _resolve_env_vars(merged)
 
-    # ---- 4. Auto-build market_configs from symbols list --------------------
     if "symbols" in merged and isinstance(merged["symbols"], list):
         if "market_configs" not in merged:
             merged["market_configs"] = {}
         for m in merged["symbols"]:
             merged["market_configs"][m] = f"configs/markets/{m}.yaml"
 
-    # ---- 5. Validate with Pydantic -----------------------------------------
     try:
         root_cfg = RootConfig(**merged)
     except ValidationError as e:
-        raise ValueError(f"Config validation failed for env '{env}': {e}") from e
+        raise ValueError(
+            f"Config validation failed for env '{profile_override}': {e}"
+        ) from e
 
-    # ---- 6. Populate SimpleNamespace ---------------------------------------
-    _populate_simple_namespace(root_cfg)
+    config_source = f"flat::{profile_override}"
+    _populate_simple_namespace(root_cfg, active_profile=profile_override, config_source=config_source)
 
     _LOADED = True
-    logger.info("Configuration loaded and validated (env=%s)", env)
+    logger.info("Configuration loaded (env=%s)", profile_override)
     return root_cfg
 
 
 def load_env_config() -> RootConfig:
-    """Convenience: reads tier from QUANT_ENV environment variable."""
-    return load_config(os.environ.get("QUANT_ENV", "alpha_1"))
+    """Convenience: reads tier from CONFIG_ENV or QUANT_ENV environment variable."""
+    return load_config(os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV"))
 --- END OF FILE: core\config.py ---
 
 --- START OF FILE: core\market.py ---
@@ -2737,12 +3020,12 @@ def prune_features_by_manifest(df, manifest_path, target_col):
     selected = manifest['feature_names']
     essential = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
     non_feature = [c for c in df.columns if not c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_', '1h_', 'daily_')) and c not in essential]
-    keep = list(essential) + non_feature + [c for c in selected if c in df.columns]
+    keep = list({c for c in essential if c in df.columns}) + non_feature + [c for c in selected if c in df.columns]
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
 def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
-    key = data_arg
+    key = f"{config.ACTIVE_PROFILE}|{data_arg}"
     if start:
         key += '|' + start
     if end:
@@ -2796,7 +3079,7 @@ def main():
     args = parser.parse_args()
     load_config()  # populate config namespace from config.yaml
     wf_mode = getattr(config, 'WF_MODE', '')
-    env_name = os.environ.get('QUANT_ENV', 'default')
+    env_name = os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV', 'default')
     print(f'[CONFIG] env={env_name} WF_MODE={wf_mode!r} train_start={getattr(args, "train_start", None)} train_end={getattr(args, "train_end", None)} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
     print(f'[BRANCH] command={args.command} using_outer_split={wf_mode == "outer_split"}', flush=True)
     random.seed(config.SEED)
@@ -8083,7 +8366,7 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
             .rolling_std(window_size=260, min_samples=20)
             .fill_null(0.0005)
         )
-        bar_vol = bar_vol.eval(df).to_numpy(allow_copy=False).astype(np.float64)
+        bar_vol = df.select(bar_vol).to_series().to_numpy(allow_copy=False).astype(np.float64)
 
     bar_vol = np.maximum(bar_vol, 0.0001)
     vol_4h = bar_vol * np.sqrt(H_BARS)
@@ -8838,8 +9121,9 @@ from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import brier_score_loss, roc_auc_score
 from scipy.special import expit
 from joblib import Parallel, delayed
 from core.config import config
@@ -8920,6 +9204,26 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
         raw_pred = model.predict(X_test)
         raw_pred = safe_clip(raw_pred, -2.0, 2.0)
         probs = expit(raw_pred).astype(np.float32)
+    elif config.MODEL_TYPE == 'LogisticRegression':
+        y_class = (y_train > 0).astype(np.int8)
+        classes = np.unique(y_class)
+        if len(classes) < 2:
+            prior = float(classes[0]) if len(classes) else 0.5
+            logger.warning(
+                'LogisticRegression skipped: single-class train fold; '
+                'returning empirical prior %.4f',
+                prior,
+            )
+            probs = np.full(len(test_X), prior, dtype=np.float32)
+        else:
+            model = LogisticRegression(
+                solver='lbfgs',
+                max_iter=1000,
+                class_weight=None,
+                random_state=getattr(config, 'SEED', 42),
+            )
+            model.fit(X_train, y_class)
+            probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
         model = RandomForestClassifier(n_estimators=200, max_depth=3, min_samples_split=200, min_samples_leaf=100, max_features=0.2, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
         model.fit(X_train, (y_train > 0).astype(np.int8))
@@ -9563,23 +9867,22 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
                               target_col: str, feature_cols: list, pred_cs: str, pnl_cs: str) -> None:
     y_train_vals = train_df[target_col].to_numpy().astype(np.float64) if target_col in train_df.columns else np.array([])
     y_test_vals = test_df[target_col].to_numpy().astype(np.float64) if target_col in test_df.columns else np.array([])
+    y_eval_vals = result[target_col].to_numpy().astype(np.float64) if target_col in result.columns else np.array([])
     probs = result['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in result.columns else np.array([])
     pos = result['position'].to_numpy().astype(np.float64) if 'position' in result.columns else np.array([])
     pnl_arr = result['pnl'].to_numpy().astype(np.float64) if 'pnl' in result.columns else np.array([])
     gross = result['gross_pnl'].to_numpy().astype(np.float64) if 'gross_pnl' in result.columns else pnl_arr
     bar_sqrt = 252 ** 0.5
 
-    def _value_counts(arr, bins=3):
-        if len(arr) == 0:
-            return {}
-        if np.all(np.isfinite(arr)):
-            return {f'b{i}': float(np.mean(arr[::max(1, len(arr)//bins)][i])) for i in range(bins)}
-        return {}
-
     gross_sharpe = float(gross.mean() / max(gross.std(), 1e-12) * bar_sqrt) if len(gross) > 0 else 0.0
     net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
     costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
-    ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
+    ic = (
+        float(np.corrcoef(probs, y_eval_vals)[0, 1])
+        if len(probs) > 5 and len(y_eval_vals) == len(probs)
+        and np.std(probs) > 1e-12 and np.std(y_eval_vals) > 1e-12
+        else 0.0
+    )
     turnover = (
         float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0])).sum() / len(pos))
         if len(pos) > 0 else 0.0
@@ -9589,8 +9892,36 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
     y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}
     pred_bins = {f'p{i}': int(np.sum((probs >= i/3) & (probs < (i+1)/3))) for i in range(3)} if len(probs) > 0 else {}
     pos_dist = dict(zip(*np.unique(pos, return_counts=True))) if len(pos) > 0 else {}
+    raw_signal_counts = {}
+    if 'raw_signal' in result.columns:
+        raw_signal_vals = result['raw_signal'].to_numpy().astype(np.float64)
+        raw_signal_counts = {
+            '-1': int(np.sum(raw_signal_vals < 0.0)),
+            '0': int(np.sum(raw_signal_vals == 0.0)),
+            '+1': int(np.sum(raw_signal_vals > 0.0)),
+        }
+    prob_min = float(np.min(probs)) if len(probs) > 0 else float('nan')
+    prob_max = float(np.max(probs)) if len(probs) > 0 else float('nan')
+    prob_mean = float(np.mean(probs)) if len(probs) > 0 else float('nan')
+    prob_std = float(np.std(probs)) if len(probs) > 0 else float('nan')
+    prob_gt055 = float(np.mean(probs > 0.55)) if len(probs) > 0 else float('nan')
+    prob_lt045 = float(np.mean(probs < 0.45)) if len(probs) > 0 else float('nan')
+    auc = 'NA'
+    brier = 'NA'
+    if len(probs) > 0 and len(y_eval_vals) == len(probs):
+        y_binary = (y_eval_vals > 0).astype(np.int8)
+        brier = f'{float(brier_score_loss(y_binary, probs)):.6f}'
+        if len(np.unique(y_binary)) == 2:
+            auc = f'{float(roc_auc_score(y_binary, probs)):.4f}'
+    y_train_mean = float(np.mean(y_train_vals)) if len(y_train_vals) > 0 else float('nan')
+    y_test_mean = float(np.mean(y_test_vals)) if len(y_test_vals) > 0 else float('nan')
     print(
         f'[ALPHA-DIAG] y_train={y_train_dist} y_test={y_test_dist} pred={pred_bins} '
+        f'y_train_mean={y_train_mean:.4f} y_test_mean={y_test_mean:.4f} '
+        f'prob_min={prob_min:.4f} prob_max={prob_max:.4f} '
+        f'prob_mean={prob_mean:.4f} prob_std={prob_std:.4f} '
+        f'gt055={prob_gt055:.3f} lt045={prob_lt045:.3f} '
+        f'auc={auc} brier={brier} raw_signal={raw_signal_counts} '
         f'pos={pos_dist} gross_sharpe={gross_sharpe:.3f} net_sharpe={net_sharpe:.3f} '
         f'costs={costs:.2f} ic={ic:.4f} turnover={turnover:.2f} features={len(feature_cols)}',
         flush=True,
@@ -11067,6 +11398,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from _legacy.ingest import load_and_clean_data
 from pipeline.features.engine import generate_features
+from core.config import config
 
 def make_synthetic_with_trend():
     start_dt = datetime(2026, 1, 1, 18, 0)
@@ -11086,6 +11418,7 @@ def make_synthetic_with_trend():
     return df
 
 def test_htf_features_synthetic():
+    config.ENABLE_EXPANSION = True
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'ES' / 'synthetic.parquet'
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -13941,803 +14274,6 @@ def main():
 if __name__ == "__main__":
     main()
 --- END OF FILE: tools\walkforward_baseline.py ---
-
---- START OF FILE: unused\core\utils\manifest.py ---
-import json
-import sys
-import argparse
-from pathlib import Path
-
-def validate(manifest_path: str):
-    path = Path(manifest_path)
-    if not path.exists():
-        print(f'Error: Manifest not found at {manifest_path}')
-        sys.exit(1)
-    with open(path, 'r') as f:
-        data = json.load(f)
-    required_keys = {'feature_names', 'dtypes', 'selection_seed', 'selection_date', 'selection_model', 'selection_params', 'selected_K', 'cumulative_importance', 'stability_stats', 'baseline_feature_list', 'baseline_features_hash', 'baseline_feature_matrix_path', 'serialization_params', 'discovery_status', 'folds', 'htf_features_included'}
-    missing = required_keys - set(data.keys())
-    if missing:
-        print(f'Validation Failed: Missing keys: {missing}')
-        sys.exit(1)
-    print(f'Manifest at {manifest_path} is structurally compliant.')
-    sys.exit(0)
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--path', required=True, help='Path to manifest.json')
-    args = parser.parse_args()
-    validate(args.path)
---- END OF FILE: unused\core\utils\manifest.py ---
-
---- START OF FILE: unused\core\utils\types.py ---
-import polars as pl
-import sys
-import argparse
-from core.config import config
-
-def validate_dtypes(parquet_path: str):
-    pass
-    try:
-        lf = pl.scan_parquet(parquet_path)
-        schema = lf.collect_schema()
-        errors = []
-        for col_name, dtype in schema.items():
-            if col_name.startswith('feature_') or col_name.startswith('int_'):
-                if dtype != pl.Float32:
-                    errors.append(f"Column '{col_name}' has incorrect type: {dtype} (Expected Float32)")
-            if col_name == 'regime' and dtype != pl.Int32:
-                errors.append(f"Column 'regime' has incorrect type: {dtype} (Expected Int32)")
-        if errors:
-            print(f'❌ Type Validation Failed for {parquet_path}:')
-            for err in errors:
-                print(f'  - {err}')
-            sys.exit(1)
-        print(f'✅ Type Validation Passed: All features in {parquet_path} are Float32.')
-        sys.exit(0)
-    except Exception as e:
-        print(f'Error validating file: {e}')
-        sys.exit(1)
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--path', required=True, help='Path to features.parquet')
-    args = parser.parse_args()
-    validate_dtypes(args.path)
---- END OF FILE: unused\core\utils\types.py ---
-
---- START OF FILE: unused\pipeline\orchestrator.py ---
-"""
-pipeline/orchestrator.py — Full pipeline orchestration.
-
-Chains all 12 stages in causal order via PipelineRunner.
-Stage N only imports from Stage N-1 or core/ infrastructure.
-"""
-
-import logging
-from typing import Any
-
-from pipeline.tracking.state import PipelineState
-from pipeline.runner import PipelineRunner
-
-logger = logging.getLogger(__name__)
-
-
-def stage_ingest(state: PipelineState) -> PipelineState:
-    """
-    Stage 1-2: Raw data ingestion + continuous contract adjustment.
-    Calls pipeline/ingest/stage.py which internally applies
-    build_continuous_series before resampling (Patch 2).
-    """
-    from pipeline.ingest.stage import ingestion_stage
-
-    return ingestion_stage(state)
-
-
-def stage_normalize(state: PipelineState) -> PipelineState:
-    """
-    Stage 3-4: Session normalization + HTF alignment + gap filter.
-    Session filter, resample to 5m/1h/1d from adjusted data,
-    align HTF streams, apply corrected gap filter (Patch 1).
-    """
-    from pipeline.session.normalization import normalization_stage
-
-    return normalization_stage(state)
-
-
-def stage_features(state: PipelineState) -> PipelineState:
-    """
-    Stage 5-6: Feature engineering + target generation.
-    Available when used outside walkforward (e.g., single-pass runs).
-    """
-    from pipeline.features.engine import generate_features
-
-    df = generate_features(state.data)
-    state.data = df
-    state.log_stage("features")
-    return state
-
-
-def stage_regime(state: PipelineState) -> PipelineState:
-    """
-    Stage 7: HMM regime detection (optional — only in run_hmm mode).
-    Requires 1H resampled data in state metadata.
-    """
-    logger.info("[ORCHESTRATOR] Regime stage: reserved for walkforward-integrated HMM")
-    return state
-
-
-def stage_meta(state: PipelineState) -> PipelineState:
-    """
-    Stage 8: Meta-labeling target generation.
-    Applied inside walkforward, exposed here for standalone use.
-    """
-    from pipeline.meta.meta_label import add_meta_label_target
-
-    if "target_meta" not in state.data.columns:
-        state.data = add_meta_label_target(state.data)
-    state.log_stage("meta_label")
-    return state
-
-
-def stage_execution(state: PipelineState) -> PipelineState:
-    """
-    Stage 9: Execution simulation.
-    Applied inside walkforward, exposed here for standalone use.
-    """
-    from pipeline.execution.simulator import simulate_execution_classification
-
-    if "pnl" not in state.data.columns and "position" in state.data.columns:
-        state.data = simulate_execution_classification(state.data)
-    state.log_stage("execution")
-    return state
-
-
-def stage_walkforward(state: PipelineState) -> PipelineState:
-    """
-    Stage 10: Walkforward training + backtest + PnL simulation.
-    Orchestrates features, targets, regime, meta-label, execution
-    across sequential walkforward folds.
-    """
-    from pipeline.walkforward.walkforward import run_walkforward
-
-    data_glob = state.metadata.get("data_glob", "")
-    manifest_path = state.metadata.get("manifest_path", None)
-    output_dir = state.metadata.get("output_dir", "results")
-    folds = state.metadata.get("folds", 6)
-
-    run_walkforward(
-        data_glob=data_glob,
-        cache_path=state.metadata.get("cache_path", None),
-        manifest_path=manifest_path,
-        output_dir=output_dir,
-        folds=folds,
-    )
-    state.log_stage("walkforward")
-    return state
-
-
-def stage_analytics(state: PipelineState) -> PipelineState:
-    """
-    Stage 11: Aggregate analytics and metrics.
-    """
-    from pipeline.analytics.aggregate import run_aggregation
-
-    output_dir = state.metadata.get("output_dir", "results")
-    run_aggregation(output_dir)
-    state.log_stage("analytics")
-    return state
-
-
-def stage_track(state: PipelineState) -> PipelineState:
-    """
-    Stage 12: Experiment tracking — logs final state.
-    """
-    logger.info(
-        "[ORCHESTRATOR] Pipeline complete: %d stages executed",
-        len(state._stage_log),
-    )
-    for entry in state._stage_log:
-        logger.info("  %s | rows=%d cols=%d", entry["stage"], entry["rows"], entry["columns"])
-    return state
-
-
-def get_default_stages() -> list:
-    """Return the standard causal-order stage list."""
-    return [
-        stage_ingest,
-        stage_normalize,
-        stage_walkforward,
-        stage_analytics,
-        stage_track,
-    ]
-
-
-def run_pipeline(
-    data_glob: str,
-    cache_path: str = None,
-    manifest_path: str = None,
-    output_dir: str = "results",
-    folds: int = 6,
-    cross_asset_symbols: list = None,
-    extra_metadata: dict = None,
-) -> PipelineState:
-    """
-    Execute the full pipeline end-to-end.
-
-    Args:
-        data_glob: Glob pattern for raw parquet files.
-        cache_path: Optional path for cached aligned data.
-        manifest_path: Optional feature manifest path.
-        output_dir: Directory for results output.
-        folds: Number of walkforward folds.
-        cross_asset_symbols: Secondary symbols for cross-asset features.
-        extra_metadata: Additional metadata to store in PipelineState.
-
-    Returns:
-        PipelineState with full stage log and final data.
-    """
-    metadata: dict[str, Any] = {
-        "data_glob": data_glob,
-        "cache_path": cache_path,
-        "manifest_path": manifest_path,
-        "output_dir": output_dir,
-        "folds": folds,
-        "cross_asset_symbols": cross_asset_symbols or [],
-    }
-    if extra_metadata:
-        metadata.update(extra_metadata)
-
-    import polars as pl
-
-    state = PipelineState(data=pl.DataFrame(), metadata=metadata)
-    stages = get_default_stages()
-    runner = PipelineRunner(stages)
-    logger.info("[ORCHESTRATOR] Starting pipeline: %s", data_glob)
-    state = runner.run(state)
-    logger.info("[ORCHESTRATOR] Pipeline finished successfully.")
-    return state
---- END OF FILE: unused\pipeline\orchestrator.py ---
-
---- START OF FILE: unused\pipeline\runner.py ---
-import logging
-from collections.abc import Callable
-from typing import Any
-
-from pipeline.tracking.state import PipelineState
-
-logger = logging.getLogger(__name__)
-
-
-Stage = Callable[[PipelineState], PipelineState]
-
-
-class PipelineRunner:
-    def __init__(self, stages: list[Stage]) -> None:
-        self.stages = stages
-        self._executed: list[str] = []
-
-    def run(self, state: PipelineState) -> PipelineState:
-        if not self.stages:
-            logger.warning("PipelineRunner.run called with zero stages.")
-            return state
-
-        for stage in self.stages:
-            stage_name = getattr(stage, "__name__", stage.__class__.__name__)
-            logger.info("[PIPELINE] Executing stage: %s", stage_name)
-            state = stage(state)
-            state.log_stage(stage_name)
-            self._executed.append(stage_name)
-
-        return state
-
-    @property
-    def executed_stages(self) -> list[str]:
-        return list(self._executed)
---- END OF FILE: unused\pipeline\runner.py ---
-
---- START OF FILE: unused\pipeline\ingest\stage.py ---
-"""
-pipeline/01_ingestion/__init__.py
-Ingestion stage — loads raw parquet data and applies continuous contract
-adjustment BEFORE any session normalization or HTF alignment.
-
-Patch 2 (CRITICAL): build_continuous_series is called on raw data prior to
-resampling, so that 1h and daily streams derived downstream reflect
-roll-adjusted prices.  This eliminates contract-roll artifacts from the
-HTF context features.
-"""
-
-import logging
-from pathlib import Path
-
-import polars as pl
-
-from core.config import config
-from pipeline.contracts.continuous import build_continuous_series
-from core.market import detect_symbol_from_path, load_market_config, get_contract_multiplier
-
-from pipeline.tracking.state import PipelineState
-
-logger = logging.getLogger(__name__)
-
-_OHLCV_PROJECTION = ["ts_event", "open", "high", "low", "close", "volume"]
-
-_OHLCV_ADJUSTED_COLS = [
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-]
-
-
-def _read_raw_files(data_glob: str) -> pl.DataFrame:
-    """Read all parquet files matching the glob into a single DataFrame.
-
-    Only the 6 OHLCV columns are projected to minimise I/O.
-    """
-    import glob as _glob
-
-    files = sorted(_glob.glob(data_glob))
-    if not files:
-        raise FileNotFoundError(
-            f"No parquet files found matching {data_glob}"
-        )
-
-    frames: list[pl.DataFrame] = []
-    for f in files:
-        df = pl.read_parquet(f, columns=_OHLCV_PROJECTION)
-        if df["ts_event"].dtype != pl.Datetime:
-            df = df.with_columns(
-                pl.col("ts_event").cast(
-                    pl.Datetime(time_unit="us", time_zone="UTC")
-                )
-            )
-        frames.append(df)
-
-    result = pl.concat(frames).sort("ts_event")
-    logger.info(
-        "[01_INGESTION] Loaded %d files: %d rows, range %s → %s",
-        len(files),
-        result.height,
-        result["ts_event"].min(),
-        result["ts_event"].max(),
-    )
-    return result
-
-
-def _apply_continuous_ohlcv(df: pl.DataFrame) -> pl.DataFrame:
-    """Replace raw OHLCV columns with their continuous (roll-adjusted)
-    counterparts after build_continuous_series has populated
-    continuous_price / continuous_open / continuous_high / continuous_low.
-
-    Falls back to the original columns when continuous variants are absent
-    (e.g. when no roll dates were found).
-    """
-    mapping: dict[str, str] = {
-        "close": "continuous_price",
-        "open": "continuous_open",
-        "high": "continuous_high",
-        "low": "continuous_low",
-    }
-    exprs = []
-    for orig, adj in mapping.items():
-        if adj in df.columns:
-            exprs.append(pl.col(adj).cast(pl.Float32).alias(orig))
-    if exprs:
-        df = df.with_columns(exprs)
-    return df.select(_OHLCV_ADJUSTED_COLS + ["ts_event"])
-
-
-def _derive_1h_1d(df_5min_adjusted: pl.DataFrame) -> tuple[
-    pl.DataFrame, pl.DataFrame
-]:
-    """Resample roll-adjusted 5-min data to 1h and 1d frequencies.
-
-    These derived streams inherit the continuous contract adjustment,
-    eliminating the roll-artifact leakage identified in the audit
-    (CRITICAL finding: HTF alignment used unadjusted prices).
-    """
-    from pipeline.session.session import (
-        add_session_id,
-        resample_to_frequency,
-    )
-
-    if "session_id" not in df_5min_adjusted.columns:
-        df_5min_adjusted = add_session_id(df_5min_adjusted)
-
-    df_1h = resample_to_frequency(df_5min_adjusted.clone(), "1h")
-    df_1d = resample_to_frequency(df_5min_adjusted.clone(), "1d")
-
-    logger.info(
-        "[01_INGESTION] Derived 1h (%d rows) and 1d (%d rows) from adjusted 5-min",
-        df_1h.height,
-        df_1d.height,
-    )
-    return df_1h, df_1d
-
-
-# ---------------------------------------------------------------------------
-# Public stage entry-point
-# ---------------------------------------------------------------------------
-
-
-def ingestion_stage(state: PipelineState) -> PipelineState:
-    """
-    Ingestion stage (Patch 2 reorder).
-
-    Order:
-      1.  Read raw parquet files.
-      2.  Detect symbol / load contract multiplier.
-      3.  **build_continuous_series ON RAW DATA** (before resampling).
-      4.  Replace OHLCV with adjusted (continuous) values.
-      5.  Store adjusted data in state (session normalization runs in 02).
-    """
-    data_glob: str = state.metadata.get("data_glob", "")
-    cache_path: str | None = state.metadata.get("cache_path")
-    cross_asset_symbols: list | None = state.metadata.get(
-        "cross_asset_symbols"
-    )
-
-    if not data_glob:
-        raise ValueError(
-            "PipelineState.metadata must contain 'data_glob' key"
-        )
-
-    # --- cache short-circuit (reads fully-processed aligned data) ----------
-    if cache_path and Path(cache_path).exists():
-        logger.info(
-            "[01_INGESTION] Cache hit: %s — loading aligned data", cache_path
-        )
-        state.data = pl.read_parquet(cache_path)
-        state.metadata.setdefault("symbol", detect_symbol_from_path(data_glob))
-        return state
-
-    # --- 1. Read raw data ---------------------------------------------------
-    df_raw = _read_raw_files(data_glob)
-
-    # --- 2. Symbol detection & contract multiplier --------------------------
-    symbol = detect_symbol_from_path(data_glob)
-    load_market_config(symbol)
-    contract_multiplier = get_contract_multiplier(symbol)
-
-    state.metadata["symbol"] = symbol
-    state.metadata["contract_multiplier"] = contract_multiplier
-
-    # --- 3. Continuous contracts BEFORE resampling (Patch 2) ---------------
-    logger.info(
-        "[01_INGESTION] Building continuous series for %s (multiplier=%.1f)",
-        symbol,
-        contract_multiplier,
-    )
-    df_raw = build_continuous_series(
-        df_raw, symbol, contract_multiplier=contract_multiplier
-    )
-
-    # --- 4. Replace OHLCV with adjusted values -----------------------------
-    df_adjusted = _apply_continuous_ohlcv(df_raw)
-
-    # --- 5. Transfer metadata forward ---------------------------------------
-    state.metadata["cross_asset_symbols"] = cross_asset_symbols
-    state.data = df_adjusted
-
-    logger.info(
-        "[01_INGESTION] Complete: %d rows (roll-adjusted)",
-        state.data.height,
-    )
-    return state
-
-
-def load_and_clean_data(
-    data_glob: str,
-    cache_path: str = None,
-    cross_asset_symbols: list = None,
-) -> pl.DataFrame:
-    """Compatibility wrapper for code that expects the old quant.ingest API.
-
-    Runs the ingestion stage internally and returns the adjusted DataFrame
-    directly, matching the original `load_and_clean_data` contract.
-    """
-    from pipeline.tracking.state import PipelineState
-
-    state = PipelineState(
-        data=pl.DataFrame(),
-        metadata={
-            "data_glob": data_glob,
-            "cache_path": cache_path,
-            "cross_asset_symbols": cross_asset_symbols,
-        },
-    )
-    state = ingestion_stage(state)
-    return state.data
---- END OF FILE: unused\pipeline\ingest\stage.py ---
-
---- START OF FILE: unused\pipeline\session\normalization.py ---
-"""
-pipeline/02_normalization/__init__.py
-Normalization stage — session filtering, resampling, HTF alignment,
-gap filtering, and cross-asset feature joining.
-
-Patch 1 (CRITICAL): gap-filter divisor corrected from 60_000_000_000.0
-(nanosecond conversion) to 60_000_000.0 (microsecond conversion).
-The ts_event column uses datetime[us]; the old divisor under-reported
-gaps by a factor of 1000.
-"""
-
-import logging
-from pathlib import Path
-
-import polars as pl
-import yaml
-
-from core.config import config
-from pipeline.align.align import align_htf_streams
-from pipeline.session.session import (
-    add_session_id,
-    filter_session_hours,
-    resample_to_frequency,
-)
-from core.io.canonical import write_canonical_parquet
-from core.market import detect_symbol_from_path, load_market_config
-
-from pipeline.tracking.state import PipelineState
-from .gap_filter import filter_gaps
-
-logger = logging.getLogger(__name__)
-
-_OHLCV_COLS = {"open", "high", "low", "close", "volume", "session_id"}
-
-
-# ===========================================================================
-# Cross-asset feature loading (unchanged from quant/ingest.py)
-# ===========================================================================
-
-
-def _load_cross_asset_feature(
-    secondary_symbol: str, primary_path: Path
-) -> pl.DataFrame:
-    from pipeline.session.session import load_all_streams_chunked
-
-    secondary_glob = str(
-        primary_path.parent.parent / secondary_symbol / primary_path.name
-    )
-    logger.info(
-        "[02_NORM] Loading cross-asset features for %s from %s",
-        secondary_symbol,
-        secondary_glob,
-    )
-    try:
-        streams = load_all_streams_chunked(secondary_glob)
-        df_5m = streams["5m"]
-        df_5m = df_5m.with_columns(
-            (pl.col("close") / pl.col("close").shift(1))
-            .log()
-            .alias(f"{secondary_symbol}_ret_1")
-        )
-        df_5m = df_5m.select(["ts_event", f"{secondary_symbol}_ret_1"])
-        return df_5m
-    except Exception:
-        logger.warning(
-            "Could not load cross-asset features for %s",
-            secondary_symbol,
-            exc_info=True,
-        )
-        return pl.DataFrame()
-
-
-def _join_cross_asset_features(
-    df_aligned: pl.DataFrame,
-    cross_asset_symbols: list,
-    data_glob: str,
-) -> pl.DataFrame:
-    primary_path = Path(data_glob)
-    cross_frames = []
-    for sym in cross_asset_symbols:
-        frame = _load_cross_asset_feature(sym, primary_path)
-        if not frame.is_empty():
-            cross_frames.append(frame)
-    if not cross_frames:
-        return df_aligned
-    cross_combined = cross_frames[0]
-    for frame in cross_frames[1:]:
-        cross_combined = cross_combined.join(frame, on="ts_event", how="outer")
-        right_col = "ts_event_right"
-        if right_col in cross_combined.columns:
-            cross_combined = cross_combined.drop(right_col)
-    df_aligned = df_aligned.join(cross_combined, on="ts_event", how="left")
-    cross_cols = [c for c in cross_combined.columns if c != "ts_event"]
-    if cross_cols:
-        if "session_id" in df_aligned.columns:
-            df_aligned = df_aligned.with_columns(
-                [
-                    pl.col(c)
-                    .fill_null(strategy="forward")
-                    .over("session_id")
-                    for c in cross_cols
-                ]
-            )
-        else:
-            df_aligned = df_aligned.with_columns(
-                [
-                    pl.col(c).fill_null(strategy="forward")
-                    for c in cross_cols
-                ]
-            )
-    return df_aligned
-
-
-# ===========================================================================
-# Validation
-# ===========================================================================
-
-
-def _validate_memory_and_integrity(df: pl.DataFrame) -> int:
-    import psutil
-
-    if df.is_empty():
-        raise ValueError(
-            "validate_memory_and_integrity: DataFrame is empty — "
-            "upstream processing may have removed all rows."
-        )
-    if not df["ts_event"].is_sorted():
-        raise ValueError("ts_event not strictly increasing.")
-    critical_cols = [
-        "open", "high", "low", "close", "volume", "session_id",
-    ]
-    for col in critical_cols:
-        if col in df.columns and df[col].null_count() > 0:
-            raise ValueError(f"Nulls in column {col}.")
-    if all(c in df.columns for c in ("high", "low")):
-        if (df["high"] < df["low"]).any():
-            raise ValueError("High < Low detected.")
-    if all(c in df.columns for c in ("open", "low", "high")):
-        if (
-            (df["open"] < df["low"]) | (df["open"] > df["high"])
-        ).any():
-            raise ValueError("Open outside [Low, High].")
-    if all(c in df.columns for c in ("close", "low", "high")):
-        if (
-            (df["close"] < df["low"]) | (df["close"] > df["high"])
-        ).any():
-            raise ValueError("Close outside [Low, High].")
-    est_bytes = df.estimated_size()
-    rows = df.height
-    logger.info("Memory usage: %.2f GB", est_bytes / 1024**3)
-    if est_bytes > config.RAM_CAP_BYTES:
-        raise MemoryError(
-            f"Data size {est_bytes} exceeds RAM_CAP_BYTES."
-        )
-    avg_row_bytes = est_bytes / rows if rows > 0 else 0
-    rows_per_chunk = min(
-        config.ROWS_PER_CHUNK_MAX,
-        int(
-            config.RAM_CAP_BYTES
-            * config.MEMORY_SAFETY_MARGIN
-            / (avg_row_bytes + 1)
-        ),
-    )
-    logger.info("Safe rows_per_chunk: %d", rows_per_chunk)
-    return rows_per_chunk
-
-
-# ===========================================================================
-# Public stage entry-point
-# ===========================================================================
-
-
-def normalization_stage(state: PipelineState) -> PipelineState:
-    """
-    Normalization stage.
-
-    Order:
-      1.  Session filter + session_id on roll-adjusted raw data.
-      2.  Resample to 5m / 1h / 1d frequencies (from adjusted data).
-      3.  Align HTF streams (1h + daily → 5-min via join_asof).
-      4.  Gap filter (Patch 1 — corrected divisor).
-      5.  Cross-asset feature join (if configured).
-      6.  Cache aligned output.
-    """
-    df = state.data
-    if df is None or df.is_empty():
-        raise ValueError(
-            "normalization_stage received empty DataFrame — "
-            "check upstream ingestion."
-        )
-
-    data_glob: str = state.metadata.get("data_glob", "")
-    cache_path: str | None = state.metadata.get("cache_path")
-    cross_asset_symbols: list | None = state.metadata.get(
-        "cross_asset_symbols"
-    )
-
-    # --- 1. Session filter + session_id -----------------------------------
-    logger.info("[02_NORM] Applying session filter & session_id…")
-    df = filter_session_hours(df)
-    if df.is_empty():
-        raise ValueError("All rows filtered by session_hours.")
-    df = add_session_id(df)
-
-    # --- 2. Resample to 5m / 1h / 1d FROM ADJUSTED DATA ------------------
-    logger.info(
-        "[02_NORM] Resampling to %s (from adjusted prices)",
-        config.RESAMPLE_FREQUENCIES,
-    )
-    df_5m = resample_to_frequency(df, "5m")
-    df_1h = resample_to_frequency(df, "1h")
-    df_daily = resample_to_frequency(df, "1d")
-
-    _validate_memory_and_integrity(df_5m)
-    logger.info(
-        "[02_NORM] Streams: 5m=%d  1h=%d  daily=%d",
-        df_5m.height,
-        df_1h.height,
-        df_daily.height,
-    )
-
-    # --- 3. HTF alignment ------------------------------------------------
-    logger.info("[02_NORM] Aligning HTF streams…")
-    df_aligned = align_htf_streams(df_5m, df_1h, df_daily)
-    _validate_memory_and_integrity(df_aligned)
-
-    # --- 4. Gap filter (Patch 1 — fixed divisor) -------------------------
-    df_aligned = filter_gaps(df_aligned, max_gap_minutes=30)
-    _validate_memory_and_integrity(df_aligned)
-
-    # --- 5. Cross-asset features -----------------------------------------
-    if cross_asset_symbols:
-        logger.info(
-            "[02_NORM] Joining cross-asset features: %s", cross_asset_symbols
-        )
-        df_aligned = _join_cross_asset_features(
-            df_aligned, cross_asset_symbols, data_glob
-        )
-
-    # --- 6. Cache --------------------------------------------------------
-    if cache_path:
-        logger.info("[02_NORM] Caching aligned data to %s", cache_path)
-        write_canonical_parquet(df_aligned, cache_path)
-
-    state.data = df_aligned
-    logger.info(
-        "[02_NORM] Complete: %d rows × %d cols",
-        df_aligned.height,
-        len(df_aligned.columns),
-    )
-    return state
---- END OF FILE: unused\pipeline\session\normalization.py ---
-
---- START OF FILE: unused\pipeline\tracking\state.py ---
-import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any
-
-import polars as pl
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class PipelineState:
-    data: pl.DataFrame
-    metadata: dict[str, Any] = field(default_factory=dict)
-    _stage_log: list[dict[str, Any]] = field(default_factory=list)
-
-    def log_stage(self, stage_name: str) -> None:
-        ts = datetime.now(timezone.utc).isoformat()
-        rows = self.data.height if self.data is not None else 0
-        cols = len(self.data.columns) if self.data is not None else 0
-        entry = {
-            "stage": stage_name,
-            "timestamp": ts,
-            "rows": rows,
-            "columns": cols,
-        }
-        self._stage_log.append(entry)
-        logger.info(
-            "[PIPELINE] Stage complete: %s | rows=%d cols=%d",
-            stage_name, rows, cols,
-        )
---- END OF FILE: unused\pipeline\tracking\state.py ---
 
 --- START OF FILE: _legacy\ingest.py ---
 import polars as pl

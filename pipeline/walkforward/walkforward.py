@@ -8,8 +8,9 @@ from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import brier_score_loss, roc_auc_score
 from scipy.special import expit
 from joblib import Parallel, delayed
 from core.config import config
@@ -90,6 +91,26 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
         raw_pred = model.predict(X_test)
         raw_pred = safe_clip(raw_pred, -2.0, 2.0)
         probs = expit(raw_pred).astype(np.float32)
+    elif config.MODEL_TYPE == 'LogisticRegression':
+        y_class = (y_train > 0).astype(np.int8)
+        classes = np.unique(y_class)
+        if len(classes) < 2:
+            prior = float(classes[0]) if len(classes) else 0.5
+            logger.warning(
+                'LogisticRegression skipped: single-class train fold; '
+                'returning empirical prior %.4f',
+                prior,
+            )
+            probs = np.full(len(test_X), prior, dtype=np.float32)
+        else:
+            model = LogisticRegression(
+                solver='lbfgs',
+                max_iter=1000,
+                class_weight=None,
+                random_state=getattr(config, 'SEED', 42),
+            )
+            model.fit(X_train, y_class)
+            probs = model.predict_proba(X_test)[:, 1].astype(np.float32)
     elif config.MODEL_TYPE == 'RandomForestClassifier':
         model = RandomForestClassifier(n_estimators=200, max_depth=3, min_samples_split=200, min_samples_leaf=100, max_features=0.2, random_state=config.SEED, n_jobs=1, class_weight='balanced_subsample')
         model.fit(X_train, (y_train > 0).astype(np.int8))
@@ -733,23 +754,22 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
                               target_col: str, feature_cols: list, pred_cs: str, pnl_cs: str) -> None:
     y_train_vals = train_df[target_col].to_numpy().astype(np.float64) if target_col in train_df.columns else np.array([])
     y_test_vals = test_df[target_col].to_numpy().astype(np.float64) if target_col in test_df.columns else np.array([])
+    y_eval_vals = result[target_col].to_numpy().astype(np.float64) if target_col in result.columns else np.array([])
     probs = result['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in result.columns else np.array([])
     pos = result['position'].to_numpy().astype(np.float64) if 'position' in result.columns else np.array([])
     pnl_arr = result['pnl'].to_numpy().astype(np.float64) if 'pnl' in result.columns else np.array([])
     gross = result['gross_pnl'].to_numpy().astype(np.float64) if 'gross_pnl' in result.columns else pnl_arr
     bar_sqrt = 252 ** 0.5
 
-    def _value_counts(arr, bins=3):
-        if len(arr) == 0:
-            return {}
-        if np.all(np.isfinite(arr)):
-            return {f'b{i}': float(np.mean(arr[::max(1, len(arr)//bins)][i])) for i in range(bins)}
-        return {}
-
     gross_sharpe = float(gross.mean() / max(gross.std(), 1e-12) * bar_sqrt) if len(gross) > 0 else 0.0
     net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
     costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
-    ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
+    ic = (
+        float(np.corrcoef(probs, y_eval_vals)[0, 1])
+        if len(probs) > 5 and len(y_eval_vals) == len(probs)
+        and np.std(probs) > 1e-12 and np.std(y_eval_vals) > 1e-12
+        else 0.0
+    )
     turnover = (
         float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0])).sum() / len(pos))
         if len(pos) > 0 else 0.0
@@ -759,8 +779,36 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
     y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}
     pred_bins = {f'p{i}': int(np.sum((probs >= i/3) & (probs < (i+1)/3))) for i in range(3)} if len(probs) > 0 else {}
     pos_dist = dict(zip(*np.unique(pos, return_counts=True))) if len(pos) > 0 else {}
+    raw_signal_counts = {}
+    if 'raw_signal' in result.columns:
+        raw_signal_vals = result['raw_signal'].to_numpy().astype(np.float64)
+        raw_signal_counts = {
+            '-1': int(np.sum(raw_signal_vals < 0.0)),
+            '0': int(np.sum(raw_signal_vals == 0.0)),
+            '+1': int(np.sum(raw_signal_vals > 0.0)),
+        }
+    prob_min = float(np.min(probs)) if len(probs) > 0 else float('nan')
+    prob_max = float(np.max(probs)) if len(probs) > 0 else float('nan')
+    prob_mean = float(np.mean(probs)) if len(probs) > 0 else float('nan')
+    prob_std = float(np.std(probs)) if len(probs) > 0 else float('nan')
+    prob_gt055 = float(np.mean(probs > 0.55)) if len(probs) > 0 else float('nan')
+    prob_lt045 = float(np.mean(probs < 0.45)) if len(probs) > 0 else float('nan')
+    auc = 'NA'
+    brier = 'NA'
+    if len(probs) > 0 and len(y_eval_vals) == len(probs):
+        y_binary = (y_eval_vals > 0).astype(np.int8)
+        brier = f'{float(brier_score_loss(y_binary, probs)):.6f}'
+        if len(np.unique(y_binary)) == 2:
+            auc = f'{float(roc_auc_score(y_binary, probs)):.4f}'
+    y_train_mean = float(np.mean(y_train_vals)) if len(y_train_vals) > 0 else float('nan')
+    y_test_mean = float(np.mean(y_test_vals)) if len(y_test_vals) > 0 else float('nan')
     print(
         f'[ALPHA-DIAG] y_train={y_train_dist} y_test={y_test_dist} pred={pred_bins} '
+        f'y_train_mean={y_train_mean:.4f} y_test_mean={y_test_mean:.4f} '
+        f'prob_min={prob_min:.4f} prob_max={prob_max:.4f} '
+        f'prob_mean={prob_mean:.4f} prob_std={prob_std:.4f} '
+        f'gt055={prob_gt055:.3f} lt045={prob_lt045:.3f} '
+        f'auc={auc} brier={brier} raw_signal={raw_signal_counts} '
         f'pos={pos_dist} gross_sharpe={gross_sharpe:.3f} net_sharpe={net_sharpe:.3f} '
         f'costs={costs:.2f} ic={ic:.4f} turnover={turnover:.2f} features={len(feature_cols)}',
         flush=True,

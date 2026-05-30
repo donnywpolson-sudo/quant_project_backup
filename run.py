@@ -18,7 +18,7 @@ from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from core.config import load_config, RootConfig
+from core.config import load_config, RootConfig, config as _ns_cfg
 from core.market import get_contract_multiplier
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
@@ -569,7 +569,7 @@ def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> 
                 _PROGRESS.timeout(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child')
                 _PROGRESS.timeout(f'[TIMEOUT] cmd={" ".join(full_cmd)}')
                 _PROGRESS.timeout(f'[TIMEOUT] cwd={os.getcwd()}')
-                _PROGRESS.timeout(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}')
+                _PROGRESS.timeout(f'[TIMEOUT] env={os.environ.get("CONFIG_ENV") or os.environ.get("QUANT_ENV", "default")}')
                 with lock:
                     if stdout_lines:
                         _PROGRESS.timeout(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}')
@@ -914,7 +914,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pass
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
+    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}.json"
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
@@ -1131,7 +1131,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
-    config = load_config(os.environ.get('QUANT_ENV', 'alpha_1'))
+    config = load_config(os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV'))
     data_dir = 'data'
     files = get_files(data_dir, config)
     if not files:
@@ -1140,7 +1140,8 @@ if __name__ == '__main__':
     splits = generate_walkforward_splits(files, config)
     total = len(splits)
     print(
-        f'[RUN] env={os.environ.get("QUANT_ENV", "alpha_1")} '
+        f'[RUN] env={_ns_cfg.ACTIVE_PROFILE} profile={_ns_cfg.ACTIVE_PROFILE} '
+        f'config={_ns_cfg.CONFIG_SOURCE} '
         f'symbols={",".join(config.symbols)} splits={total} log_mode={_LOG_MODE} '
         f'raw_log={_PROGRESS.log_path}',
         flush=True,

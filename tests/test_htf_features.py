@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from _legacy.ingest import load_and_clean_data
 from pipeline.features.engine import generate_features
+from core.config import config
 
 def make_synthetic_with_trend():
     start_dt = datetime(2026, 1, 1, 18, 0)
@@ -24,6 +25,7 @@ def make_synthetic_with_trend():
     return df
 
 def test_htf_features_synthetic():
+    config.ENABLE_EXPANSION = True
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'ES' / 'synthetic.parquet'
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -56,7 +56,7 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
             .rolling_std(window_size=260, min_samples=20)
             .fill_null(0.0005)
         )
-        bar_vol = bar_vol.eval(df).to_numpy(allow_copy=False).astype(np.float64)
+        bar_vol = df.select(bar_vol).to_series().to_numpy(allow_copy=False).astype(np.float64)
 
     bar_vol = np.maximum(bar_vol, 0.0001)
     vol_4h = bar_vol * np.sqrt(H_BARS)
