@@ -1,5 +1,12 @@
 import os
 import sys
+
+# ── UTF-8 everywhere (Windows hardening) ──
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import subprocess
 import logging
 import time
@@ -10,7 +17,12 @@ import polars as pl
 import numpy as np
 from core.config import load_config, RootConfig
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    encoding='utf-8',
+    force=True,
+)
 logger = logging.getLogger('QuantRunner')
 _VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
 _MIN_TRAIN_DAYS = 90
@@ -385,6 +397,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
     kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'timeout': 300}
     if not _VERBOSE:
         kw['stdout'] = subprocess.DEVNULL

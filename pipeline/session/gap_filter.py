@@ -21,10 +21,13 @@ def filter_gaps(
     Remove bars where the time gap between consecutive ts_event values
     exceeds *max_gap_minutes*.
 
-    PATCH 1 APPLIED: divisor corrected from 60_000_000_000.0 → 60_000_000.0.
+    Detects the time unit of the ts_event column and uses the correct
+    divisor (60e9 for ns, 60e6 for us) so the gap filter behaves
+    correctly regardless of the upstream Datetime resolution.
     """
     df = df.sort("ts_event")
-    gap = df["ts_event"].diff().cast(pl.Int64) / 60_000_000.0  # µs → minutes
+    ns_per_minute = 60_000_000_000
+    gap = df["ts_event"].diff().cast(pl.Int64) / float(ns_per_minute)
     df = df.with_columns(gap.alias("_gap_minutes"))
     df = df.filter(
         pl.col("_gap_minutes").is_null()
