@@ -28,7 +28,7 @@ _DEBUG = _LOG_MODE == 'debug'
 _VERBOSE = _LOG_MODE in {'verbose', 'debug'} or os.environ.get('QUANT_VERBOSE', '0') == '1'
 
 logging.basicConfig(
-    level=logging.DEBUG if _DEBUG else (logging.INFO if _VERBOSE else logging.WARNING),
+    level=logging.DEBUG if _DEBUG else (logging.INFO if _VERBOSE else logging.ERROR),
     format='%(asctime)s [%(levelname)s] %(message)s',
     encoding='utf-8',
     force=True,
@@ -66,7 +66,8 @@ class PipelineProgressLogger:
         self.mode = mode
         self.run_id = run_id
         self.context = {}
-        self.emitted = set()
+        self.stage_state = {}
+        self.flushed = False
         self.stage_start = time.time()
         self.log_path = Path('output') / 'logs' / f'run_{run_id}.log'
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,7 +89,8 @@ class PipelineProgressLogger:
 
     def set_context(self, **kwargs) -> None:
         self.context = {k: v for k, v in kwargs.items() if v is not None}
-        self.emitted = set()
+        self.stage_state = {}
+        self.flushed = False
         self.stage_start = time.time()
 
     def raw(self, text: str) -> None:
@@ -98,11 +100,24 @@ class PipelineProgressLogger:
             print(text, flush=True)
 
     def stage(self, idx: int, message: str, once: bool = False) -> None:
-        if once and idx in self.emitted:
+        if once and idx in self.stage_state:
             return
         elapsed = time.time() - self.stage_start
-        print(f'[{idx:02d}/13 {self.STAGES[idx]}] {message} elapsed={elapsed:.1f}s', flush=True)
-        self.emitted.add(idx)
+        self.stage_state[idx] = (message, elapsed)
+
+    def flush_stages(self) -> None:
+        if self.flushed:
+            return
+        for idx in range(1, 14):
+            message, elapsed = self.stage_state.get(idx, ('not_observed', time.time() - self.stage_start))
+            self._print_stage(idx, message, elapsed)
+        self.flushed = True
+
+    def _print_stage(self, idx: int, message: str, elapsed: float) -> None:
+        lines = str(message).splitlines() or ['']
+        print(f'[{idx:02d}/13 {self.STAGES[idx]}] {lines[0]} elapsed={elapsed:.1f}s', flush=True)
+        for line in lines[1:]:
+            print(line, flush=True)
 
     def child_line(self, prefix: str, line: str) -> None:
         raw = f'[{prefix}] {line}'
@@ -112,7 +127,7 @@ class PipelineProgressLogger:
             print(raw, flush=True)
             return
         if any(p in line for p in self.ERROR_PATTERNS):
-            print(raw, flush=True)
+            self.context.setdefault('child_errors', []).append(line)
             return
         self._summarize_child_line(line)
 
@@ -129,7 +144,7 @@ class PipelineProgressLogger:
             return
         m = re.search(r'\[CLI\] Aligned data: ([\d,]+) rows', line)
         if m:
-            if 2 not in self.emitted:
+            if 2 not in self.stage_state:
                 self.stage(2, f'cache_or_ingest rows_out={m.group(1)}', once=True)
                 self._stage_contract_once()
             self.stage(5, f'rows_out={m.group(1)}', once=True)
@@ -220,7 +235,7 @@ class PipelineProgressLogger:
 
     def _stage_contract_once(self) -> None:
         msg = self.context.get('contract_summary')
-        if msg and 3 not in self.emitted:
+        if msg and 3 not in self.stage_state:
             self.stage(3, msg, once=True)
 
     def _stage_walkforward_rows(self) -> None:
@@ -661,6 +676,73 @@ def _print_final_summary_table() -> None:
         )
 
 
+def _extract_error_summary(*texts) -> str:
+    patterns = (
+        r'^\s*([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception):\s*.+)$',
+        r'^\s*(RuntimeError:\s*.+)$',
+        r'^\s*(ValueError:\s*.+)$',
+        r'^\s*(NameError:\s*.+)$',
+    )
+    lines = []
+    for text in texts:
+        if not text:
+            continue
+        if isinstance(text, bytes):
+            text = text.decode(errors='replace')
+        lines.extend(str(text).splitlines())
+    for line in reversed(lines):
+        for pat in patterns:
+            m = re.search(pat, line)
+            if m:
+                return m.group(1).strip()
+    for line in reversed(lines):
+        line = line.strip()
+        if line:
+            return line[:240]
+    return 'unknown error'
+
+
+def _print_split_result(row: dict) -> None:
+    print('\n[SPLIT RESULT]', flush=True)
+    print(f"symbol={row.get('symbol', 'NA')}", flush=True)
+    print(f"split={row.get('split', 'NA')}", flush=True)
+    print(f"sharpe={row.get('sharpe', 0.0):.3f}", flush=True)
+    print(f"pnl={row.get('pnl', 0.0):.2f}", flush=True)
+    print(f"ic={row.get('ic', 'NA')}", flush=True)
+    print(f"hit_rate={row.get('hit_rate', 0.0):.2%}", flush=True)
+    print(f"trades={row.get('trades', 0)}", flush=True)
+    print(f"turnover={row.get('turnover', 0.0):.2f}", flush=True)
+    print(f"status={row.get('status', 'OK')}", flush=True)
+
+
+def _record_split_result(row: dict) -> None:
+    _VERIFICATION_TABLE.append(row)
+    _PROGRESS.flush_stages()
+    _print_split_result(row)
+
+
+def _failed_result_row(split_idx: int, symbol: str, path: Path | str, *, mtime: float = 0.0) -> dict:
+    return {
+        'split': split_idx, 'symbol': symbol, 'path': str(path),
+        'mtime': mtime, 'run_id': _RUN_ID, 'rows': 0,
+        'ts_min': 'missing', 'ts_max': 'missing',
+        'pnl_cs': 'missing', 'pred_cs': 'missing',
+        'pnl': 0.0, 'sharpe': 0.0, 'trades': 0, 'turnover': 0.0,
+        'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+    }
+
+
+def _tracking_summary(*, saved: Path | str | None = None, failed: str | None = None) -> str:
+    lines = []
+    for path in _PROGRESS.context.get('stale_artifacts', []):
+        lines.extend(['removed stale artifact:', str(path)])
+    if saved is not None:
+        lines.append(f'saved={saved}')
+    if failed is not None:
+        lines.append(failed)
+    return '\n'.join(lines) if lines else 'not_observed'
+
+
 def _hash_column(df: pl.DataFrame, col: str) -> str:
     if col not in df.columns:
         return 'missing'
@@ -863,13 +945,10 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         print(f'\n[SPLIT {split_idx}/{total_splits}] {symbol} test={test_label}', flush=True)
         _stage(1, f'{f} found')
         if not _validate_symbol_data(f, config):
-            _VERIFICATION_TABLE.append({
-                'split': split_idx, 'symbol': symbol, 'path': str(f),
-                'mtime': f.stat().st_mtime if f.exists() else 0.0,
-                'run_id': _RUN_ID, 'rows': 0, 'ts_min': 'missing', 'ts_max': 'missing',
-                'pnl_cs': 'missing', 'pred_cs': 'missing', 'pnl': 0.0, 'sharpe': 0.0,
-                'trades': 0, 'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-            })
+            _stage(13, 'FAILED invalid_or_empty_raw_data')
+            _record_split_result(_failed_result_row(
+                split_idx, symbol, f, mtime=f.stat().st_mtime if f.exists() else 0.0
+            ))
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -877,6 +956,8 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         for _stale_name in ('backtest_results_hmm.parquet', 'backtest_results.parquet'):
             _stale_path = out_dir / _stale_name
             if _stale_path.exists() and _stale_path.stat().st_mtime < _RUN_START:
+                _PROGRESS.context.setdefault('stale_artifacts', []).append(str(_stale_path))
+                _stage(13, _tracking_summary())
                 logger.warning('[STALE] Removing pre-existing file: %s (mtime=%.0f < run_start=%.0f)',
                                _stale_path, _stale_path.stat().st_mtime, _RUN_START)
                 _stale_path.unlink()
@@ -910,9 +991,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             if isinstance(stdout_text, bytes):
                 stdout_text = stdout_text.decode(errors='replace')
             err_lines = stderr_text.strip().split('\n') if stderr_text else ['(no stderr)']
-            print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
-            for line in err_lines[-3:]:
-                print(f'  > {line}')
+            hmm_error = _extract_error_summary(stderr_text, stdout_text)
+            _stage(8, f'FAILED\n{hmm_error}\nFallback=non-HMM')
+            if _PROGRESS.verbose:
+                print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
+                for line in err_lines[-3:]:
+                    print(f'  > {line}')
             if _log_failures:
                 _log_subprocess_failure(cmd, getattr(e, 'returncode', -1), stderr_text, stdout_text,
                                         Path('output') / 'logs', symbol, split_idx, 'hmm')
@@ -941,21 +1025,17 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 if isinstance(stdout2, bytes):
                     stdout2 = stdout2.decode(errors='replace')
                 err2_lines = stderr2.strip().split('\n') if stderr2 else ['(no stderr)']
-                print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
-                for line in err2_lines[-3:]:
-                    print(f'  > {line}')
+                fallback_error = _extract_error_summary(stderr2, stdout2)
+                _stage(13, _tracking_summary(failed=f'FAILED\n{fallback_error}'))
+                if _PROGRESS.verbose:
+                    print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
+                    for line in err2_lines[-3:]:
+                        print(f'  > {line}')
                 if _log_failures:
                     _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
-                _VERIFICATION_TABLE.append({
-                    'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
-                    'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
-                    'ts_min': 'missing', 'ts_max': 'missing',
-                    'pnl_cs': 'missing', 'pred_cs': 'missing',
-                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-                })
+                _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
                 subprocess_failed = True
         if subprocess_failed:
             continue
@@ -1016,14 +1096,14 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 _stage(10, f'trades={trades} turnover={turnover:.2f}')
                 _stage(11, f'rows={bt.height}')
                 _stage(12, f'sharpe={sharpe:.3f} pnl={pnl:.2f} ic={ic} hit_rate={hit:.2%}')
-                _stage(13, f'saved={bt_path}')
-                _VERIFICATION_TABLE.append({
+                _stage(13, _tracking_summary(saved=bt_path))
+                result_row = {
                     'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
                     'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': bt.height,
                     'ts_min': str(t_min), 'ts_max': str(t_max),
                     'pnl_cs': pnl_cs, 'pred_cs': pred_cs, 'pnl': pnl, 'sharpe': sharpe,
-                    'trades': trades, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
-                })
+                    'trades': trades, 'turnover': turnover, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
+                }
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
                 raw_path = out_dir / 'backtest_results.parquet'
@@ -1036,30 +1116,18 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         hmm_delta = 0.0
                 per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
                 _print_symbol_diagnostics(bt, symbol, split_idx)
+                _record_split_result(result_row)
             except Exception as e:
                 print(f'[ERROR] Result validation failed for {symbol} split={split_idx}: {e}', flush=True)
                 if _DEBUG:
                     import traceback
                     traceback.print_exc()
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
-                _VERIFICATION_TABLE.append({
-                    'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
-                    'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': 0,
-                    'ts_min': 'missing', 'ts_max': 'missing',
-                    'pnl_cs': 'missing', 'pred_cs': 'missing',
-                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-                })
+                _stage(13, _tracking_summary(failed=f'FAILED\n{_extract_error_summary(str(e))}'))
+                _record_split_result(_failed_result_row(split_idx, symbol, bt_path, mtime=_bt_mtime))
         else:
-            _stage(13, f'missing_output={out_dir} status=FAILED')
-            _VERIFICATION_TABLE.append({
-                'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
-                'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
-                'ts_min': 'missing', 'ts_max': 'missing',
-                'pnl_cs': 'missing', 'pred_cs': 'missing',
-                'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
-                'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
-            })
+            _stage(13, _tracking_summary(failed=f'missing_output={out_dir} status=FAILED'))
+            _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
@@ -1078,8 +1146,8 @@ if __name__ == '__main__':
         flush=True,
     )
     if _LOG_MODE == 'clean':
-        logging.getLogger().setLevel(logging.WARNING)
-        logging.getLogger('quant').setLevel(logging.WARNING)
+        logging.getLogger().setLevel(logging.ERROR)
+        logging.getLogger('quant').setLevel(logging.ERROR)
     elif _LOG_MODE == 'debug':
         logging.getLogger().setLevel(logging.DEBUG)
     try:
