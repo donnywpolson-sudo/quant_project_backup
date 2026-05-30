@@ -253,8 +253,8 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
                 window, total_days, data_start, data_end,
             )
             # Single split covering the full range — temporal separation
-            # is enforced inside cli.py via _build_ts_folds which slices
-            # by actual timestamps, not file boundaries.
+            # is enforced inside cli.py via --start/--end date boundaries
+            # which slice by actual timestamps, not file boundaries.
             all_years = sorted(file_bounds.keys())
             return [(all_years, all_years)]
 
@@ -269,8 +269,9 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
 
             # File assignment by date overlap — yearly parquet files span
             # full calendar years. Overlap-based assignment is safe because
-            # cli.py's _build_ts_folds enforces strict temporal separation
-            # by slicing within each file at the timestamp level.
+            # cli.py enforces strict temporal separation by passing
+            # --start/--end date boundaries, slicing within each file at
+            # the timestamp level.
             train_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
                 if fmax >= train_start and fmin < train_end
@@ -905,31 +906,7 @@ turn this into a kilo code inline agent prompt which uses Deepseek V4 Pro.  make
 --- END OF FILE: audit\kilocode_deepseek.md ---
 
 --- START OF FILE: audit\quant_flowchart.md ---
-RAW DATA
-    ↓
-INGESTION
-    ↓
-CONTINUOUS CONTRACTS
-    ↓
-SESSION NORMALIZATION
-    ↓
-ALIGNMENT
-    ↓
-FEATURE ENGINEERING
-    ↓
-TARGET GENERATION
-    ↓
-REGIME MODELING
-    ↓
-CLASSIFICATION / META LABEL
-    ↓
-EXECUTION SIMULATION
-    ↓
-WALKFORWARD VALIDATION
-    ↓
-ANALYTICS
-    ↓
-EXPERIMENT TRACKING
+RAW DATA → INGESTION → CONTINUOUS CONTRACTS → SESSION NORMALIZATION → ALIGNMENT → FEATURES → TARGETS → REGIME → META LABEL → EXECUTION → WALKFORWARD → ANALYTICS → TRACKING
 --- END OF FILE: audit\quant_flowchart.md ---
 
 --- START OF FILE: configs\alpha_1.yaml ---
@@ -1866,7 +1843,13 @@ def detect_symbol_from_path(data_path: str) -> str:
     for part in path.parent.parts:
         if part in config.MARKET_CONFIGS:
             return part
-    return 'ES'
+    raise RuntimeError(
+        f'SYMBOL FAIL: cannot detect symbol from path {data_path}. '
+        f'No known market ({sorted(config.MARKET_CONFIGS.keys())}) '
+        f'found in path parts {list(path.parent.parts)}. '
+        f'Ensure data directory structure includes the symbol name '
+        f'(e.g. data/ES/2024.parquet).'
+    )
 
 def load_market_config(symbol: str):
     yaml_path = config.MARKET_CONFIGS.get(symbol)
@@ -7486,8 +7469,11 @@ def filter_gaps(
     correctly regardless of the upstream Datetime resolution.
     """
     df = df.sort("ts_event")
+    time_unit = df["ts_event"].dtype.time_unit
+    us_per_minute = 60_000_000
     ns_per_minute = 60_000_000_000
-    gap = df["ts_event"].diff().cast(pl.Int64) / float(ns_per_minute)
+    divisor = float(ns_per_minute) if time_unit == 'ns' else float(us_per_minute)
+    gap = df["ts_event"].diff().cast(pl.Int64) / divisor
     df = df.with_columns(gap.alias("_gap_minutes"))
     df = df.filter(
         pl.col("_gap_minutes").is_null()
@@ -11311,8 +11297,12 @@ def compute_target_4h(df):
                             (fr>0).cast(pl.Int8).alias("target_sign_4h")])
 
 def add_session_id(df):
-    return df.with_columns(pl.col("ts_event").dt.convert_time_zone("Etc/GMT+5")
-        .dt.offset_by("6h").dt.date().cast(pl.String).alias("session_id"))
+    from core.config import config
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+    return df.drop('ts_local')
 
 # ---------- BASE FEATURES (14) ----------
 def build_base_features(df):
@@ -12461,17 +12451,13 @@ def build_features(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
-    """Add session_id from timestamp (Chicago 18:00 session boundary)."""
-    # Offsetting by 6 hours: 18:00 ET -> next day 00:00 UTC
-    df = df.with_columns(
-        pl.col("ts_event")
-        .dt.convert_time_zone("Etc/GMT+5")
-        .dt.offset_by("6h")
-        .dt.date()
-        .cast(pl.String)
-        .alias("session_id")
-    )
-    return df
+    """Add session_id from timestamp using config-derived session boundary."""
+    from core.config import config
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+    return df.drop('ts_local')
 
 
 def robust_scale(X_train, X_test):
@@ -13211,10 +13197,12 @@ CONFIG = {
 
 
 def add_session_id(df):
-    df = df.with_columns(
-        pl.col("ts_event").dt.convert_time_zone("Etc/GMT+5").dt.offset_by("6h")
-        .dt.date().cast(pl.String).alias("session_id"))
-    return df
+    from core.config import config
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+    return df.drop('ts_local')
 
 
 def compute_target_tb(df):
