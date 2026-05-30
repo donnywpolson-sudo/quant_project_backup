@@ -324,6 +324,42 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     print(f'{bl}{h * 52}{br}\n', flush=True)
 
 
+def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> None:
+    probs = bt['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in bt.columns else None
+    pmean = float(probs.mean()) if probs is not None else float('nan')
+    pstd = float(probs.std()) if probs is not None else float('nan')
+    gt055 = float((probs > 0.55).mean()) if probs is not None else float('nan')
+    lt045 = float((probs < 0.45).mean()) if probs is not None else float('nan')
+    bar_sqrt = np.sqrt(252)
+    gross_sharpe = 'missing'
+    net_sharpe = 'missing'
+    cost_drag = 'missing'
+    if 'gross_pnl' in bt.columns:
+        gp = bt['gross_pnl'].to_numpy().astype(np.float64)
+        if gp.std() > 1e-12:
+            gross_sharpe = f'{float(gp.mean() / gp.std() * bar_sqrt):.3f}'
+    if 'pnl' in bt.columns:
+        np_ = bt['pnl'].to_numpy().astype(np.float64)
+        if np_.std() > 1e-12:
+            net_sharpe = f'{float(np_.mean() / np_.std() * bar_sqrt):.3f}'
+        if 'gross_pnl' in bt.columns:
+            cost_drag = f'{float(np_.sum() - gp.sum()):+.2f}'
+    turnover = 'missing'
+    if 'pos_change' in bt.columns:
+        turnover = f'{float(bt["pos_change"].sum()):.1f}'
+    trades = 'missing'
+    if 'position' in bt.columns:
+        pos = bt['position'].to_numpy().astype(np.float64)
+        shifts = np.abs(np.diff(pos, prepend=pos[0]))
+        trades = f'{int(np.sum(shifts > 1e-9))}'
+    logger.info(
+        '[DIAG] symbol=%s split=%d prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
+        'gross_sharpe=%s net_sharpe=%s cost_drag=%s turnover=%s trades=%s',
+        symbol, split_idx, pmean, pstd, gt055, lt045,
+        gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+    )
+
+
 def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
     bt_path = out_dir / 'backtest_results.parquet'
     if not bt_path.exists():
@@ -497,6 +533,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     except Exception:
                         hmm_delta = 0.0
                 per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
+                _print_symbol_diagnostics(bt, symbol, split_idx)
             except Exception:
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
     # ---- Master dashboard ----

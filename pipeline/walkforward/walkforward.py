@@ -136,6 +136,80 @@ def exclude_warmup(df: pl.DataFrame, burn_in_bars: int) -> pl.DataFrame:
     return df.slice(trim)
 
 
+def _safe_corr(a, b):
+    """Safe rank correlation: handles constant arrays, NaN, and short samples."""
+    import numpy as np
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    mask = np.isfinite(a) & np.isfinite(b)
+    n = mask.sum()
+    if n < 5:
+        return float('nan')
+    a_m = a[mask]
+    b_m = b[mask]
+    sd_a, sd_b = np.std(a_m), np.std(b_m)
+    if sd_a < 1e-15 or sd_b < 1e-15:
+        return float('nan')
+    return float(np.corrcoef(a_m, b_m)[0, 1])
+
+
+def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fold_idx: int, prefix: str = ''):
+    """Log prediction distribution, IC, gross/net Sharpe, turnover, trade count."""
+    import numpy as np
+    if result.height == 0:
+        logger.warning('[DIAG] skip fold=%d%s — empty result', fold_idx, prefix)
+        return
+    probs = result['prediction_prob'].to_numpy() if 'prediction_prob' in result.columns else None
+    if probs is None:
+        logger.warning('[DIAG] skip fold=%d%s — no prediction_prob', fold_idx, prefix)
+        return
+    pmean = float(np.mean(probs))
+    pstd = float(np.std(probs))
+    gt055 = float(np.mean(probs > 0.55))
+    lt045 = float(np.mean(probs < 0.45))
+    pmin = float(np.min(probs))
+    pmax = float(np.max(probs))
+    ic = 'missing'
+    for tcol in ('target_4h', 'target_5m', 'target_1h', 'target_tb'):
+        if tcol in test_original.columns:
+            ic_val = _safe_corr(probs, test_original[tcol].to_numpy())
+            if not np.isnan(ic_val):
+                ic = f'{ic_val:.4f}'
+                break
+    bar_sqrt = 252 ** 0.5
+    gross_sharpe = 'missing'
+    net_sharpe = 'missing'
+    cost_drag = 'missing'
+    if 'gross_pnl' in result.columns:
+        gp = result['gross_pnl'].to_numpy().astype(np.float64)
+        if gp.std() > 1e-12:
+            gross_sharpe = f'{float(gp.mean() / gp.std() * bar_sqrt):.3f}'
+    if 'pnl' in result.columns:
+        np_ = result['pnl'].to_numpy().astype(np.float64)
+        if np_.std() > 1e-12:
+            net_sharpe = f'{float(np_.mean() / np_.std() * bar_sqrt):.3f}'
+        if 'gross_pnl' in result.columns:
+            gp_tot = float(gp.sum())
+            np_tot = float(np_.sum())
+            cost_drag = f'{np_tot - gp_tot:+.2f}'
+    turnover = 'missing'
+    if 'pos_change' in result.columns:
+        pc = result['pos_change'].to_numpy().astype(np.float64)
+        turnover = f'{float(pc.sum()):.1f}'
+    trades = 'missing'
+    if 'position' in result.columns:
+        pos = result['position'].to_numpy().astype(np.float64)
+        shifts = np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64)))
+        trades = f'{int(np.sum(shifts > 1e-9))}'
+    logger.info(
+        '[DIAG] fold=%d%s prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
+        'min=%.3f max=%.3f ic=%s gross_sharpe=%s net_sharpe=%s cost_drag=%s '
+        'turnover=%s trades=%s',
+        fold_idx, prefix, pmean, pstd, gt055, lt045, pmin, pmax,
+        ic, gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+    )
+
+
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     import psutil
     if train_X.height == 0 or len(train_y) == 0:
@@ -211,6 +285,7 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
         result = apply_meta_gate(result, meta_model, test_X_np, meta_threshold=meta_threshold)
         result = _recompute_pnl_after_gate(result)
 
+    _log_fold_diagnostics(result, test_original, fold_idx=-1)
     return exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
 
 # ============================================================================
@@ -338,6 +413,7 @@ def process_fold_with_hmm(
         # and proportional PnL clip — so the HMM PnL is directly comparable to the base PnL.
         result = _recompute_pnl_after_gate(result)
 
+    _log_fold_diagnostics(result, test_original, fold_idx=fold_idx, prefix='_hmm')
     result = exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
     return result, hmm_filter
 

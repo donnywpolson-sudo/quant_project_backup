@@ -492,11 +492,17 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     # ------------------------------------------------------------------------
     entry_price = pl.col('open')
 
+    gross_pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl.fill_nan(0.0)
+    pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl.clip(-pnl_clip, pnl_clip)
+    df = df.with_columns(gross_pnl.alias('gross_pnl'))
+
     pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
     pnl = pnl.fill_nan(0.0)
-    pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
 

@@ -1843,10 +1843,19 @@ def detect_symbol_from_path(data_path: str) -> str:
     for part in path.parent.parts:
         if part in config.MARKET_CONFIGS:
             return part
+    import glob as _glob
+    for f in _glob.glob(data_path):
+        fp = Path(f)
+        for part in fp.parent.parts:
+            if part in config.MARKET_CONFIGS:
+                return part
+        for known in config.MARKET_CONFIGS:
+            if fp.stem == known or fp.stem.startswith(known + '_') or fp.stem.startswith(known + '.'):
+                return known
     raise RuntimeError(
         f'SYMBOL FAIL: cannot detect symbol from path {data_path}. '
         f'No known market ({sorted(config.MARKET_CONFIGS.keys())}) '
-        f'found in path parts {list(path.parent.parts)}. '
+        f'found in path parts {list(path.parent.parts)} or any matched file. '
         f'Ensure data directory structure includes the symbol name '
         f'(e.g. data/ES/2024.parquet).'
     )
