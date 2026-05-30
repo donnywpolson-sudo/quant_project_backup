@@ -748,6 +748,61 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
 _OUTER_BURN_IN = 50  # minimal warmup for position carry-over only
 
 
+def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_df: pl.DataFrame,
+                              target_col: str, feature_cols: list, pred_cs: str, pnl_cs: str) -> None:
+    y_train_vals = train_df[target_col].to_numpy().astype(np.float64) if target_col in train_df.columns else np.array([])
+    y_test_vals = test_df[target_col].to_numpy().astype(np.float64) if target_col in test_df.columns else np.array([])
+    probs = result['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in result.columns else np.array([])
+    pos = result['position'].to_numpy().astype(np.float64) if 'position' in result.columns else np.array([])
+    pnl_arr = result['pnl'].to_numpy().astype(np.float64) if 'pnl' in result.columns else np.array([])
+    gross = result['gross_pnl'].to_numpy().astype(np.float64) if 'gross_pnl' in result.columns else pnl_arr
+    bar_sqrt = 252 ** 0.5
+
+    def _value_counts(arr, bins=3):
+        if len(arr) == 0:
+            return {}
+        if np.all(np.isfinite(arr)):
+            return {f'b{i}': float(np.mean(arr[::max(1, len(arr)//bins)][i])) for i in range(bins)}
+        return {}
+
+    gross_sharpe = float(gross.mean() / max(gross.std(), 1e-12) * bar_sqrt) if len(gross) > 0 else 0.0
+    net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
+    costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
+    ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
+    turnover = float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64))).sum() / max(len(pos), 1))
+
+    y_train_dist = dict(zip(*np.unique(y_train_vals, return_counts=True))) if len(y_train_vals) > 0 else {}
+    y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}
+    pred_bins = {f'p{i}': int(np.sum((probs >= i/3) & (probs < (i+1)/3))) for i in range(3)} if len(probs) > 0 else {}
+    pos_dist = dict(zip(*np.unique(pos, return_counts=True))) if len(pos) > 0 else {}
+    print(
+        f'[ALPHA-DIAG] y_train={y_train_dist} y_test={y_test_dist} pred={pred_bins} '
+        f'pos={pos_dist} gross_sharpe={gross_sharpe:.3f} net_sharpe={net_sharpe:.3f} '
+        f'costs={costs:.2f} ic={ic:.4f} turnover={turnover:.2f} features={len(feature_cols)}',
+        flush=True,
+    )
+
+    # Inverted signal check
+    prob_mean = probs.mean() if len(probs) > 0 else 0.5
+    inv_probs = 1.0 - probs
+    inv_pred_dir = np.where(inv_probs > 0.55, 1, np.where(inv_probs < 0.45, -1, 0)).astype(np.float64)
+    inv_pos = np.where(inv_pred_dir != 0, np.sign(inv_pred_dir), 0).astype(np.float64)
+    ret_exec = result['ret_exec'].to_numpy().astype(np.float64) if 'ret_exec' in result.columns else np.zeros_like(pos)
+    inv_pnl_arr = inv_pos * ret_exec
+    inv_sharpe = float(inv_pnl_arr.mean() / max(inv_pnl_arr.std(), 1e-12) * bar_sqrt) if len(inv_pnl_arr) > 0 else 0.0
+    inv_pnl = float(inv_pnl_arr.sum())
+    orig_pnl = float(pnl_arr.sum())
+    print(
+        f'[INVERT-CHECK] original_sharpe={net_sharpe:.3f} inverted_sharpe={inv_sharpe:.3f} '
+        f'original_pnl={orig_pnl:.2f} inverted_pnl={inv_pnl:.2f} prob_mean={prob_mean:.4f}',
+        flush=True,
+    )
+
+    # Position hash
+    pos_cs = _hash_col(result, 'position')
+    print(f'[SPLIT-VERIFY] pred_cs={pred_cs} pos_cs={pos_cs} pnl_cs={pnl_cs}', flush=True)
+
+
 def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
                               feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
     if train_df.height == 0:
@@ -797,6 +852,7 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     print(f'[OUTER-TRUE] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
     print(f'[OUTER-TRUE] result_rows={result.height} fraction={output_frac:.1%} '
           f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    _print_alpha_diagnostics(result, test_df, train_df, target_col, feature_cols, pred_cs, pnl_cs)
     return result
 
 
@@ -877,6 +933,7 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     print(f'[OUTER-TRUE-HMM] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
     print(f'[OUTER-TRUE-HMM] result_rows={result.height} fraction={output_frac:.1%} '
           f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    _print_alpha_diagnostics(result, test_df, train_df, target_col, feature_cols, pred_cs, pnl_cs)
     validation = {'n_folds': 1, 'outer_split': True, 'mode': 'outer_split',
                   'train_rows': train_df.height, 'test_rows': test_df.height,
                   'output_rows': result.height, 'hmm_active': hmm_filter.is_active}

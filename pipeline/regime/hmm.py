@@ -306,18 +306,19 @@ class GaussianHMM:
             prev_log_lik = log_lik
             self._m_step(X, gamma, xi)
 
-            # Per-iteration timing: log every 10 iterations so long runs are observable
+            # Per-iteration timing: use print() so it's visible even with WARNING log level
             if iteration > 0 and iteration % 10 == 0:
                 elapsed = _time.perf_counter() - t0
-                logger.info(
-                    '[HMM-TIMING] iter=%d/%d delta=%.6f elapsed=%.1fs',
-                    iteration + 1, self.n_iter, delta, elapsed,
+                print(
+                    f'[HMM-TIMING] iter={iteration + 1}/{self.n_iter} delta={delta:.6f} elapsed={elapsed:.1f}s',
+                    flush=True,
                 )
         else:
             elapsed = _time.perf_counter() - t0
-            logger.warning(
-                f"HMM did not converge within {self.n_iter} iterations "
-                f"(last delta: {delta:.6f}, elapsed: {elapsed:.1f}s)"
+            print(
+                f'[HMM-TIMING] WARNING: did not converge in {self.n_iter} iterations '
+                f'(last delta={delta:.6f}, elapsed={elapsed:.1f}s)',
+                flush=True,
             )
 
         self._fitted = True
@@ -706,13 +707,11 @@ class HMMRegimeDetector:
             True if fit succeeded, False if fallback was triggered.
         """
         features = _compute_hmm_features(df_1h)
-        logger.info(
-            '[HMM-TIMING] step=hmm_features rows=%d cols=%d '
-            'nan=%d inf=%d unique_counts=%s',
-            features.shape[0], features.shape[1],
-            int(np.sum(np.isnan(features))),
-            int(np.sum(np.isinf(features))),
-            [len(np.unique(features[:, i])) for i in range(features.shape[1])],
+        print(
+            f'[HMM-TIMING] step=hmm_features rows={features.shape[0]} cols={features.shape[1]} '
+            f'nan={int(np.sum(np.isnan(features)))} inf={int(np.sum(np.isinf(features)))} '
+            f'unique_counts={[len(np.unique(features[:, i])) for i in range(features.shape[1])]}',
+            flush=True,
         )
 
         if features.shape[0] < self.config.min_train_bars:

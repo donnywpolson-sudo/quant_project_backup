@@ -1706,6 +1706,7 @@ class WalkforwardConfig(BaseModel):
     enable_meta_labeling: bool = False
     meta_threshold: float = 0.5
     mode: str = ""  # "" = inner bar-fold walkforward, "outer_split" = single train→test pass
+    discovery_target: str = "target_sign_4h"
 
 
 class ExecutionConfig(BaseModel):
@@ -1940,6 +1941,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
     config.META_THRESHOLD = c.walkforward.meta_threshold
     config.WF_MODE = c.walkforward.mode
+    config.DISCOVERY_TARGET = getattr(c.walkforward, 'discovery_target', 'target_sign_4h')
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at
@@ -5098,9 +5100,31 @@ def run_feature_discovery(data_path: str, manifest_out: str):
         ).drop('_row')
 
     # --- Feature column selection ---
-    target_col = 'target_tb'
+    # Use same target as walkforward (configurable, defaults to target_sign_4h for
+    # consistency with the 4h-direction model). Previously hardcoded target_tb which
+    # was fully null in this dataset, causing 0-sample discovery.
+    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_sign_4h')
     if target_col not in df_features.columns:
-        raise ValueError(f'Target column {target_col} not found.')
+        logger.warning(
+            'Discovery target "%s" not found in feature matrix — falling back to target_tb',
+            target_col,
+        )
+        target_col = 'target_tb'
+        if target_col not in df_features.columns:
+            raise ValueError(f'No valid target column found (tried {getattr(config, "DISCOVERY_TARGET", "target_sign_4h")!r} and target_tb).')
+    # Hard-fail if the fallback target (target_tb) is fully null —
+    # a silent empty manifest causes downstream signal collapse.
+    if target_col == 'target_tb':
+        y_check = df_features.select(target_col).to_numpy().ravel()
+        nn_check = np.sum(~np.isnan(y_check))
+        if nn_check == 0:
+            raise RuntimeError(
+                f'DISCOVERY FAILURE: fallback target "{target_col}" is entirely NaN '
+                f'(0 non-null out of {len(y_check)} rows). The configured target '
+                f'"{getattr(config, "DISCOVERY_TARGET", "target_sign_4h")}" was not found '
+                f'in the feature matrix. Add the target column to feature generation or '
+                f'set walkforward.discovery_target to an available column.'
+            )
 
     exclude_cols = {
         'ts_event', 'open', 'high', 'low', 'close', 'volume',
@@ -5134,22 +5158,13 @@ def run_feature_discovery(data_path: str, manifest_out: str):
     y = y[nan_mask]
 
     if X.shape[0] < 2:
-        logger.warning(
-            'Discovery skipped: only %d samples available '
-            '(need at least 2 for bootstrap).', X.shape[0]
+        raise RuntimeError(
+            f'DISCOVERY FAILURE: only {X.shape[0]} usable samples '
+            f'(from {df_features.height} total rows, target="{target_col}", '
+            f'{int((~nan_mask).sum())} NaN rows removed). '
+            f'Need at least 2 for bootstrap. '
+            f'Check that the discovery target column has sufficient non-NaN values.'
         )
-        # Produce a minimal manifest with empty feature list
-        os.makedirs(os.path.dirname(manifest_out), exist_ok=True)
-        placeholder = {
-            'version': '1.0', 'feature_names': [],
-            'selected_K': 0, 'selection_seed': config.SEED,
-            'selection_date': datetime.utcnow().isoformat() + 'Z',
-            'discovery_status': 'skipped',
-            'reason': f'only {X.shape[0]} samples available (need >= 2)',
-        }
-        with open(manifest_out, 'w') as f:
-            json.dump(placeholder, f, indent=4)
-        return
 
     results = Parallel(n_jobs=-1, backend='loky')(
         delayed(_fit_discovery_fold)(
@@ -6602,6 +6617,13 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy.special import logsumexp
+import time as _time
+
+try:
+    from statsmodels.tsa.stattools import adfuller
+    _HAS_ADFULLER = True
+except ImportError:
+    _HAS_ADFULLER = False
 
 logger = logging.getLogger(__name__)
 
@@ -6866,21 +6888,32 @@ class GaussianHMM:
         self._init_params(X, rng)
 
         prev_log_lik = -np.inf
-
+        t0 = _time.perf_counter()
         for iteration in range(self.n_iter):
             gamma, xi, log_lik = self._e_step(X)
 
             # Convergence check
-            if abs(log_lik - prev_log_lik) < self.tol:
+            delta = abs(log_lik - prev_log_lik)
+            if delta < self.tol:
                 logger.debug(f"HMM converged at iteration {iteration + 1}, log_lik={log_lik:.2f}")
                 break
 
             prev_log_lik = log_lik
             self._m_step(X, gamma, xi)
+
+            # Per-iteration timing: use print() so it's visible even with WARNING log level
+            if iteration > 0 and iteration % 10 == 0:
+                elapsed = _time.perf_counter() - t0
+                print(
+                    f'[HMM-TIMING] iter={iteration + 1}/{self.n_iter} delta={delta:.6f} elapsed={elapsed:.1f}s',
+                    flush=True,
+                )
         else:
-            logger.warning(
-                f"HMM did not converge within {self.n_iter} iterations. "
-                f"Last delta: {abs(log_lik - prev_log_lik):.6f}"
+            elapsed = _time.perf_counter() - t0
+            print(
+                f'[HMM-TIMING] WARNING: did not converge in {self.n_iter} iterations '
+                f'(last delta={delta:.6f}, elapsed={elapsed:.1f}s)',
+                flush=True,
             )
 
         self._fitted = True
@@ -7043,9 +7076,7 @@ def _check_stationarity(features: np.ndarray, threshold: float = 0.05) -> bool:
     Returns True only if ALL columns pass the ADF test (p-value < threshold).
     On import failure (no statsmodels), logs a warning and returns True (skip check).
     """
-    try:
-        from statsmodels.tsa.stattools import adfuller
-    except ImportError:
+    if not _HAS_ADFULLER:
         logger.warning(
             "statsmodels not available; skipping stationarity checks. "
             "Install with: pip install statsmodels"
@@ -7271,6 +7302,12 @@ class HMMRegimeDetector:
             True if fit succeeded, False if fallback was triggered.
         """
         features = _compute_hmm_features(df_1h)
+        print(
+            f'[HMM-TIMING] step=hmm_features rows={features.shape[0]} cols={features.shape[1]} '
+            f'nan={int(np.sum(np.isnan(features)))} inf={int(np.sum(np.isinf(features)))} '
+            f'unique_counts={[len(np.unique(features[:, i])) for i in range(features.shape[1])]}',
+            flush=True,
+        )
 
         if features.shape[0] < self.config.min_train_bars:
             logger.warning(
@@ -9934,6 +9971,61 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
 _OUTER_BURN_IN = 50  # minimal warmup for position carry-over only
 
 
+def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_df: pl.DataFrame,
+                              target_col: str, feature_cols: list, pred_cs: str, pnl_cs: str) -> None:
+    y_train_vals = train_df[target_col].to_numpy().astype(np.float64) if target_col in train_df.columns else np.array([])
+    y_test_vals = test_df[target_col].to_numpy().astype(np.float64) if target_col in test_df.columns else np.array([])
+    probs = result['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in result.columns else np.array([])
+    pos = result['position'].to_numpy().astype(np.float64) if 'position' in result.columns else np.array([])
+    pnl_arr = result['pnl'].to_numpy().astype(np.float64) if 'pnl' in result.columns else np.array([])
+    gross = result['gross_pnl'].to_numpy().astype(np.float64) if 'gross_pnl' in result.columns else pnl_arr
+    bar_sqrt = 252 ** 0.5
+
+    def _value_counts(arr, bins=3):
+        if len(arr) == 0:
+            return {}
+        if np.all(np.isfinite(arr)):
+            return {f'b{i}': float(np.mean(arr[::max(1, len(arr)//bins)][i])) for i in range(bins)}
+        return {}
+
+    gross_sharpe = float(gross.mean() / max(gross.std(), 1e-12) * bar_sqrt) if len(gross) > 0 else 0.0
+    net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
+    costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
+    ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
+    turnover = float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64))).sum() / max(len(pos), 1))
+
+    y_train_dist = dict(zip(*np.unique(y_train_vals, return_counts=True))) if len(y_train_vals) > 0 else {}
+    y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}
+    pred_bins = {f'p{i}': int(np.sum((probs >= i/3) & (probs < (i+1)/3))) for i in range(3)} if len(probs) > 0 else {}
+    pos_dist = dict(zip(*np.unique(pos, return_counts=True))) if len(pos) > 0 else {}
+    print(
+        f'[ALPHA-DIAG] y_train={y_train_dist} y_test={y_test_dist} pred={pred_bins} '
+        f'pos={pos_dist} gross_sharpe={gross_sharpe:.3f} net_sharpe={net_sharpe:.3f} '
+        f'costs={costs:.2f} ic={ic:.4f} turnover={turnover:.2f} features={len(feature_cols)}',
+        flush=True,
+    )
+
+    # Inverted signal check
+    prob_mean = probs.mean() if len(probs) > 0 else 0.5
+    inv_probs = 1.0 - probs
+    inv_pred_dir = np.where(inv_probs > 0.55, 1, np.where(inv_probs < 0.45, -1, 0)).astype(np.float64)
+    inv_pos = np.where(inv_pred_dir != 0, np.sign(inv_pred_dir), 0).astype(np.float64)
+    ret_exec = result['ret_exec'].to_numpy().astype(np.float64) if 'ret_exec' in result.columns else np.zeros_like(pos)
+    inv_pnl_arr = inv_pos * ret_exec
+    inv_sharpe = float(inv_pnl_arr.mean() / max(inv_pnl_arr.std(), 1e-12) * bar_sqrt) if len(inv_pnl_arr) > 0 else 0.0
+    inv_pnl = float(inv_pnl_arr.sum())
+    orig_pnl = float(pnl_arr.sum())
+    print(
+        f'[INVERT-CHECK] original_sharpe={net_sharpe:.3f} inverted_sharpe={inv_sharpe:.3f} '
+        f'original_pnl={orig_pnl:.2f} inverted_pnl={inv_pnl:.2f} prob_mean={prob_mean:.4f}',
+        flush=True,
+    )
+
+    # Position hash
+    pos_cs = _hash_col(result, 'position')
+    print(f'[SPLIT-VERIFY] pred_cs={pred_cs} pos_cs={pos_cs} pnl_cs={pnl_cs}', flush=True)
+
+
 def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
                               feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
     if train_df.height == 0:
@@ -9983,6 +10075,7 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     print(f'[OUTER-TRUE] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
     print(f'[OUTER-TRUE] result_rows={result.height} fraction={output_frac:.1%} '
           f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    _print_alpha_diagnostics(result, test_df, train_df, target_col, feature_cols, pred_cs, pnl_cs)
     return result
 
 
@@ -10029,10 +10122,18 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
         print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
     print('[HEARTBEAT] HMM fit start', flush=True)
     t_hmm = time.perf_counter()
-    hmm_filter = HMMRegimeFilter()
+    print(f'[HEARTBEAT] HMM resampling train 5m->1h start rows={train_df.height}', flush=True)
     df_1h_train = _resample_to_1h(train_df)
+    print(f'[HEARTBEAT] HMM resampled train 1h rows={df_1h_train.height}', flush=True)
+    hmm_filter = HMMRegimeFilter()
     if df_1h_train.height >= 60:
+        hmm_cfg = hmm_filter.config
+        print(f'[HEARTBEAT] HMM initializing: {df_1h_train.height} 1H bars, {len(hmm_cfg.feature_columns)} features, '
+              f'n_states={hmm_cfg.n_states} n_iter={hmm_cfg.n_iter} tol={hmm_cfg.tol}', flush=True)
         hmm_filter.initialize(df_1h_train)
+        print(f'[HEARTBEAT] HMM initialized', flush=True)
+    else:
+        print(f'[HEARTBEAT] HMM skipped – only {df_1h_train.height} 1H bars (<60)', flush=True)
     df_1h_test = _resample_to_1h(test_df)
     result, hmm_filter = apply_hmm_filter(
         df_5min_base=result, df_1h_train=df_1h_train,
@@ -10055,6 +10156,7 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     print(f'[OUTER-TRUE-HMM] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
     print(f'[OUTER-TRUE-HMM] result_rows={result.height} fraction={output_frac:.1%} '
           f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    _print_alpha_diagnostics(result, test_df, train_df, target_col, feature_cols, pred_cs, pnl_cs)
     validation = {'n_folds': 1, 'outer_split': True, 'mode': 'outer_split',
                   'train_rows': train_df.height, 'test_rows': test_df.height,
                   'output_rows': result.height, 'hmm_active': hmm_filter.is_active}
