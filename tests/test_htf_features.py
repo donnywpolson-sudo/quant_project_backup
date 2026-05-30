@@ -25,7 +25,8 @@ def make_synthetic_with_trend():
 
 def test_htf_features_synthetic():
     with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / 'synthetic.parquet'
+        path = Path(tmpdir) / 'ES' / 'synthetic.parquet'
+        path.parent.mkdir(parents=True, exist_ok=True)
         df_raw = make_synthetic_with_trend()
         df_raw.write_parquet(path)
         df = load_and_clean_data(str(path))

@@ -150,6 +150,7 @@ import shutil
 import polars as pl
 import numpy as np
 from core.config import load_config, RootConfig
+from core.market import get_contract_multiplier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -366,12 +367,6 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
     return splits
 
 
-_CONTRACT_MULTIPLIERS = {
-    'CL': 1000, 'ES': 50, 'NQ': 20, 'RTY': 50,
-    'GC': 100, 'SI': 5000, 'HG': 25000,
-    'ZB': 1000, 'ZN': 1000, 'ZF': 1000, 'ZT': 2000, 'ZC': 50, 'NG': 10000,
-    '6E': 125000, '6J': 12500000, '6B': 62500, 'YM': 5,
-}
 _MIN_ROWS = 1000
 _MIN_PRICE = {'CL': 0.1, 'ES': 500, 'NQ': 1000, 'GC': 500, 'SI': 5, 'HG': 1,
               'ZB': 50, 'ZN': 50, 'ZC': 50, 'NG': 0.5}
@@ -637,14 +632,14 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
     pnl_sum = df['pnl'].sum()
     pnl_mean = df['pnl'].mean()
     pnl_std = df['pnl'].std()
-    multiplier = _CONTRACT_MULTIPLIERS.get(symbol, 1)
+    multiplier = get_contract_multiplier(symbol)
     notional = df['close'].mean() * multiplier if 'close' in df.columns else 0
-    logger.info('[VALIDATE] %s: rows=%d pnl_sum=%.2f pnl_mean=%.6f pnl_std=%.4f notional=%.0f mult=%d',
+    logger.info('[VALIDATE] %s: rows=%d pnl_sum=%.2f pnl_mean=%.6f pnl_std=%.4f notional=%.0f mult=%.6g',
                 symbol, df.height, pnl_sum, pnl_mean, pnl_std, notional, multiplier)
     if abs(pnl_std) < 0.0001 and multiplier > 1:
         raise RuntimeError(
             'BACKTEST FAILURE: %s pnl std %.8f is zero-scale '
-            '(multiplier=%d, notional=%.0f) -- PnL not in USD futures' %
+            '(multiplier=%.6g, notional=%.0f) -- PnL not in USD futures' %
             (symbol, pnl_std, multiplier, notional)
         )
 
@@ -2086,6 +2081,7 @@ def load_env_config() -> RootConfig:
 --- START OF FILE: core\market.py ---
 import yaml
 import logging
+import math
 from pathlib import Path
 from core.config import config
 logger = logging.getLogger(__name__)
@@ -2124,6 +2120,39 @@ def load_market_config(symbol: str):
         if value is not None:
             setattr(config, attr, value)
             logger.info(f'Overrode {attr} = {value} for {symbol}')
+
+
+def get_contract_multiplier(symbol: str) -> float:
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: symbol is required. Cannot resolve contract multiplier.'
+        )
+    yaml_path = config.MARKET_CONFIGS.get(symbol)
+    if not yaml_path or not Path(yaml_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            'Cannot resolve contract multiplier.'
+        )
+    with open(yaml_path, 'r') as f:
+        market_cfg = yaml.safe_load(f) or {}
+    metadata = market_cfg.get('metadata') or {}
+    if 'contract_multiplier' not in metadata:
+        raise RuntimeError(
+            f'CONTRACT FAIL: contract_multiplier missing for symbol={symbol}.'
+        )
+    try:
+        multiplier = float(metadata['contract_multiplier'])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f'CONTRACT FAIL: invalid contract_multiplier for symbol={symbol}: '
+            f'{metadata["contract_multiplier"]!r}.'
+        ) from exc
+    if not math.isfinite(multiplier) or multiplier <= 0.0:
+        raise RuntimeError(
+            f'CONTRACT FAIL: invalid contract_multiplier for symbol={symbol}: '
+            f'{multiplier}.'
+        )
+    return multiplier
 --- END OF FILE: core\market.py ---
 
 --- START OF FILE: core\io\atomic.py ---
@@ -4312,9 +4341,8 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #     when the command is invoked. Fails fast if unset — no silent
     #     fallback to ES because wrong multiplier silently corrupts PnL.
     # ------------------------------------------------------------------------
-    import yaml
-    from pathlib import Path
     from core.config import config as _cfg
+    from core.market import get_contract_multiplier
 
     symbol = getattr(_cfg, 'CURRENT_SYMBOL', None)
     if not symbol:
@@ -4323,15 +4351,13 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
             'Cannot resolve contract multiplier for position clipping. '
             'Ensure cli.py sets config.CURRENT_SYMBOL before execution.'
         )
+    contract_multiplier = get_contract_multiplier(symbol)
+
+    import yaml
+    from pathlib import Path
     market_cfg_path = _cfg.MARKET_CONFIGS.get(symbol)
-    if not market_cfg_path or not Path(market_cfg_path).exists():
-        raise RuntimeError(
-            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
-            f'Cannot resolve contract multiplier.'
-        )
     with open(market_cfg_path, 'r') as f:
-        market_cfg = yaml.safe_load(f)
-    contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
+        market_cfg = yaml.safe_load(f) or {}
     max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
     max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
 
@@ -6242,11 +6268,10 @@ import logging
 from pathlib import Path
 
 import polars as pl
-import yaml
 
 from core.config import config
 from pipeline.contracts.continuous import build_continuous_series
-from core.market import detect_symbol_from_path, load_market_config
+from core.market import detect_symbol_from_path, load_market_config, get_contract_multiplier
 
 from pipeline.tracking.state import PipelineState
 
@@ -6391,17 +6416,7 @@ def ingestion_stage(state: PipelineState) -> PipelineState:
     # --- 2. Symbol detection & contract multiplier --------------------------
     symbol = detect_symbol_from_path(data_glob)
     load_market_config(symbol)
-    contract_multiplier = 1.0
-    market_cfg_yaml = config.MARKET_CONFIGS.get(symbol)
-    if market_cfg_yaml and Path(market_cfg_yaml).exists():
-        try:
-            with open(market_cfg_yaml) as fh:
-                mkt = yaml.safe_load(fh)
-            contract_multiplier = float(
-                mkt.get("metadata", {}).get("contract_multiplier", 1.0)
-            )
-        except Exception:
-            contract_multiplier = 1.0
+    contract_multiplier = get_contract_multiplier(symbol)
 
     state.metadata["symbol"] = symbol
     state.metadata["contract_multiplier"] = contract_multiplier
@@ -8196,11 +8211,31 @@ SESSION_BREAK_END = config.SESSION_BREAK_END_LOCAL
 _OHLCV_PROJECTION = ['ts_event', 'open', 'high', 'low', 'close', 'volume']
 
 
+def session_start_offset_by() -> str:
+    start = config.SESSION_START_LOCAL
+    start_minutes = start.hour * 60 + start.minute
+    offset_minutes = (24 * 60 - start_minutes) % (24 * 60)
+    hours, minutes = divmod(offset_minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f'{hours}h')
+    if minutes:
+        parts.append(f'{minutes}m')
+    return ''.join(parts) or '0m'
+
+
+def session_id_expr(local_ts_col: str = 'ts_local') -> pl.Expr:
+    return (
+        pl.col(local_ts_col)
+        .dt.offset_by(session_start_offset_by())
+        .dt.date()
+        .cast(pl.String)
+    )
+
+
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
-    _offset = 24 - config.SESSION_START_LOCAL.hour
-    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
-    df = df.with_columns(session_id.alias('session_id'))
+    df = df.with_columns(session_id_expr('ts_local').alias('session_id'))
     return df.drop('ts_local')
 
 
@@ -9536,7 +9571,7 @@ def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
     Resample 5-minute data to 1-hour frequency for HMM detection layer.
     Preserves session_id grouping and uses only OHLCV columns.
     """
-    from pipeline.session.session import add_session_id
+    from pipeline.session.session import session_id_expr
 
     df = df_5min.select(['ts_event', 'open', 'high', 'low', 'close', 'volume'])
     df = df.with_columns(
@@ -9545,17 +9580,7 @@ def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         pl.col('ts_local').dt.truncate('1h').alias('ts_hour')
     )
-    # Session ID: offset by (24 - SESSION_START.hour) hours to align
-    # overnight futures session to the correct calendar date.
-    # Dynamically derived from config instead of hardcoded 6h.
-    session_start_offset = 24 - config.SESSION_START_LOCAL.hour
-    session_id = (
-        pl.col('ts_local')
-        .dt.offset_by(f'{session_start_offset}h')
-        .dt.date()
-        .cast(pl.String)
-    )
-    df = df.with_columns(session_id.alias('session_id'))
+    df = df.with_columns(session_id_expr('ts_local').alias('session_id'))
 
     agg = df.group_by(['session_id', 'ts_hour'], maintain_order=True).agg([
         pl.col('open').first().alias('open'),
@@ -9672,8 +9697,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     Preserves all HMM columns (hmm_regime_*, hmm_trade_gate).
     """
-    import yaml
-    from pathlib import Path
+    from core.market import get_contract_multiplier
     _compute_pnl_from_target_exec = importlib.import_module(
         "pipeline.execution.simulator"
     )._compute_pnl_from_target_exec
@@ -9685,15 +9709,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
             'Cannot resolve contract multiplier for HMM PnL recompute. '
             'Ensure cli.py sets config.CURRENT_SYMBOL before calling run-hmm.'
         )
-    market_cfg_path = config.MARKET_CONFIGS.get(symbol)
-    if not market_cfg_path or not Path(market_cfg_path).exists():
-        raise RuntimeError(
-            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
-            f'Cannot resolve contract multiplier.'
-        )
-    with open(market_cfg_path, 'r') as f:
-        market_cfg = yaml.safe_load(f)
-    contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
+    contract_multiplier = get_contract_multiplier(symbol)
 
     # Preserve HMM columns so they survive the recompute
     hmm_cols = [c for c in df.columns if c.startswith('hmm_')]
@@ -9992,7 +10008,10 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
     net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
     costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
     ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
-    turnover = float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64))).sum() / max(len(pos), 1))
+    turnover = (
+        float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0])).sum() / len(pos))
+        if len(pos) > 0 else 0.0
+    )
 
     y_train_dist = dict(zip(*np.unique(y_train_vals, return_counts=True))) if len(y_train_vals) > 0 else {}
     y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}
@@ -10166,7 +10185,7 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
 --- START OF FILE: tests\test_alignment.py ---
 import polars as pl
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from pipeline.session.session import add_session_id, filter_session_hours, resample_to_frequency
 from pipeline.align.align import align_htf_streams
 
@@ -10251,6 +10270,19 @@ def test_session_offset_consistency():
         f'session_id should be 2026-01-08 (18:00 ET start + 6h offset), got {sid_session[0]}'
     assert len(sid_hh) > 0 and sid_hh[0] == '2026-01-08', \
         f'1H session_id should be 2026-01-08, got: {sid_hh}'
+
+
+def test_session_offset_non_hour_start():
+    """Canonical session offset must preserve minute component."""
+    from core.config import config
+    from pipeline.session.session import session_start_offset_by
+
+    saved = config.SESSION_START_LOCAL
+    try:
+        config.SESSION_START_LOCAL = time(18, 30)
+        assert session_start_offset_by() == '5h30m'
+    finally:
+        config.SESSION_START_LOCAL = saved
 --- END OF FILE: tests\test_alignment.py ---
 
 --- START OF FILE: tests\test_causal_audit.py ---
@@ -10269,7 +10301,8 @@ from datetime import datetime, timedelta
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.config import config
+from core.config import config, load_config
+load_config()
 from pipeline.features.htf_context import add_htf_context_features
 from pipeline.features.expansion import (
     add_regime, add_ratios_and_z_scores, add_rolling_quantiles,
@@ -10745,6 +10778,26 @@ def test_contract_multiplier_no_es_fallback():
     finally:
         if saved is not None:
             _cfg.CURRENT_SYMBOL = saved
+
+
+def test_contract_multiplier_missing_metadata_fails(tmp_path):
+    """Market config must define a finite positive multiplier."""
+    from core.config import config as _cfg, load_config
+    from core.market import get_contract_multiplier
+    load_config()
+
+    bad_cfg = tmp_path / 'BAD.yaml'
+    bad_cfg.write_text('metadata:\n  ticker: BAD\n', encoding='utf-8')
+    saved_configs = dict(_cfg.MARKET_CONFIGS)
+    try:
+        _cfg.MARKET_CONFIGS['BAD'] = str(bad_cfg)
+        try:
+            get_contract_multiplier('BAD')
+            assert False, 'Should have raised RuntimeError for missing multiplier'
+        except RuntimeError as e:
+            assert 'contract_multiplier' in str(e)
+    finally:
+        _cfg.MARKET_CONFIGS = saved_configs
 
 
 if __name__ == "__main__":

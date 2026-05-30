@@ -13,6 +13,7 @@ import time
 import json
 import hashlib
 import threading
+import re
 from pathlib import Path
 import shutil
 import polars as pl
@@ -20,19 +21,225 @@ import numpy as np
 from core.config import load_config, RootConfig
 from core.market import get_contract_multiplier
 
+_LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
+if _LOG_MODE not in {'clean', 'verbose', 'debug'}:
+    _LOG_MODE = 'clean'
+_DEBUG = _LOG_MODE == 'debug'
+_VERBOSE = _LOG_MODE in {'verbose', 'debug'} or os.environ.get('QUANT_VERBOSE', '0') == '1'
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if _DEBUG else (logging.INFO if _VERBOSE else logging.WARNING),
     format='%(asctime)s [%(levelname)s] %(message)s',
     encoding='utf-8',
     force=True,
 )
 logger = logging.getLogger('QuantRunner')
-_VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
 _MIN_TRAIN_DAYS = 90
 _RUN_START = time.time()
 _RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
 _PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
 _VERIFICATION_TABLE = []  # rows for the verification table printed per split
+
+
+class PipelineProgressLogger:
+    STAGES = {
+        1: 'RAW DATA',
+        2: 'INGESTION',
+        3: 'CONTINUOUS CONTRACTS',
+        4: 'SESSION NORMALIZATION',
+        5: 'ALIGNMENT',
+        6: 'FEATURES',
+        7: 'TARGETS',
+        8: 'REGIME',
+        9: 'META LABEL',
+        10: 'EXECUTION',
+        11: 'WALKFORWARD',
+        12: 'ANALYTICS',
+        13: 'TRACKING',
+    }
+    ERROR_PATTERNS = (
+        'Traceback', 'RuntimeError', 'ValueError', 'Exception',
+        '[TIMEOUT]', '[ERROR]', 'failed', 'FAILED', 'rc!=0',
+    )
+
+    def __init__(self, mode: str, run_id: str):
+        self.mode = mode
+        self.run_id = run_id
+        self.context = {}
+        self.emitted = set()
+        self.stage_start = time.time()
+        self.log_path = Path('output') / 'logs' / f'run_{run_id}.log'
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = open(self.log_path, 'a', encoding='utf-8')
+
+    @property
+    def clean(self) -> bool:
+        return self.mode == 'clean'
+
+    @property
+    def verbose(self) -> bool:
+        return self.mode in {'verbose', 'debug'} or _VERBOSE
+
+    def close(self) -> None:
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+    def set_context(self, **kwargs) -> None:
+        self.context = {k: v for k, v in kwargs.items() if v is not None}
+        self.emitted = set()
+        self.stage_start = time.time()
+
+    def raw(self, text: str) -> None:
+        self._fh.write(text + '\n')
+        self._fh.flush()
+        if self.verbose:
+            print(text, flush=True)
+
+    def stage(self, idx: int, message: str, once: bool = False) -> None:
+        if once and idx in self.emitted:
+            return
+        elapsed = time.time() - self.stage_start
+        print(f'[{idx:02d}/13 {self.STAGES[idx]}] {message} elapsed={elapsed:.1f}s', flush=True)
+        self.emitted.add(idx)
+
+    def child_line(self, prefix: str, line: str) -> None:
+        raw = f'[{prefix}] {line}'
+        self._fh.write(raw + '\n')
+        self._fh.flush()
+        if self.verbose:
+            print(raw, flush=True)
+            return
+        if any(p in line for p in self.ERROR_PATTERNS):
+            print(raw, flush=True)
+            return
+        self._summarize_child_line(line)
+
+    def timeout(self, message: str) -> None:
+        self.raw(message)
+        if self.clean:
+            print(message, flush=True)
+
+    def _summarize_child_line(self, line: str) -> None:
+        m = re.search(r'\[CLI\] Data loaded\. Rows: ([\d,]+)', line)
+        if m:
+            self.stage(2, f'rows_out={m.group(1)}')
+            self._stage_contract_once()
+            return
+        m = re.search(r'\[CLI\] Aligned data: ([\d,]+) rows', line)
+        if m:
+            if 2 not in self.emitted:
+                self.stage(2, f'cache_or_ingest rows_out={m.group(1)}', once=True)
+                self._stage_contract_once()
+            self.stage(5, f'rows_out={m.group(1)}', once=True)
+            return
+        m = re.search(r'\[SESSION\] (\S+) stream has ([\d,]+) rows', line)
+        if m:
+            self.stage(4, f'freq={m.group(1)} rows={m.group(2)}')
+            return
+        if '[INGEST] No cache found' in line or '[INGEST] Loading aligned data from cache' in line:
+            self.stage(2, 'loading aligned data')
+            return
+        if '[INGEST] Aligning HTF streams' in line:
+            self._stage_contract_once()
+            self.stage(5, 'aligning HTF streams', once=True)
+            return
+        m = re.search(r'\[CLI\] Date filter \(([^)]*)\): ([\d,]+) -> ([\d,]+) rows', line)
+        if m:
+            self.stage(5, f'window={m.group(1)} rows_in={m.group(2)} rows_out={m.group(3)}')
+            return
+        m = re.search(r'\[CLI\] Feature matrix: ([\d,]+) rows, ([\d,]+) cols', line)
+        if m:
+            self.context['feature_total'] = m.group(2)
+            self.stage(6, f'rows={m.group(1)} total={m.group(2)}')
+            return
+        m = re.search(r'\[CLI\] After manifest: ([\d,]+) rows, ([\d,]+) cols', line)
+        if m:
+            total = self.context.get('feature_total', 'NA')
+            self.stage(6, f'selected={m.group(2)} total={total} rows={m.group(1)}')
+            return
+        m = re.search(r'\[TARGET\] ([^:]+): rows=([\d,]+) NaN=([\d,]+)', line)
+        if m:
+            self.stage(7, f'target={m.group(1)} rows={m.group(2)} nan={m.group(3)}')
+            return
+        m = re.search(r'\[HMM-TIMING\] step=hmm_features rows=([\d,]+) cols=([\d,]+)', line)
+        if m:
+            self.stage(8, f'HMM rows={m.group(1)} features={m.group(2)}')
+            return
+        m = re.search(r'\[HMM-TIMING\] iter=([^ ]+)', line)
+        if m:
+            self.stage(8, f'HMM iter={m.group(1)}')
+            return
+        if '[CLI] HMM FALLBACK ACTIVE' in line:
+            self.stage(8, 'fallback active')
+            return
+        if '[CLI] Running HMM-aware walkforward' in line or '[CLI] Running walkforward' in line:
+            self.stage(9, 'active' if 'meta' in line.lower() else 'skipped')
+            return
+        m = re.search(r'\[OUTER-TRUE\] train filter .* -> ([\d,]+) rows', line)
+        if m:
+            self.stage(11, f'train_rows={m.group(1)}')
+            return
+        m = re.search(r'\[OUTER-TRUE\] test filter .* -> ([\d,]+) rows', line)
+        if m:
+            self.stage(11, f'test_rows={m.group(1)}')
+            return
+        m = re.search(r'\[HEARTBEAT\] train rows=([\d,]+) test rows=([\d,]+)', line)
+        if m:
+            self.stage(11, f'train_rows={m.group(1)} test_rows={m.group(2)}')
+            return
+        m = re.search(r'\[OUTER-TRUE(?:-HMM)?\] train_rows=([\d,]+)', line)
+        if m:
+            self.context['train_rows'] = m.group(1)
+            self._stage_walkforward_rows()
+            return
+        m = re.search(r'\[OUTER-TRUE(?:-HMM)?\] test_rows=([\d,]+)', line)
+        if m:
+            self.context['test_rows'] = m.group(1)
+            self._stage_walkforward_rows()
+            return
+        m = re.search(r'\[OUTER-TRUE(?:-HMM)?\] feature_cols=([\d,]+)', line)
+        if m:
+            self.stage(6, f'selected={m.group(1)} total={self.context.get("feature_total", "NA")}')
+            return
+        m = re.search(r'\[CLI\] HMM walkforward result: ([\d,]+) rows', line)
+        if m:
+            self.stage(11, f'output_rows={m.group(1)}')
+            return
+        m = re.search(r'\[CLI\] Walkforward result: ([\d,]+) rows', line)
+        if m:
+            self.stage(11, f'output_rows={m.group(1)}')
+            return
+        if '[CLI] Running aggregation' in line:
+            self.stage(12, 'aggregation')
+            return
+        m = re.search(r'(?:HMM-filtered results|Results) saved to (.+)', line)
+        if m:
+            self.stage(13, f'saved={m.group(1)}')
+
+    def _stage_contract_once(self) -> None:
+        msg = self.context.get('contract_summary')
+        if msg and 3 not in self.emitted:
+            self.stage(3, msg, once=True)
+
+    def _stage_walkforward_rows(self) -> None:
+        train_rows = self.context.get('train_rows')
+        test_rows = self.context.get('test_rows')
+        if train_rows and test_rows:
+            self.stage(11, f'train_rows={train_rows} test_rows={test_rows}')
+
+
+_PROGRESS = PipelineProgressLogger(_LOG_MODE, _RUN_ID)
+
+
+def _stage(idx: int, message: str) -> None:
+    _PROGRESS.stage(idx, message)
+
+
+def _raw_log(text: str) -> None:
+    _PROGRESS.raw(text)
+
 
 def get_files(data_dir: str, config: RootConfig) -> list[Path]:
     files = list(Path(data_dir).rglob('*.parquet'))
@@ -328,7 +535,7 @@ def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> 
                 with lock:
                     lines_list.append(line)
                     last_output = time.time()
-                print(f'[{prefix}] {line}', flush=True)
+                _PROGRESS.child_line(prefix, line)
         except Exception:
             pass
 
@@ -344,15 +551,15 @@ def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> 
             with lock:
                 idle = time.time() - last_output
             if idle > timeout_idle and not done.is_set():
-                print(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child', flush=True)
-                print(f'[TIMEOUT] cmd={" ".join(full_cmd)}', flush=True)
-                print(f'[TIMEOUT] cwd={os.getcwd()}', flush=True)
-                print(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}', flush=True)
+                _PROGRESS.timeout(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child')
+                _PROGRESS.timeout(f'[TIMEOUT] cmd={" ".join(full_cmd)}')
+                _PROGRESS.timeout(f'[TIMEOUT] cwd={os.getcwd()}')
+                _PROGRESS.timeout(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}')
                 with lock:
                     if stdout_lines:
-                        print(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}', flush=True)
+                        _PROGRESS.timeout(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}')
                     if stderr_lines:
-                        print(f'[TIMEOUT] last stderr lines: {stderr_lines[-5:]}', flush=True)
+                        _PROGRESS.timeout(f'[TIMEOUT] last stderr lines: {stderr_lines[-5:]}')
                 proc.kill()
                 done.set()
                 break
@@ -381,7 +588,7 @@ def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> 
 _log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
 
 def _print_verification_table():
-    if not _VERIFICATION_TABLE:
+    if not _VERIFICATION_TABLE or not _PROGRESS.verbose:
         return
     print('\n' + '=' * 140)
     print(' VERIFICATION TABLE — each row must have unique path, ts_min, pnl_cs')
@@ -410,6 +617,8 @@ def _print_verification_table():
 
 
 def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
+    if not _PROGRESS.verbose:
+        return
     _print_verification_table()
     if not per_symbol:
         return
@@ -433,6 +642,25 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     print(f'{bl}{h * 52}{br}\n', flush=True)
 
 
+def _print_final_summary_table() -> None:
+    print('\nsymbol | split | sharpe | pnl | ic | hit_rate | pred_cs | pnl_cs | status')
+    print('-' * 78)
+    if not _VERIFICATION_TABLE:
+        print('NA | NA | NA | NA | NA | NA | missing | missing | NO_RESULTS', flush=True)
+        return
+    for row in sorted(_VERIFICATION_TABLE, key=lambda r: (str(r.get('symbol')), int(r.get('split', 0)))):
+        print(
+            f"{row.get('symbol', 'NA')} | {row.get('split', 'NA')} | "
+            f"{row.get('sharpe', float('nan')):+.3f} | "
+            f"{row.get('pnl', 0.0):+.2f} | "
+            f"{row.get('ic', 'NA')} | "
+            f"{row.get('hit_rate', row.get('hit', 0.0)):.2%} | "
+            f"{row.get('pred_cs', 'missing')} | {row.get('pnl_cs', 'missing')} | "
+            f"{row.get('status', 'OK')}",
+            flush=True,
+        )
+
+
 def _hash_column(df: pl.DataFrame, col: str) -> str:
     if col not in df.columns:
         return 'missing'
@@ -442,6 +670,18 @@ def _hash_column(df: pl.DataFrame, col: str) -> str:
         return 'all_nan'
     h = hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
     return h
+
+
+def _summary_ic(bt: pl.DataFrame):
+    if 'prediction_prob' not in bt.columns or 'ret_exec' not in bt.columns:
+        return 'NA'
+    try:
+        from pipeline.analytics.aggregate import compute_ic
+        result = compute_ic(bt['prediction_prob'].shift(1), bt['ret_exec'])
+        val = result.get('spearman_ic')
+        return 'NA' if val is None or not np.isfinite(float(val)) else f'{float(val):+.4f}'
+    except Exception:
+        return 'NA'
 
 
 def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> None:
@@ -512,6 +752,19 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
         )
 
 
+def _contract_summary(symbol: str) -> str:
+    try:
+        import yaml
+        cfg_path = Path('configs') / 'markets' / f'{symbol}.yaml'
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            market_cfg = yaml.safe_load(f) or {}
+        multiplier = get_contract_multiplier(symbol)
+        tick = market_cfg.get('contract_specs', {}).get('tick_size', 'NA')
+        return f'symbol={symbol} multiplier={multiplier:g} tick={tick}'
+    except Exception as e:
+        return f'symbol={symbol} contract_metadata_error={e}'
+
+
 def load_all_splits_for_year(year: int) -> list:
     """Load per-split manifests and backtest results for a given year."""
     import glob as _glob
@@ -548,10 +801,11 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                    train_start=None, train_end=None, test_start=None, test_end=None) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
-    print(f'[SPLIT {split_idx}/{total_splits}] test_window=[{test_start}, {test_end}) run_id={_RUN_ID}',
-          f'cwd={os.getcwd()} run_py_mtime={Path("run.py").stat().st_mtime:.0f}',
-          f'cli_py_mtime={Path("pipeline/cli.py").stat().st_mtime:.0f}',
-          flush=True)
+    _raw_log(
+        f'[SPLIT {split_idx}/{total_splits}] test_window=[{test_start}, {test_end}) run_id={_RUN_ID} '
+        f'cwd={os.getcwd()} run_py_mtime={Path("run.py").stat().st_mtime:.0f} '
+        f'cli_py_mtime={Path("pipeline/cli.py").stat().st_mtime:.0f}'
+    )
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
@@ -596,7 +850,26 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     per_symbol = {}
     for f in test_files:
         symbol = f.parent.name
+        test_label = (
+            f'{test_start.isoformat()}→{test_end.isoformat()}'
+            if test_start and test_end else f.stem
+        )
+        _PROGRESS.set_context(
+            symbol=symbol,
+            split=split_idx,
+            total_splits=total_splits,
+            contract_summary=_contract_summary(symbol),
+        )
+        print(f'\n[SPLIT {split_idx}/{total_splits}] {symbol} test={test_label}', flush=True)
+        _stage(1, f'{f} found')
         if not _validate_symbol_data(f, config):
+            _VERIFICATION_TABLE.append({
+                'split': split_idx, 'symbol': symbol, 'path': str(f),
+                'mtime': f.stat().st_mtime if f.exists() else 0.0,
+                'run_id': _RUN_ID, 'rows': 0, 'ts_min': 'missing', 'ts_max': 'missing',
+                'pnl_cs': 'missing', 'pred_cs': 'missing', 'pnl': 0.0, 'sharpe': 0.0,
+                'trades': 0, 'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+            })
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -617,15 +890,19 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         if wf_mode == 'outer_split':
             assert train_start and train_end, 'outer_split mode but train_start/train_end not set'
             assert '--train-start' in cmd and '--train-end' in cmd, '--train-start/--train-end missing from subprocess command'
-        print(f'[SUBPROCESS-CMD] {" ".join(cmd)}', flush=True)
+        _raw_log(f'[SUBPROCESS-CMD] {" ".join(cmd)}')
         logger.info('[SUBPROCESS] split=%d symbol=%s start=%s end=%s cmd=%s',
                     split_idx, symbol,
                     test_start.isoformat() if test_start else 'None',
                     test_end.isoformat() if test_end else 'None',
                     ' '.join(cmd))
+        subprocess_failed = False
         try:
             _run_subprocess_streaming(cmd, env)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            if _DEBUG:
+                import traceback
+                traceback.print_exc()
             stderr_text = e.stderr if hasattr(e, 'stderr') else ''
             stdout_text = e.stdout if hasattr(e, 'stdout') else ''
             if isinstance(stderr_text, bytes):
@@ -654,6 +931,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             try:
                 _run_subprocess_streaming(cmd_fb, env)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
+                if _DEBUG:
+                    import traceback
+                    traceback.print_exc()
                 stderr2 = e2.stderr if hasattr(e2, 'stderr') else ''
                 stdout2 = e2.stdout if hasattr(e2, 'stdout') else ''
                 if isinstance(stderr2, bytes):
@@ -668,6 +948,17 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
+                _VERIFICATION_TABLE.append({
+                    'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
+                    'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
+                    'ts_min': 'missing', 'ts_max': 'missing',
+                    'pnl_cs': 'missing', 'pred_cs': 'missing',
+                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
+                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+                })
+                subprocess_failed = True
+        if subprocess_failed:
+            continue
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results_hmm.parquet'
         if not bt_path.exists():
@@ -678,12 +969,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 f'STALE RESULT: {bt_path} mtime={_bt_mtime:.0f} < run_start={_RUN_START:.0f}. '
                 f'Subprocess may have failed silently and an old file was read.'
             )
-            print(f'[BACKTEST] {symbol} path={bt_path} mtime={_bt_mtime:.0f} run_id={_RUN_ID}', flush=True)
+            _raw_log(f'[BACKTEST] {symbol} path={bt_path} mtime={_bt_mtime:.0f} run_id={_RUN_ID}')
             try:
                 bt = pl.read_parquet(bt_path)
                 t_min = str(bt['ts_event'].min()) if 'ts_event' in bt.columns else 'missing'
                 t_max = str(bt['ts_event'].max()) if 'ts_event' in bt.columns else 'missing'
-                print(f'[BACKTEST] {symbol} rows={bt.height} ts_min={t_min} ts_max={t_max}', flush=True)
+                _raw_log(f'[BACKTEST] {symbol} rows={bt.height} ts_min={t_min} ts_max={t_max}')
                 # Assert timestamps are within the test window
                 if test_start and test_end and 'ts_event' in bt.columns:
                     from datetime import datetime as _dt, timezone
@@ -702,7 +993,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 pnl = bt['pnl'].sum()
                 sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
                 hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
-                print(f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} sharpe={sharpe:.3f} pnl={pnl:.2f}', flush=True)
+                _raw_log(f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} sharpe={sharpe:.3f} pnl={pnl:.2f}')
                 if symbol not in _PER_SYMBOL_PNL_CS:
                     _PER_SYMBOL_PNL_CS[symbol] = {}
                 if pnl_cs != 'missing' and pnl_cs != 'all_nan':
@@ -714,14 +1005,24 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     _PER_SYMBOL_PNL_CS[symbol][split_idx] = pnl_cs
                 # Collect for verification table
                 trades = 0
+                turnover = 0.0
                 if 'position' in bt.columns:
                     pos = bt['position'].to_numpy().astype(np.float64)
                     trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9))
+                    turnover = float(np.abs(np.diff(pos, prepend=pos[0])).sum())
+                if 'pos_change' in bt.columns:
+                    turnover = float(bt['pos_change'].sum())
+                ic = _summary_ic(bt)
+                _stage(10, f'trades={trades} turnover={turnover:.2f}')
+                _stage(11, f'rows={bt.height}')
+                _stage(12, f'sharpe={sharpe:.3f} pnl={pnl:.2f} ic={ic} hit_rate={hit:.2%}')
+                _stage(13, f'saved={bt_path}')
                 _VERIFICATION_TABLE.append({
                     'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
                     'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': bt.height,
                     'ts_min': str(t_min), 'ts_max': str(t_max),
-                    'pnl_cs': pnl_cs, 'pnl': pnl, 'sharpe': sharpe, 'trades': trades,
+                    'pnl_cs': pnl_cs, 'pred_cs': pred_cs, 'pnl': pnl, 'sharpe': sharpe,
+                    'trades': trades, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
                 })
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
@@ -735,8 +1036,30 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         hmm_delta = 0.0
                 per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
                 _print_symbol_diagnostics(bt, symbol, split_idx)
-            except Exception:
+            except Exception as e:
+                print(f'[ERROR] Result validation failed for {symbol} split={split_idx}: {e}', flush=True)
+                if _DEBUG:
+                    import traceback
+                    traceback.print_exc()
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
+                _VERIFICATION_TABLE.append({
+                    'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
+                    'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': 0,
+                    'ts_min': 'missing', 'ts_max': 'missing',
+                    'pnl_cs': 'missing', 'pred_cs': 'missing',
+                    'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
+                    'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+                })
+        else:
+            _stage(13, f'missing_output={out_dir} status=FAILED')
+            _VERIFICATION_TABLE.append({
+                'split': split_idx, 'symbol': symbol, 'path': str(out_dir),
+                'mtime': 0.0, 'run_id': _RUN_ID, 'rows': 0,
+                'ts_min': 'missing', 'ts_max': 'missing',
+                'pnl_cs': 'missing', 'pred_cs': 'missing',
+                'pnl': 0.0, 'sharpe': 0.0, 'trades': 0,
+                'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+            })
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
@@ -748,15 +1071,27 @@ if __name__ == '__main__':
         sys.exit(0)
     splits = generate_walkforward_splits(files, config)
     total = len(splits)
-    if not _VERBOSE:
+    print(
+        f'[RUN] env={os.environ.get("QUANT_ENV", "alpha_1")} '
+        f'symbols={",".join(config.symbols)} splits={total} log_mode={_LOG_MODE} '
+        f'raw_log={_PROGRESS.log_path}',
+        flush=True,
+    )
+    if _LOG_MODE == 'clean':
         logging.getLogger().setLevel(logging.WARNING)
         logging.getLogger('quant').setLevel(logging.WARNING)
-    for i, split_data in enumerate(splits, 1):
-        train, test = split_data[0], split_data[1]
-        train_start = split_data[2] if len(split_data) > 2 else None
-        train_end   = split_data[3] if len(split_data) > 3 else None
-        test_start  = split_data[4] if len(split_data) > 4 else None
-        test_end    = split_data[5] if len(split_data) > 5 else None
-        process_split(train, test, files, config, i, total, train_start, train_end, test_start, test_end)
+    elif _LOG_MODE == 'debug':
+        logging.getLogger().setLevel(logging.DEBUG)
+    try:
+        for i, split_data in enumerate(splits, 1):
+            train, test = split_data[0], split_data[1]
+            train_start = split_data[2] if len(split_data) > 2 else None
+            train_end   = split_data[3] if len(split_data) > 3 else None
+            test_start  = split_data[4] if len(split_data) > 4 else None
+            test_end    = split_data[5] if len(split_data) > 5 else None
+            process_split(train, test, files, config, i, total, train_start, train_end, test_start, test_end)
+    finally:
+        _print_final_summary_table()
+        _PROGRESS.close()
     logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')
