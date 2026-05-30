@@ -12,10 +12,11 @@ import databento as db
 
 DATASET = "GLBX.MDP3"
 SCHEMA = "mbp-1"
+DEFAULT_OUT_ROOT = Path(__file__).resolve().parent / "L1_mbp1"
 
-# Exact list you gave.
-# If NO is invalid, validation will fail clearly. Do not auto-correct it silently.
-DEFAULT_MARKETS = [
+# Supported market roots from your existing 12-market universe.
+# This script now downloads selected markets only; it will not default to all markets.
+SUPPORTED_MARKETS = [
     "CL",
     "ES",
     "GC",
@@ -58,11 +59,30 @@ def iter_date_chunks(start: date, end: date, chunk_days: int):
         cur = nxt
 
 
-def normalize_markets(markets: list[str]) -> list[str]:
-    cleaned = [m.strip().upper() for m in markets if m.strip()]
+def normalize_markets(markets: list[str] | None) -> list[str]:
+    cleaned = [m.strip().upper() for m in (markets or []) if m.strip()]
     if not cleaned:
-        raise SystemExit("ERROR: no markets provided.")
-    return cleaned
+        raise SystemExit("ERROR: choose one market with --market ES.")
+
+    supported = set(SUPPORTED_MARKETS)
+    invalid = sorted(set(cleaned) - supported)
+    if invalid:
+        raise SystemExit(
+            "ERROR: unsupported market root(s): "
+            + ", ".join(invalid)
+            + "\nSupported markets: "
+            + ", ".join(SUPPORTED_MARKETS)
+        )
+
+    # Preserve user order but remove duplicates.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for market in cleaned:
+        if market not in seen:
+            deduped.append(market)
+            seen.add(market)
+
+    return deduped
 
 
 def continuous_symbol(root: str, expiry_index: int) -> str:
@@ -106,11 +126,7 @@ def validate_symbols(
             print(f"  - {sym}", file=sys.stderr)
 
         print(
-            "\nMost likely issue: confirm whether NO should actually be NQ.",
-            file=sys.stderr,
-        )
-        print(
-            "Rerun with: --markets CL ES GC HG NG NQ RTY SI YM ZB ZC ZN",
+            "\nConfirm the market root is correct and included in your Databento subscription.",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -153,7 +169,9 @@ def download_chunk(
     out_root: Path,
     overwrite: bool,
 ) -> Path:
-    out_dir = out_root / market / str(start.year) / f"{start.month:02d}"
+    # Final layout:
+    #   data/L1_mbp1/{market}/{market}_front_mbp1_YYYY-MM-DD_YYYY-MM-DD.dbn.zst
+    out_dir = out_root / market
     out_dir.mkdir(parents=True, exist_ok=True)
 
     out_file = out_dir / (
@@ -210,15 +228,33 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Download Databento CME Globex L1 MBP-1 history for continuous "
-            "front-month futures."
+            "Download Databento CME Globex L1 MBP-1 history for selected "
+            "continuous front-month futures."
         )
     )
     parser.add_argument(
         "--out",
-        default="data/l1_mbp1/raw_dbn",
-        help="Output directory. Default: data/l1_mbp1/raw_dbn",
+        default=str(DEFAULT_OUT_ROOT),
+        help=f"Output root directory. Default: {DEFAULT_OUT_ROOT}",
     )
+
+    market_group = parser.add_mutually_exclusive_group(required=True)
+    market_group.add_argument(
+        "--market",
+        help=(
+            "Single market root to download, e.g. ES. "
+            "Use this for one-by-one downloads."
+        ),
+    )
+    market_group.add_argument(
+        "--markets",
+        nargs="+",
+        help=(
+            "Optional multi-market mode, e.g. --markets ES GC NG. "
+            "This will still skip existing non-empty files unless --overwrite is set."
+        ),
+    )
+
     parser.add_argument(
         "--start",
         type=parse_yyyy_mm_dd,
@@ -242,12 +278,6 @@ def main() -> None:
         type=int,
         default=0,
         help="Continuous expiry index. 0 = front month. Default: 0",
-    )
-    parser.add_argument(
-        "--markets",
-        nargs="*",
-        default=DEFAULT_MARKETS,
-        help="Market roots to download.",
     )
     parser.add_argument(
         "--overwrite",
@@ -276,7 +306,7 @@ def main() -> None:
     if not os.getenv("DATABENTO_API_KEY"):
         raise SystemExit(
             "ERROR: DATABENTO_API_KEY is not set.\n"
-            'PowerShell example:\n'
+            "PowerShell example:\n"
             '  $env:DATABENTO_API_KEY="db-your-key-here"'
         )
 
@@ -289,7 +319,8 @@ def main() -> None:
     if args.chunk_days < 1:
         raise SystemExit("ERROR: --chunk-days must be >= 1.")
 
-    markets = normalize_markets(args.markets)
+    raw_markets = [args.market] if args.market else args.markets
+    markets = normalize_markets(raw_markets)
     symbols = [continuous_symbol(market, args.expiry_index) for market in markets]
     out_root = Path(args.out)
 
