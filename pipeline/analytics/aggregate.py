@@ -3,7 +3,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from scipy.stats import spearmanr
-from core.config import config
+from archive.core.config import config
 
 # Number of 5-minute bars in a trading year (~23h * 12 bars/h * 252 trading days)
 # Overridable via config.ANNUAL_FACTOR if set before aggregate import.
@@ -17,6 +17,91 @@ _BACKTEST_COLUMNS_OF_INTEREST = [
     'prediction_prob', 'ret_exec', 'equity_curve',
     'return_on_equity', 'drawdown_pct',
 ]
+
+
+def _bars_per_year() -> int:
+    return int(getattr(config, 'ANNUAL_FACTOR', ANNUAL_FACTOR))
+
+
+def _sharpe_pair(pnl: np.ndarray, bars_per_year: int) -> tuple[float, float]:
+    if len(pnl) == 0:
+        return 0.0, 0.0
+    std = float(np.std(pnl))
+    if std <= 1e-12:
+        return 0.0, 0.0
+    sharpe_per_bar = float(np.mean(pnl) / std)
+    return sharpe_per_bar, float(sharpe_per_bar * np.sqrt(bars_per_year))
+
+
+def _position_hit_turnover_metrics(
+    pnl: np.ndarray,
+    positions: np.ndarray | None,
+    ret_exec: np.ndarray | None,
+) -> dict:
+    n = len(pnl)
+    out = {
+        'position_turnover': 0.0,
+        'position_turnover_per_bar': 0.0,
+        'position_change_events': 0,
+        'bar_hit_rate_all_bars': 0.0,
+        'bar_hit_rate_all_bars_n': n,
+        'bar_hit_rate_active_bars': 0.0,
+        'bar_hit_rate_active_bars_n': 0,
+        'trade_hit_rate': None,
+        'trade_hit_rate_n': 0,
+    }
+    if positions is None or len(positions) == 0:
+        return out
+
+    positions = np.asarray(positions, dtype=np.float64)
+    pos_changes = np.abs(np.diff(positions, prepend=positions[0]))
+    out['position_turnover'] = float(pos_changes.sum())
+    out['position_turnover_per_bar'] = float(pos_changes.sum() / max(n, 1))
+    out['position_change_events'] = int(np.sum(pos_changes > 1e-9))
+
+    if ret_exec is not None and len(ret_exec) == n:
+        ret_exec = np.asarray(ret_exec, dtype=np.float64)
+        active = np.abs(positions) > 1e-12
+        correct = np.zeros(n, dtype=bool)
+        correct[active] = np.sign(positions[active]) == np.sign(ret_exec[active])
+        out['bar_hit_rate_all_bars'] = float(correct.sum() / max(n, 1))
+        out['bar_hit_rate_active_bars_n'] = int(active.sum())
+        if active.sum() > 0:
+            out['bar_hit_rate_active_bars'] = float(correct[active].mean())
+
+    trade_pnl = []
+    in_trade = False
+    start = 0
+    current_pos = 0.0
+    for i, pos in enumerate(positions):
+        if not in_trade and abs(pos) > 1e-12:
+            in_trade = True
+            start = i
+            current_pos = pos
+        elif in_trade and (abs(pos) <= 1e-12 or np.sign(pos) != np.sign(current_pos)):
+            trade_pnl.append(float(np.sum(pnl[start:i])))
+            in_trade = abs(pos) > 1e-12
+            start = i
+            current_pos = pos
+    if in_trade:
+        trade_pnl.append(float(np.sum(pnl[start:])))
+    if trade_pnl:
+        wins = np.sum(np.asarray(trade_pnl) > 0.0)
+        out['trade_hit_rate'] = float(wins / len(trade_pnl))
+        out['trade_hit_rate_n'] = int(len(trade_pnl))
+    return out
+
+
+def compute_backtest_metrics(df: pl.DataFrame) -> dict:
+    ret_exec = df['ret_exec'] if 'ret_exec' in df.columns else None
+    return compute_pro_metrics(
+        df['pnl'],
+        df['position'] if 'position' in df.columns else None,
+        df['benchmark_pnl'] if 'benchmark_pnl' in df.columns else None,
+        predictions_series=df['prediction_prob'].shift(1) if 'prediction_prob' in df.columns else None,
+        targets_series=ret_exec,
+        ret_exec_series=ret_exec,
+    )
 
 
 def compute_ic(predictions: pl.Series, targets: pl.Series) -> dict:
@@ -51,9 +136,11 @@ def compute_pro_metrics(
     benchmark_series: pl.Series = None,
     predictions_series: pl.Series = None,
     targets_series: pl.Series = None,
+    ret_exec_series: pl.Series = None,
 ) -> dict:
-    pnl = pnl_series.to_numpy().astype(np.float32)
+    pnl = pnl_series.to_numpy().astype(np.float64)
     eps = 1e-12
+    bars_per_year = _bars_per_year()
 
     # --- Core PnL metrics ---
     total_pnl = float(pnl.sum())
@@ -64,10 +151,7 @@ def compute_pro_metrics(
     # to get average log return, then annualize.
     avg_pnl = float(pnl.mean())
     std_pnl = float(pnl.std())
-
-    # Sharpe: annualized mean return / annualized volatility
-    # mean(pnl) * ANNUAL_FACTOR / (std(pnl) * sqrt(ANNUAL_FACTOR)) = mean/std * sqrt(ANNUAL)
-    sharpe = (avg_pnl / (std_pnl + eps)) * np.sqrt(ANNUAL_FACTOR)
+    sharpe_per_bar, sharpe = _sharpe_pair(pnl, bars_per_year)
 
     # Total return as cumulative log return (sum of log returns = log(total_return))
     total_return_pct = float(total_pnl * 100.0)  # Convert to percentage
@@ -76,7 +160,7 @@ def compute_pro_metrics(
     downside = pnl[pnl < 0]
     if len(downside) > 0:
         downside_std = float(downside.std())
-        sortino = (avg_pnl / (downside_std + eps)) * np.sqrt(ANNUAL_FACTOR)
+        sortino = (avg_pnl / (downside_std + eps)) * np.sqrt(bars_per_year)
     else:
         sortino = np.inf if avg_pnl > 0 else 0.0
 
@@ -95,33 +179,25 @@ def compute_pro_metrics(
     total_return_on_equity = total_pnl / starting_equity
 
     # --- Calmar ratio ---
-    annualized_return = avg_pnl * ANNUAL_FACTOR
+    annualized_return = avg_pnl * bars_per_year
     calmar = annualized_return / (abs(max_drawdown) + eps)
-    annualized_return_on_equity = (avg_pnl * ANNUAL_FACTOR) / starting_equity
+    annualized_return_on_equity = (avg_pnl * bars_per_year) / starting_equity
     calmar_ratio_pct = annualized_return_on_equity / (abs(max_drawdown_pct) + eps)
 
-    # --- Trade statistics ---
-    trades = 0
+    # --- Trade / hit-rate statistics ---
     win_rate = 0.0
     avg_win = 0.0
     avg_loss = 0.0
     profit_factor = 0.0
     avg_holding_bars = 0.0
-    turnover = 0.0
+    positions = positions_series.to_numpy().astype(np.float64) if positions_series is not None and len(positions_series) > 0 else None
+    ret_exec = ret_exec_series.to_numpy().astype(np.float64) if ret_exec_series is not None and len(ret_exec_series) == len(pnl) else None
+    position_stats = _position_hit_turnover_metrics(pnl, positions, ret_exec)
 
-    if positions_series is not None and len(positions_series) > 0:
-        positions = positions_series.to_numpy().astype(np.float32)
-        # Turnover: sum of absolute position changes divided by total bars
-        # This measures how many times the position turns over relative to the sample
+    if positions is not None:
         pos_changes = np.abs(np.diff(positions, prepend=0))
-        turnover = float(pos_changes.sum() / max(len(positions), 1))
-
-        # Count trades: each time position changes
         entry_idx = np.where(pos_changes > 0)[0]
-        trades = len(entry_idx)
-
-        # Average holding bars between entry events
-        if trades > 1:
+        if len(entry_idx) > 1:
             holding = np.diff(entry_idx)
             avg_holding_bars = float(holding.mean())
 
@@ -156,11 +232,11 @@ def compute_pro_metrics(
     benchmark_maxdd = None
     correlation = None
     if benchmark_series is not None:
-        bench = benchmark_series.to_numpy().astype(np.float32)
+        bench = benchmark_series.to_numpy().astype(np.float64)
         bench_avg = float(bench.mean())
         bench_std = float(bench.std())
         if bench_std > eps:
-            benchmark_sharpe = (bench_avg / bench_std) * np.sqrt(ANNUAL_FACTOR)
+            benchmark_sharpe = (bench_avg / bench_std) * np.sqrt(bars_per_year)
         else:
             benchmark_sharpe = 0.0
 
@@ -187,20 +263,31 @@ def compute_pro_metrics(
         'total_return_on_equity': round(total_return_on_equity, 6),
         'total_return_on_equity_percent': round(total_return_on_equity * 100.0, 4),
         'annualized_return_on_equity': round(annualized_return_on_equity, 6),
+        'bars_per_year': bars_per_year,
+        'sharpe_per_bar': round(sharpe_per_bar, 8),
         'sharpe_annualized': round(sharpe, 3) if np.isfinite(sharpe) else 0.0,
         'sortino_annualized': round(sortino, 3) if np.isfinite(sortino) else 0.0,
         'calmar_ratio': round(calmar, 3),
         'calmar_ratio_pct': round(calmar_ratio_pct, 3) if np.isfinite(calmar_ratio_pct) else 0.0,
         'max_drawdown': round(max_drawdown, 6),
         'max_drawdown_pct': round(max_drawdown_pct, 6),
+        'bar_hit_rate_all_bars': round(position_stats['bar_hit_rate_all_bars'], 6),
+        'bar_hit_rate_all_bars_n': int(position_stats['bar_hit_rate_all_bars_n']),
+        'bar_hit_rate_active_bars': round(position_stats['bar_hit_rate_active_bars'], 6),
+        'bar_hit_rate_active_bars_n': int(position_stats['bar_hit_rate_active_bars_n']),
+        'trade_hit_rate': None if position_stats['trade_hit_rate'] is None else round(position_stats['trade_hit_rate'], 6),
+        'trade_hit_rate_n': int(position_stats['trade_hit_rate_n']),
         'win_rate': round(win_rate, 4),
         'profit_factor': round(profit_factor, 4) if np.isfinite(profit_factor) else 'inf',
         'avg_win': round(avg_win, 8),
         'avg_loss': round(avg_loss, 8),
         'ratio_avg_win_loss': round(avg_win / (abs(avg_loss) + eps), 3),
-        'number_of_trades': int(trades),
+        'number_of_trades': int(position_stats['position_change_events']),
+        'position_change_events': int(position_stats['position_change_events']),
         'avg_holding_bars': round(avg_holding_bars, 1),
-        'turnover': round(turnover, 4),
+        'position_turnover': round(position_stats['position_turnover'], 6),
+        'position_turnover_per_bar': round(position_stats['position_turnover_per_bar'], 8),
+        'turnover': round(position_stats['position_turnover_per_bar'], 4),
         'spearman_ic': ic_result.get('spearman_ic'),
         'spearman_ic_pvalue': ic_result.get('spearman_ic_pvalue'),
         'benchmark_sharpe': round(benchmark_sharpe, 3) if benchmark_sharpe is not None else None,
@@ -267,6 +354,7 @@ def compute_year_breakdown(year_dfs: list) -> list:
             df['benchmark_pnl'] if 'benchmark_pnl' in df.columns else None,
             predictions_series=predictions,
             targets_series=targets,
+            ret_exec_series=targets,
         )
         metrics['year'] = year
         breakdown.append(metrics)
@@ -323,6 +411,7 @@ def run_aggregation(artifacts_root='output'):
             combined['benchmark_pnl'] if 'benchmark_pnl' in combined.columns else None,
             predictions_series=predictions,
             targets_series=targets,
+            ret_exec_series=targets,
         )
         metrics.update({
             'market': market,
@@ -339,8 +428,10 @@ def run_aggregation(artifacts_root='output'):
             else "IC=N/A"
         )
         print(
-            f"Saved {out} | Sharpe={metrics['sharpe_annualized']} | "
-            f"HitRate={metrics['win_rate']} | {ic_str} | "
+            f"Saved {out} | sharpe_annualized={metrics['sharpe_annualized']} "
+            f"(bars_per_year={metrics['bars_per_year']}) | "
+            f"bar_hit_rate_active={metrics['bar_hit_rate_active_bars']} "
+            f"n={metrics['bar_hit_rate_active_bars_n']} | {ic_str} | "
             f"PnL={metrics['total_pnl']}"
         )
         all_series.append(combined['pnl'])
@@ -358,7 +449,8 @@ def run_aggregation(artifacts_root='output'):
             with open(out, 'w') as f:
                 json.dump(total_metrics, f, indent=2)
             print(
-                f"Saved combined report | Sharpe={total_metrics['sharpe_annualized']}"
+                f"Saved combined report | sharpe_annualized={total_metrics['sharpe_annualized']} "
+                f"(bars_per_year={total_metrics['bars_per_year']})"
             )
 
 
@@ -378,12 +470,13 @@ def calculate_metrics(file_path: str):
     if 'pnl' not in df.columns:
         print("No 'pnl' column found. Ensure backtest_results.parquet contains execution output.")
         return
+    metrics = compute_backtest_metrics(df)
     pnl = df['pnl'].to_numpy()
     total_pnl = pnl.sum()
     avg_pnl = pnl.mean()
     std_pnl = pnl.std()
     if std_pnl > 0:
-        sharpe = avg_pnl / std_pnl * np.sqrt(ANNUAL_FACTOR)
+        sharpe = metrics['sharpe_annualized']
     else:
         sharpe = 0.0
     cum_pnl = np.cumsum(pnl)
@@ -402,22 +495,14 @@ def calculate_metrics(file_path: str):
         gross = df['gross_pnl'].to_numpy()
         gross_total_pnl = gross.sum()
         gross_std = gross.std()
-        gross_sharpe = gross.mean() / gross_std * np.sqrt(ANNUAL_FACTOR) if gross_std > 0 else 0.0
+        _, gross_sharpe = _sharpe_pair(gross.astype(np.float64), metrics['bars_per_year'])
     if 'position' in df.columns:
-        position_changes = df['position'].diff().abs().sum()
-        avg_position = df['position'].abs().mean()
-        turnover = position_changes / avg_position if avg_position > 0 else 0.0
+        turnover = metrics['position_turnover']
     else:
         turnover = 0.0
 
-    hit_rate = 0.0
-    if 'position' in df.columns and 'ret_exec' in df.columns:
-        pos = df['position'].to_numpy()
-        ret_exec = df['ret_exec'].to_numpy()
-        nonzero = pos != 0
-        if nonzero.sum() > 0:
-            correct = (np.sign(pos[nonzero]) == np.sign(ret_exec[nonzero])).sum()
-            hit_rate = correct / nonzero.sum()
+    bar_hit_rate_all = metrics['bar_hit_rate_all_bars']
+    bar_hit_rate_active = metrics['bar_hit_rate_active_bars']
 
     spearman_ic = None
     if 'prediction_prob' in df.columns and 'ret_exec' in df.columns:
@@ -446,7 +531,7 @@ def calculate_metrics(file_path: str):
         bench_pnl = df['benchmark_pnl'].to_numpy()
         bench_avg = bench_pnl.mean()
         bench_std = bench_pnl.std()
-        benchmark_sharpe = (bench_avg / bench_std * np.sqrt(252 * 264)) if bench_std > 0 else 0.0
+        benchmark_sharpe = (bench_avg / bench_std * np.sqrt(metrics['bars_per_year'])) if bench_std > 0 else 0.0
         bench_cum = np.cumsum(bench_pnl)
         bench_running_max = np.maximum.accumulate(bench_cum)
         benchmark_maxdd = (bench_cum - bench_running_max).min()
@@ -456,7 +541,8 @@ def calculate_metrics(file_path: str):
     print(f'Total PnL:            {total_pnl:12.4f}')
     print(f'Avg PnL per bar:      {avg_pnl:12.6f}')
     print(f'Std PnL per bar:      {std_pnl:12.6f}')
-    print(f'Sharpe (ann.):        {sharpe:12.3f}')
+    print(f'Sharpe per bar:       {metrics["sharpe_per_bar"]:12.6f}')
+    print(f'Sharpe annualized:    {sharpe:12.3f}  bars_per_year={metrics["bars_per_year"]}')
     if gross_total_pnl is not None:
         print(f'Gross Total PnL:      {gross_total_pnl:12.4f}')
         print(f'Gross Sharpe (ann.):  {gross_sharpe:12.3f}')
@@ -464,9 +550,12 @@ def calculate_metrics(file_path: str):
     print(f'Return on Equity:     {total_roe * 100.0:12.4f}%')
     print(f'Max Drawdown:         {max_drawdown:12.4f}')
     print(f'Max Drawdown %:       {max_drawdown_pct * 100.0:12.4f}%')
-    print(f'Turnover:             {turnover:12.4f}')
+    print(f'Position Turnover:    {turnover:12.6f}')
     print(f'Prediction-Target Corr:{corr:12.4f}')
-    print(f'Hit Rate (bar-level): {hit_rate:12.4f}')
+    print(f'Bar Hit Rate All:     {bar_hit_rate_all:12.4f}  denominator={metrics["bar_hit_rate_all_bars_n"]}')
+    print(f'Bar Hit Rate Active:  {bar_hit_rate_active:12.4f}  denominator={metrics["bar_hit_rate_active_bars_n"]}')
+    if metrics.get('trade_hit_rate') is not None:
+        print(f'Trade Hit Rate:       {metrics["trade_hit_rate"]:12.4f}  denominator={metrics["trade_hit_rate_n"]}')
     if spearman_ic is not None:
         print(f'Spearman IC:           {spearman_ic:12.4f}')
     else:

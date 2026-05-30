@@ -1,0 +1,29 @@
+markets:
+  ES:
+    timezone: America/Chicago
+
+    # CME Globex-style index futures session:
+    # Sunday 17:00 CT through Friday 16:00 CT,
+    # excluding daily 16:00-17:00 CT maintenance break.
+    week_start_day: Sun
+    week_start_time: "17:00"
+    week_end_day: Fri
+    week_end_time: "16:00"
+
+    daily_break:
+      start: "16:00"
+      end: "17:00"
+
+    allow_empty_holiday_calendar: false
+
+    # Add known full market closures here as LOCAL exchange dates.
+    # Expected format:
+    # closed_dates:
+    #   - "2024-01-01"
+    closed_dates: []
+
+    # Add early closes manually when needed.
+    # Expected format:
+    # early_closes:
+    #   "2024-07-03": "12:00"
+    early_closes: {}

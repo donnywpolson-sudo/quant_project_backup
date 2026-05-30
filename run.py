@@ -14,12 +14,13 @@ import json
 import hashlib
 import threading
 import re
+from datetime import datetime
 from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from core.config import load_config, RootConfig, config as _ns_cfg
-from core.market import get_contract_multiplier
+from archive.core.config import load_config, RootConfig, config as _ns_cfg
+from archive.core.market import get_contract_multiplier
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
 if _LOG_MODE not in {'clean', 'verbose', 'debug'}:
@@ -36,6 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger('QuantRunner')
 _MIN_TRAIN_DAYS = 90
 _RUN_START = time.time()
+_RUN_TS = datetime.now().strftime('%Y%m%d_%H%M%S')
 _RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
 _PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
 _VERIFICATION_TABLE = []  # rows for the verification table printed per split
@@ -69,9 +71,34 @@ class PipelineProgressLogger:
         self.stage_state = {}
         self.flushed = False
         self.stage_start = time.time()
-        self.log_path = Path('output') / 'logs' / f'run_{run_id}.log'
+        self.log_path = Path('output') / 'logs' / f'run_{_RUN_TS}_unknown_unknown_{run_id}.log'
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.log_path, 'a', encoding='utf-8')
+
+    @staticmethod
+    def _safe_name(value: str) -> str:
+        cleaned = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value).strip())
+        return cleaned.strip('._-') or 'unknown'
+
+    def rename_for_config(self, profile: str, symbols: list[str]) -> None:
+        profile_safe = self._safe_name(profile)
+        symbols_safe = '-'.join(self._safe_name(s).upper() for s in symbols) if symbols else 'unknown'
+        dest = self.log_path.parent / f'run_{_RUN_TS}_{profile_safe}_{symbols_safe}_{self.run_id}.log'
+        if dest == self.log_path:
+            return
+        if dest.exists():
+            self.raw(f'[LOG] desired_log_path_exists={dest}; keeping={self.log_path}')
+            return
+        old_path = self.log_path
+        try:
+            self._fh.close()
+            old_path.replace(dest)
+            self.log_path = dest
+            self._fh = open(self.log_path, 'a', encoding='utf-8')
+        except Exception as e:
+            self.log_path = old_path
+            self._fh = open(self.log_path, 'a', encoding='utf-8')
+            self.raw(f'[LOG] rename_failed target={dest} error={e}; keeping={self.log_path}')
 
     @property
     def clean(self) -> bool:
@@ -608,11 +635,11 @@ def _print_verification_table():
     print('\n' + '=' * 140)
     print(' VERIFICATION TABLE — each row must have unique path, ts_min, pnl_cs')
     print('=' * 140)
-    print(f'{"split":>5} {"sym":>4} {"path":>55} {"mtime":>12} {"run_id":>8} {"rows":>6} {"ts_min":>26} {"ts_max":>26} {"pnl_cs":>8} {"sharpe":>7} {"pnl":>12} {"trades":>6}')
+    print(f'{"split":>5} {"sym":>4} {"path":>55} {"mtime":>12} {"run_id":>8} {"rows":>6} {"ts_min":>26} {"ts_max":>26} {"pnl_cs":>8} {"sharpe_ann":>10} {"pnl":>12} {"pos_turn":>10}')
     print('-' * 140)
     for row in _VERIFICATION_TABLE:
         path_short = row['path'][-55:] if len(row['path']) > 55 else row['path']
-        print(f'{row["split"]:>5} {row["symbol"]:>4} {path_short:>55} {row["mtime"]:>12.0f} {row["run_id"]:>8} {row["rows"]:>6} {str(row["ts_min"]):>26} {str(row["ts_max"]):>26} {row["pnl_cs"]:>8} {row["sharpe"]:>+7.3f} {row["pnl"]:>+12.2f} {row["trades"]:>6}')
+        print(f'{row["split"]:>5} {row["symbol"]:>4} {path_short:>55} {row["mtime"]:>12.0f} {row["run_id"]:>8} {row["rows"]:>6} {str(row["ts_min"]):>26} {str(row["ts_max"]):>26} {row["pnl_cs"]:>8} {row.get("sharpe_annualized", row.get("sharpe", 0.0)):>+10.3f} {row["pnl"]:>+12.2f} {row.get("position_turnover", row.get("turnover", 0.0)):>10.6g}')
     print('=' * 140)
     # Verify: no duplicate pnl_cs per symbol
     seen = {}
@@ -650,7 +677,7 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
         hmm_delta = entry[3] if len(entry) > 3 else 0.0
         icon = check if sharpe > 0 else cross
         delta_str = f' HMM_delta={hmm_delta:+.2f}' if abs(hmm_delta) > 0.001 else ''
-        print(f'{v}  {icon} {symbol:<4s}  Sharpe={sharpe:+.2f}  PnL={pnl:+,.2f}  Hit={hit:.1%}{delta_str} {"":>6s}{v}')
+        print(f'{v}  {icon} {symbol:<4s}  SharpeAnn={sharpe:+.2f}  PnL={pnl:+,.2f}  HitActive={hit:.1%}{delta_str} {"":>6s}{v}')
         combined_sharpe += sharpe
     status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
     print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
@@ -658,18 +685,20 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
 
 
 def _print_final_summary_table() -> None:
-    print('\nsymbol | split | sharpe | pnl | ic | hit_rate | pred_cs | pnl_cs | status')
-    print('-' * 78)
+    print('\nsymbol | split | sharpe_annualized | bars_per_year | pnl | ic | bar_hit_rate_active_bars | position_turnover | pred_cs | pnl_cs | status')
+    print('-' * 132)
     if not _VERIFICATION_TABLE:
-        print('NA | NA | NA | NA | NA | NA | missing | missing | NO_RESULTS', flush=True)
+        print('NA | NA | NA | NA | NA | NA | NA | NA | missing | missing | NO_RESULTS', flush=True)
         return
     for row in sorted(_VERIFICATION_TABLE, key=lambda r: (str(r.get('symbol')), int(r.get('split', 0)))):
         print(
             f"{row.get('symbol', 'NA')} | {row.get('split', 'NA')} | "
-            f"{row.get('sharpe', float('nan')):+.3f} | "
+            f"{row.get('sharpe_annualized', row.get('sharpe', float('nan'))):+.3f} | "
+            f"{row.get('bars_per_year', 'NA')} | "
             f"{row.get('pnl', 0.0):+.2f} | "
             f"{row.get('ic', 'NA')} | "
-            f"{row.get('hit_rate', row.get('hit', 0.0)):.2%} | "
+            f"{row.get('bar_hit_rate_active_bars', row.get('hit_rate', row.get('hit', 0.0))):.2%} | "
+            f"{row.get('position_turnover', row.get('turnover', 0.0)):.6g} | "
             f"{row.get('pred_cs', 'missing')} | {row.get('pnl_cs', 'missing')} | "
             f"{row.get('status', 'OK')}",
             flush=True,
@@ -706,12 +735,16 @@ def _print_split_result(row: dict) -> None:
     print('\n[SPLIT RESULT]', flush=True)
     print(f"symbol={row.get('symbol', 'NA')}", flush=True)
     print(f"split={row.get('split', 'NA')}", flush=True)
-    print(f"sharpe={row.get('sharpe', 0.0):.3f}", flush=True)
+    print(f"sharpe_annualized={row.get('sharpe_annualized', row.get('sharpe', 0.0)):.3f}", flush=True)
+    print(f"sharpe_per_bar={row.get('sharpe_per_bar', 0.0):.6f}", flush=True)
+    print(f"bars_per_year={row.get('bars_per_year', 'NA')}", flush=True)
     print(f"pnl={row.get('pnl', 0.0):.2f}", flush=True)
     print(f"ic={row.get('ic', 'NA')}", flush=True)
-    print(f"hit_rate={row.get('hit_rate', 0.0):.2%}", flush=True)
-    print(f"trades={row.get('trades', 0)}", flush=True)
-    print(f"turnover={row.get('turnover', 0.0):.2f}", flush=True)
+    print(f"bar_hit_rate_all_bars={row.get('bar_hit_rate_all_bars', 0.0):.2%} denominator={row.get('bar_hit_rate_all_bars_n', 0)}", flush=True)
+    print(f"bar_hit_rate_active_bars={row.get('bar_hit_rate_active_bars', 0.0):.2%} denominator={row.get('bar_hit_rate_active_bars_n', 0)}", flush=True)
+    print(f"trade_hit_rate={row.get('trade_hit_rate', 'NA')} denominator={row.get('trade_hit_rate_n', 0)}", flush=True)
+    print(f"position_change_events={row.get('position_change_events', row.get('trades', 0))}", flush=True)
+    print(f"position_turnover={row.get('position_turnover', row.get('turnover', 0.0)):.6g}", flush=True)
     print(f"status={row.get('status', 'OK')}", flush=True)
 
 
@@ -729,6 +762,11 @@ def _failed_result_row(split_idx: int, symbol: str, path: Path | str, *, mtime: 
         'pnl_cs': 'missing', 'pred_cs': 'missing',
         'pnl': 0.0, 'sharpe': 0.0, 'trades': 0, 'turnover': 0.0,
         'hit_rate': 0.0, 'ic': 'NA', 'status': 'FAILED',
+        'sharpe_annualized': 0.0, 'sharpe_per_bar': 0.0, 'bars_per_year': 'NA',
+        'bar_hit_rate_all_bars': 0.0, 'bar_hit_rate_all_bars_n': 0,
+        'bar_hit_rate_active_bars': 0.0, 'bar_hit_rate_active_bars_n': 0,
+        'trade_hit_rate': 'NA', 'trade_hit_rate_n': 0,
+        'position_change_events': 0, 'position_turnover': 0.0,
     }
 
 
@@ -767,42 +805,40 @@ def _summary_ic(bt: pl.DataFrame):
 
 
 def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> None:
+    from pipeline.analytics.aggregate import compute_backtest_metrics
+    metrics = compute_backtest_metrics(bt)
     probs = bt['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in bt.columns else None
     pmean = float(probs.mean()) if probs is not None else float('nan')
     pstd = float(probs.std()) if probs is not None else float('nan')
     gt055 = float((probs > 0.55).mean()) if probs is not None else float('nan')
     lt045 = float((probs < 0.45).mean()) if probs is not None else float('nan')
-    bar_sqrt = np.sqrt(252)
     gross_sharpe = 'missing'
-    net_sharpe = 'missing'
+    net_sharpe = f"{metrics['sharpe_annualized']:.3f}"
     cost_drag = 'missing'
     if 'gross_pnl' in bt.columns:
+        from pipeline.analytics.aggregate import _sharpe_pair
         gp = bt['gross_pnl'].to_numpy().astype(np.float64)
-        if gp.std() > 1e-12:
-            gross_sharpe = f'{float(gp.mean() / gp.std() * bar_sqrt):.3f}'
+        gross_sharpe = f'{_sharpe_pair(gp, metrics["bars_per_year"])[1]:.3f}'
     if 'pnl' in bt.columns:
         np_ = bt['pnl'].to_numpy().astype(np.float64)
-        if np_.std() > 1e-12:
-            net_sharpe = f'{float(np_.mean() / np_.std() * bar_sqrt):.3f}'
         if 'gross_pnl' in bt.columns:
             cost_drag = f'{float(np_.sum() - gp.sum()):+.2f}'
-    turnover = 'missing'
-    if 'pos_change' in bt.columns:
-        turnover = f'{float(bt["pos_change"].sum()):.1f}'
-    trades = 'missing'
-    if 'position' in bt.columns:
-        pos = bt['position'].to_numpy().astype(np.float64)
-        shifts = np.abs(np.diff(pos, prepend=pos[0]))
-        trades = f'{int(np.sum(shifts > 1e-9))}'
+    turnover = f'{metrics["position_turnover"]:.6g}'
+    trades = f'{metrics["position_change_events"]}'
     pred_cs = _hash_column(bt, 'prediction_prob')
     pnl_cs = _hash_column(bt, 'pnl')
     sig_cs = _hash_column(bt, 'raw_signal') if 'raw_signal' in bt.columns else _hash_column(bt, 'target_exec')
     logger.info(
         '[DIAG] symbol=%s split=%d prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
-        'gross_sharpe=%s net_sharpe=%s cost_drag=%s turnover=%s trades=%s '
+        'gross_sharpe_annualized=%s net_sharpe_annualized=%s bars_per_year=%s cost_drag=%s '
+        'position_turnover=%s position_change_events=%s '
+        'bar_hit_rate_all=%0.4f denom_all=%d bar_hit_rate_active=%0.4f denom_active=%d trade_hit_rate=%s denom_trades=%d '
         'pred_cs=%s pnl_cs=%s sig_cs=%s',
         symbol, split_idx, pmean, pstd, gt055, lt045,
-        gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+        gross_sharpe, net_sharpe, metrics['bars_per_year'], cost_drag, turnover, trades,
+        metrics['bar_hit_rate_all_bars'], metrics['bar_hit_rate_all_bars_n'],
+        metrics['bar_hit_rate_active_bars'], metrics['bar_hit_rate_active_bars_n'],
+        metrics.get('trade_hit_rate'), metrics['trade_hit_rate_n'],
         pred_cs, pnl_cs, sig_cs,
     )
 
@@ -964,7 +1000,10 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 logger.warning('[STALE] Removing pre-existing file: %s (mtime=%.0f < run_start=%.0f)',
                                _stale_path, _stale_path.stat().st_mtime, _RUN_START)
                 _stale_path.unlink()
-        cmd = [sys.executable, '-m', 'pipeline.cli', 'run-hmm', '--data', str(f),
+        hmm_enabled = bool(getattr(getattr(config, 'hmm', None), 'enabled', False))
+        cli_action = 'run-hmm' if hmm_enabled else 'run'
+        _raw_log(f'[RUN-MODE] symbol={symbol} split={split_idx} hmm_enabled={str(hmm_enabled).lower()} cli={cli_action}')
+        cmd = [sys.executable, '-m', 'pipeline.cli', cli_action, '--data', str(f),
                '--manifest', str(manifest_path), '--out', str(out_dir)]
         if train_start and train_end:
             cmd.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
@@ -984,6 +1023,26 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         try:
             _run_subprocess_streaming(cmd, env)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            if not hmm_enabled:
+                if _DEBUG:
+                    import traceback
+                    traceback.print_exc()
+                stderr_text = e.stderr if hasattr(e, 'stderr') else ''
+                stdout_text = e.stdout if hasattr(e, 'stdout') else ''
+                if isinstance(stderr_text, bytes):
+                    stderr_text = stderr_text.decode(errors='replace')
+                if isinstance(stdout_text, bytes):
+                    stdout_text = stdout_text.decode(errors='replace')
+                run_error = _extract_error_summary(stderr_text, stdout_text)
+                _stage(13, _tracking_summary(failed=f'FAILED\n{run_error}'))
+                if _log_failures:
+                    _log_subprocess_failure(cmd, getattr(e, 'returncode', -1), stderr_text, stdout_text,
+                                            Path('output') / 'logs', symbol, split_idx, 'run')
+                logger.error('run failed for %s split=%d (rc=%d)',
+                             symbol, split_idx, getattr(e, 'returncode', -1))
+                _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
+                subprocess_failed = True
+                continue
             if _DEBUG:
                 import traceback
                 traceback.print_exc()
@@ -1073,10 +1132,18 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     )
                 pnl_cs = _hash_column(bt, 'pnl')
                 pred_cs = _hash_column(bt, 'prediction_prob')
-                pnl = bt['pnl'].sum()
-                sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
-                hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
-                _raw_log(f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} sharpe={sharpe:.3f} pnl={pnl:.2f}')
+                from pipeline.analytics.aggregate import compute_backtest_metrics
+                metrics = compute_backtest_metrics(bt)
+                pnl = metrics['total_pnl']
+                sharpe = metrics['sharpe_annualized']
+                hit = metrics['bar_hit_rate_active_bars']
+                _raw_log(
+                    f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} '
+                    f'sharpe_annualized={sharpe:.3f} sharpe_per_bar={metrics["sharpe_per_bar"]:.6f} '
+                    f'bars_per_year={metrics["bars_per_year"]} pnl={pnl:.2f} '
+                    f'bar_hit_rate_active={hit:.2%} denom_active={metrics["bar_hit_rate_active_bars_n"]} '
+                    f'position_turnover={metrics["position_turnover"]:.6g}'
+                )
                 if symbol not in _PER_SYMBOL_PNL_CS:
                     _PER_SYMBOL_PNL_CS[symbol] = {}
                 if pnl_cs != 'missing' and pnl_cs != 'all_nan':
@@ -1087,18 +1154,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                         )
                     _PER_SYMBOL_PNL_CS[symbol][split_idx] = pnl_cs
                 # Collect for verification table
-                trades = 0
-                turnover = 0.0
-                if 'position' in bt.columns:
-                    pos = bt['position'].to_numpy().astype(np.float64)
-                    trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9))
-                    turnover = float(np.abs(np.diff(pos, prepend=pos[0])).sum())
-                if 'pos_change' in bt.columns:
-                    turnover = float(bt['pos_change'].sum())
+                trades = int(metrics['position_change_events'])
+                turnover = float(metrics['position_turnover'])
                 ic = _summary_ic(bt)
-                _stage(10, f'trades={trades} turnover={turnover:.2f}')
+                _stage(10, f'position_change_events={trades} position_turnover={turnover:.6g}')
                 _stage(11, f'rows={bt.height}')
-                _stage(12, f'sharpe={sharpe:.3f} pnl={pnl:.2f} ic={ic} hit_rate={hit:.2%}')
+                _stage(12, f'sharpe_annualized={sharpe:.3f} pnl={pnl:.2f} ic={ic} bar_hit_rate_active={hit:.2%}')
                 _stage(13, _tracking_summary(saved=bt_path))
                 result_row = {
                     'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
@@ -1106,6 +1167,17 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     'ts_min': str(t_min), 'ts_max': str(t_max),
                     'pnl_cs': pnl_cs, 'pred_cs': pred_cs, 'pnl': pnl, 'sharpe': sharpe,
                     'trades': trades, 'turnover': turnover, 'hit_rate': hit, 'ic': ic, 'status': 'OK',
+                    'sharpe_annualized': metrics['sharpe_annualized'],
+                    'sharpe_per_bar': metrics['sharpe_per_bar'],
+                    'bars_per_year': metrics['bars_per_year'],
+                    'bar_hit_rate_all_bars': metrics['bar_hit_rate_all_bars'],
+                    'bar_hit_rate_all_bars_n': metrics['bar_hit_rate_all_bars_n'],
+                    'bar_hit_rate_active_bars': metrics['bar_hit_rate_active_bars'],
+                    'bar_hit_rate_active_bars_n': metrics['bar_hit_rate_active_bars_n'],
+                    'trade_hit_rate': metrics.get('trade_hit_rate'),
+                    'trade_hit_rate_n': metrics['trade_hit_rate_n'],
+                    'position_change_events': metrics['position_change_events'],
+                    'position_turnover': metrics['position_turnover'],
                 }
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
@@ -1113,7 +1185,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 if raw_path.exists() and raw_path != bt_path:
                     try:
                         raw = pl.read_parquet(raw_path)
-                        raw_sharpe = float(raw['pnl'].mean() / max(raw['pnl'].std(), 1e-9) * np.sqrt(252))
+                        raw_sharpe = compute_backtest_metrics(raw)['sharpe_annualized']
                         hmm_delta = sharpe - raw_sharpe
                     except Exception:
                         hmm_delta = 0.0
@@ -1135,6 +1207,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':
     config = load_config(os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV'))
+    _PROGRESS.rename_for_config(_ns_cfg.ACTIVE_PROFILE, config.symbols)
     data_dir = 'data'
     files = get_files(data_dir, config)
     if not files:

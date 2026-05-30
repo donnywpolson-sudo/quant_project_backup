@@ -1,6 +1,6 @@
 import polars as pl
 import yaml
-from core.config import config
+from archive.core.config import config
 
 
 def load_baseline_feature_names() -> list:

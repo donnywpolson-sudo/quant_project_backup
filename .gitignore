@@ -12,6 +12,15 @@ __pycache__/
 # Project Data (Do not sync these)
 output/cache/
 futures/
+data/ohlcv_1m/**/*.parquet
+data/l1_mbp1/raw_dbn/**
+data/l1_mbp1/parquet/**
+data/l1_mbp1/features/**
+data_l1_mbp1/
+*.dbn.zst
+!data/l1_mbp1/raw_dbn/.gitkeep
+!data/l1_mbp1/parquet/.gitkeep
+!data/l1_mbp1/features/.gitkeep
 
 # Secrets and Settings
 .env

@@ -6,8 +6,8 @@ from pathlib import Path
 import tempfile
 import glob
 import shutil
-from core.config import config, load_config
-from core.io.atomic import atomic_write_parquet
+from archive.core.config import config, load_config
+from archive.core.io.atomic import atomic_write_parquet
 from tqdm import tqdm
 
 load_config()  # ensure config is populated (idempotent)

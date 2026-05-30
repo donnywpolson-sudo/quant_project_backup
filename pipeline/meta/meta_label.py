@@ -1,5 +1,5 @@
 import polars as pl
-from core.config import config
+from archive.core.config import config
 
 
 def add_meta_label_target(
