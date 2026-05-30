@@ -503,6 +503,23 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
 
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    if starting_equity <= 0:
+        raise RuntimeError(f'ACCOUNTING FAIL: EQUITY must be positive, got {starting_equity}')
+    df = df.with_columns([
+        (pl.col('pnl') / pl.lit(starting_equity, dtype=pl.Float32)).alias('return_on_equity'),
+        (pl.col('gross_pnl') / pl.lit(starting_equity, dtype=pl.Float32)).alias('gross_return_on_equity'),
+    ])
+    df = df.with_columns([
+        (pl.lit(starting_equity, dtype=pl.Float32) + pl.col('pnl').cum_sum()).alias('equity_curve'),
+        (pl.lit(starting_equity, dtype=pl.Float32) + pl.col('gross_pnl').cum_sum()).alias('gross_equity_curve'),
+    ])
+    df = df.with_columns(
+        ((pl.col('equity_curve') / pl.col('equity_curve').cum_max()) - 1.0)
+        .fill_nan(0.0)
+        .alias('drawdown_pct')
+    )
+
     return df
 
 

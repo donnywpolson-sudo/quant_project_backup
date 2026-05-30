@@ -919,8 +919,11 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     if config.pipeline.enable_discovery:
-        _run_subprocess_streaming([sys.executable, '-m', 'pipeline.cli', 'discover',
-                        '--data', train_glob, '--out', str(manifest_path)], env)
+        discover_cmd = [sys.executable, '-m', 'pipeline.cli', 'discover',
+                        '--data', train_glob, '--out', str(manifest_path)]
+        if train_start and train_end:
+            discover_cmd.extend(['--start', train_start.isoformat(), '--end', train_end.isoformat()])
+        _run_subprocess_streaming(discover_cmd, env)
         time.sleep(0.2)
     else:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)

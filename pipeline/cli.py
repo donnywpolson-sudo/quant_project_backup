@@ -83,6 +83,14 @@ def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
     return h
 
 
+def _slice_optional_window(df: pl.DataFrame, start_str: str | None, end_str: str | None, label: str) -> pl.DataFrame:
+    if not start_str and not end_str:
+        return df
+    if not start_str or not end_str:
+        raise RuntimeError(f'MISSING BOUNDARY: {label} requires both --start and --end')
+    return _slice_window(df, start_str, end_str, label)
+
+
 def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) -> pl.DataFrame:
     from datetime import datetime as _dt, timezone
     if not start_str or not end_str:
@@ -105,6 +113,8 @@ def main():
     discover_parser = subparsers.add_parser('discover')
     discover_parser.add_argument('--data', required=True)
     discover_parser.add_argument('--out', default='output/manifests/manifest.json')
+    discover_parser.add_argument('--start', default=None, help='Discovery train-window start date (ISO)')
+    discover_parser.add_argument('--end', default=None, help='Discovery train-window end date (ISO)')
     run_parser = subparsers.add_parser('run')
     run_parser.add_argument('--data', required=True)
     run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
@@ -143,11 +153,20 @@ def main():
         print('\n[CLI] === PHASE 1: FEATURE DISCOVERY ===', flush=True)
         cache_dir = Path('output/cache')
         cache_dir.mkdir(parents=True, exist_ok=True)
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        print(f'[DISCOVERY-WINDOW] start={getattr(args, "start", None)} end={getattr(args, "end", None)} cache_key={data_tag}', flush=True)
         print('[CLI] Loading and cleaning data...', flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
         print(f'[CLI] Data loaded. Rows: {df_aligned.height}', flush=True)
+        df_aligned = _slice_optional_window(
+            df_aligned,
+            getattr(args, 'start', None),
+            getattr(args, 'end', None),
+            'discovery',
+        )
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            print(f'[DISCOVERY-WINDOW] bounded rows={df_aligned.height} [{args.start}, {args.end})', flush=True)
         _diag(df_aligned, 'post-ingest')
         print('[CLI] Generating feature matrix...', flush=True)
         df_features = generate_features(df_aligned)
@@ -156,7 +175,12 @@ def main():
         write_canonical_parquet(df_features, str(feature_cache))
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
         print('[CLI] Running feature discovery...', flush=True)
-        run_feature_discovery(str(feature_cache), args.out)
+        run_feature_discovery(
+            str(feature_cache),
+            args.out,
+            discovery_start=getattr(args, 'start', None),
+            discovery_end=getattr(args, 'end', None),
+        )
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery

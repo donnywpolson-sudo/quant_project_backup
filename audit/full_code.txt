@@ -1041,8 +1041,11 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     if config.pipeline.enable_discovery:
-        _run_subprocess_streaming([sys.executable, '-m', 'pipeline.cli', 'discover',
-                        '--data', train_glob, '--out', str(manifest_path)], env)
+        discover_cmd = [sys.executable, '-m', 'pipeline.cli', 'discover',
+                        '--data', train_glob, '--out', str(manifest_path)]
+        if train_start and train_end:
+            discover_cmd.extend(['--start', train_start.isoformat(), '--end', train_end.isoformat()])
+        _run_subprocess_streaming(discover_cmd, env)
         time.sleep(0.2)
     else:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3034,6 +3037,14 @@ def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
     return h
 
 
+def _slice_optional_window(df: pl.DataFrame, start_str: str | None, end_str: str | None, label: str) -> pl.DataFrame:
+    if not start_str and not end_str:
+        return df
+    if not start_str or not end_str:
+        raise RuntimeError(f'MISSING BOUNDARY: {label} requires both --start and --end')
+    return _slice_window(df, start_str, end_str, label)
+
+
 def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) -> pl.DataFrame:
     from datetime import datetime as _dt, timezone
     if not start_str or not end_str:
@@ -3056,6 +3067,8 @@ def main():
     discover_parser = subparsers.add_parser('discover')
     discover_parser.add_argument('--data', required=True)
     discover_parser.add_argument('--out', default='output/manifests/manifest.json')
+    discover_parser.add_argument('--start', default=None, help='Discovery train-window start date (ISO)')
+    discover_parser.add_argument('--end', default=None, help='Discovery train-window end date (ISO)')
     run_parser = subparsers.add_parser('run')
     run_parser.add_argument('--data', required=True)
     run_parser.add_argument('--manifest', default='output/manifests/manifest.json')
@@ -3094,11 +3107,20 @@ def main():
         print('\n[CLI] === PHASE 1: FEATURE DISCOVERY ===', flush=True)
         cache_dir = Path('output/cache')
         cache_dir.mkdir(parents=True, exist_ok=True)
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        print(f'[DISCOVERY-WINDOW] start={getattr(args, "start", None)} end={getattr(args, "end", None)} cache_key={data_tag}', flush=True)
         print('[CLI] Loading and cleaning data...', flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
         print(f'[CLI] Data loaded. Rows: {df_aligned.height}', flush=True)
+        df_aligned = _slice_optional_window(
+            df_aligned,
+            getattr(args, 'start', None),
+            getattr(args, 'end', None),
+            'discovery',
+        )
+        if getattr(args, 'start', None) and getattr(args, 'end', None):
+            print(f'[DISCOVERY-WINDOW] bounded rows={df_aligned.height} [{args.start}, {args.end})', flush=True)
         _diag(df_aligned, 'post-ingest')
         print('[CLI] Generating feature matrix...', flush=True)
         df_features = generate_features(df_aligned)
@@ -3107,7 +3129,12 @@ def main():
         write_canonical_parquet(df_features, str(feature_cache))
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
         print('[CLI] Running feature discovery...', flush=True)
-        run_feature_discovery(str(feature_cache), args.out)
+        run_feature_discovery(
+            str(feature_cache),
+            args.out,
+            discovery_start=getattr(args, 'start', None),
+            discovery_end=getattr(args, 'end', None),
+        )
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
@@ -3452,6 +3479,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from scipy.stats import spearmanr
+from core.config import config
 
 # Number of 5-minute bars in a trading year (~23h * 12 bars/h * 252 trading days)
 # Overridable via config.ANNUAL_FACTOR if set before aggregate import.
@@ -3462,7 +3490,8 @@ RISK_FREE_RATE = 0.0
 # are actually used downstream.  Eliminates SELECT * on parquet reads.
 _BACKTEST_COLUMNS_OF_INTEREST = [
     'ts_event', 'pnl', 'position', 'benchmark_pnl',
-    'prediction_prob', 'ret_exec',
+    'prediction_prob', 'ret_exec', 'equity_curve',
+    'return_on_equity', 'drawdown_pct',
 ]
 
 
@@ -3532,10 +3561,20 @@ def compute_pro_metrics(
     running_max = np.maximum.accumulate(cum_pnl)
     drawdown = cum_pnl - running_max
     max_drawdown = float(drawdown.min())
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    if starting_equity <= 0:
+        starting_equity = 100000.0
+    equity_curve = starting_equity + cum_pnl
+    running_equity_max = np.maximum.accumulate(equity_curve)
+    drawdown_pct = equity_curve / np.maximum(running_equity_max, eps) - 1.0
+    max_drawdown_pct = float(drawdown_pct.min()) if len(drawdown_pct) else 0.0
+    total_return_on_equity = total_pnl / starting_equity
 
     # --- Calmar ratio ---
     annualized_return = avg_pnl * ANNUAL_FACTOR
     calmar = annualized_return / (abs(max_drawdown) + eps)
+    annualized_return_on_equity = (avg_pnl * ANNUAL_FACTOR) / starting_equity
+    calmar_ratio_pct = annualized_return_on_equity / (abs(max_drawdown_pct) + eps)
 
     # --- Trade statistics ---
     trades = 0
@@ -3620,10 +3659,16 @@ def compute_pro_metrics(
     return {
         'total_pnl': round(total_pnl, 6),
         'total_return_percent': round(total_return_pct, 4),
+        'starting_equity': round(starting_equity, 2),
+        'total_return_on_equity': round(total_return_on_equity, 6),
+        'total_return_on_equity_percent': round(total_return_on_equity * 100.0, 4),
+        'annualized_return_on_equity': round(annualized_return_on_equity, 6),
         'sharpe_annualized': round(sharpe, 3) if np.isfinite(sharpe) else 0.0,
         'sortino_annualized': round(sortino, 3) if np.isfinite(sortino) else 0.0,
         'calmar_ratio': round(calmar, 3),
+        'calmar_ratio_pct': round(calmar_ratio_pct, 3) if np.isfinite(calmar_ratio_pct) else 0.0,
         'max_drawdown': round(max_drawdown, 6),
+        'max_drawdown_pct': round(max_drawdown_pct, 6),
         'win_rate': round(win_rate, 4),
         'profit_factor': round(profit_factor, 4) if np.isfinite(profit_factor) else 'inf',
         'avg_win': round(avg_win, 8),
@@ -3667,7 +3712,8 @@ def load_all_backtests(artifacts_root='output') -> dict:
 
             keep = ['ts_event']
             for col in ['pnl', 'position', 'benchmark_pnl',
-                        'prediction_prob', 'ret_exec']:
+                        'prediction_prob', 'ret_exec', 'equity_curve',
+                        'return_on_equity', 'drawdown_pct']:
                 if col in df.columns:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
@@ -3820,6 +3866,19 @@ def calculate_metrics(file_path: str):
     running_max = np.maximum.accumulate(cum_pnl)
     drawdown = cum_pnl - running_max
     max_drawdown = drawdown.min()
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    equity_curve = starting_equity + cum_pnl
+    equity_running_max = np.maximum.accumulate(equity_curve)
+    drawdown_pct = equity_curve / np.maximum(equity_running_max, 1e-12) - 1.0
+    max_drawdown_pct = drawdown_pct.min()
+    total_roe = total_pnl / starting_equity if starting_equity > 0 else 0.0
+    gross_total_pnl = None
+    gross_sharpe = None
+    if 'gross_pnl' in df.columns:
+        gross = df['gross_pnl'].to_numpy()
+        gross_total_pnl = gross.sum()
+        gross_std = gross.std()
+        gross_sharpe = gross.mean() / gross_std * np.sqrt(ANNUAL_FACTOR) if gross_std > 0 else 0.0
     if 'position' in df.columns:
         position_changes = df['position'].diff().abs().sum()
         avg_position = df['position'].abs().mean()
@@ -3874,7 +3933,13 @@ def calculate_metrics(file_path: str):
     print(f'Avg PnL per bar:      {avg_pnl:12.6f}')
     print(f'Std PnL per bar:      {std_pnl:12.6f}')
     print(f'Sharpe (ann.):        {sharpe:12.3f}')
+    if gross_total_pnl is not None:
+        print(f'Gross Total PnL:      {gross_total_pnl:12.4f}')
+        print(f'Gross Sharpe (ann.):  {gross_sharpe:12.3f}')
+    print(f'Starting Equity:      {starting_equity:12.2f}')
+    print(f'Return on Equity:     {total_roe * 100.0:12.4f}%')
     print(f'Max Drawdown:         {max_drawdown:12.4f}')
+    print(f'Max Drawdown %:       {max_drawdown_pct * 100.0:12.4f}%')
     print(f'Turnover:             {turnover:12.4f}')
     print(f'Prediction-Target Corr:{corr:12.4f}')
     print(f'Hit Rate (bar-level): {hit_rate:12.4f}')
@@ -4896,6 +4961,23 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
 
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    if starting_equity <= 0:
+        raise RuntimeError(f'ACCOUNTING FAIL: EQUITY must be positive, got {starting_equity}')
+    df = df.with_columns([
+        (pl.col('pnl') / pl.lit(starting_equity, dtype=pl.Float32)).alias('return_on_equity'),
+        (pl.col('gross_pnl') / pl.lit(starting_equity, dtype=pl.Float32)).alias('gross_return_on_equity'),
+    ])
+    df = df.with_columns([
+        (pl.lit(starting_equity, dtype=pl.Float32) + pl.col('pnl').cum_sum()).alias('equity_curve'),
+        (pl.lit(starting_equity, dtype=pl.Float32) + pl.col('gross_pnl').cum_sum()).alias('gross_equity_curve'),
+    ])
+    df = df.with_columns(
+        ((pl.col('equity_curve') / pl.col('equity_curve').cum_max()) - 1.0)
+        .fill_nan(0.0)
+        .alias('drawdown_pct')
+    )
+
     return df
 
 
@@ -5350,8 +5432,17 @@ def _fit_discovery_fold(
     return importances, signs
 
 
-def run_feature_discovery(data_path: str, manifest_out: str):
+def run_feature_discovery(
+    data_path: str,
+    manifest_out: str,
+    discovery_start: str | None = None,
+    discovery_end: str | None = None,
+):
     logger.info('Phase 1: Feature Discovery')
+    logger.info(
+        '[DISCOVERY-WINDOW] manifest=%s start=%s end=%s data=%s',
+        manifest_out, discovery_start, discovery_end, data_path,
+    )
 
     # --- SARGable date filter: filter on raw ts_event BEFORE any function ---
     # Previously: ts_event → dt.convert_time_zone() → dt.date() → filter
@@ -5428,6 +5519,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             'selection_date': datetime.utcnow().isoformat() + 'Z',
             'discovery_status': 'skipped',
             'reason': 'no rows available after scan',
+            'discovery_window': {
+                'start': discovery_start,
+                'end': discovery_end,
+                'data_path': data_path,
+            },
         }
         with open(manifest_out, 'w') as f:
             json.dump(placeholder, f, indent=4)
@@ -5670,6 +5766,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             'column_ordering': 'lexicographic',
         },
         'discovery_status': 'completed',
+        'discovery_window': {
+            'start': discovery_start,
+            'end': discovery_end,
+            'data_path': data_path,
+        },
         'folds': [],
         'htf_features_included': any(
             (c.startswith(('htf_', 'cross_', '1h_', 'daily_')) for c in feature_cols)
@@ -9117,6 +9218,7 @@ import json
 import os
 import hashlib
 import time
+from datetime import timedelta
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -9297,6 +9399,53 @@ def _hash_col(df, col):
     if mask.sum() == 0:
         return 'all_nan'
     return hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+
+
+def _label_horizon_minutes(target_col: str) -> int:
+    if target_col in {'target_4h', 'target_sign_4h'}:
+        return 4 * 60
+    if target_col == 'target_tb':
+        return 64 * 5
+    if target_col in {'target_5m', 'target_sign'}:
+        return int(getattr(config, 'TARGET_5M_HORIZON', 1)) * 5
+    return max(4 * 60, 64 * 5)
+
+
+def _purge_train_tail_for_label_horizon(
+    train_df: pl.DataFrame,
+    boundary_ts,
+    target_col: str,
+) -> pl.DataFrame:
+    """Drop training rows whose forward label horizon can cross into test."""
+    horizon_minutes = _label_horizon_minutes(target_col)
+    cutoff = boundary_ts - timedelta(minutes=horizon_minutes)
+    before = train_df.height
+    purged = train_df.filter(pl.col('ts_event') < cutoff)
+    print(
+        f'[PURGE] train rows before={before} after={purged.height} '
+        f'cutoff={cutoff} horizon={horizon_minutes}m target={target_col}',
+        flush=True,
+    )
+    if purged.height == 0:
+        raise RuntimeError(
+            f'PURGE FAILURE: removed all train rows for target={target_col}, '
+            f'cutoff={cutoff}, horizon={horizon_minutes}m'
+        )
+    return purged
+
+
+def _execution_state(df: pl.DataFrame) -> dict:
+    active = 0
+    trades = 0
+    if 'target_exec' in df.columns:
+        target_exec = df['target_exec'].to_numpy().astype(np.float64)
+        active = int(np.sum(np.abs(target_exec) > 1e-12))
+    if 'position' in df.columns:
+        pos = df['position'].to_numpy().astype(np.float64)
+        trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9)) if len(pos) else 0
+    pnl_sum = float(df['pnl'].sum()) if 'pnl' in df.columns else float('nan')
+    pnl_cs = _hash_col(df, 'pnl') if 'pnl' in df.columns else 'missing'
+    return {'rows': df.height, 'active': active, 'trades': trades, 'pnl_sum': pnl_sum, 'pnl_cs': pnl_cs}
 
 
 def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fold_idx: int, prefix: str = ''):
@@ -9593,7 +9742,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     # Drop columns that _compute_pnl_from_target_exec will recompute so we
     # get a clean replacement without column-name conflicts.
-    recompute_cols = ['ret_exec', 'position', 'pos_change', 'intrabar_pnl', 'pnl']
+    recompute_cols = ['ret_exec', 'position', 'pos_change', 'intrabar_pnl', 'gross_pnl', 'pnl']
     df_clean = df.drop([c for c in recompute_cols if c in df.columns])
 
     # Re-run full PnL pipeline against the HMM-gated target_exec
@@ -9961,6 +10110,9 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     assert train_ts_max < test_ts_min, (
         f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
     )
+    train_df = _purge_train_tail_for_label_horizon(train_df, test_ts_min, target_col)
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
     print(f'[OUTER-TRUE] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
     print(f'[OUTER-TRUE] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
     print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
@@ -10005,9 +10157,9 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
                                        feature_cols: list, target_col: str = 'target_sign'
                                        ) -> Tuple[pl.DataFrame, dict]:
     if TYPE_CHECKING:
-        from pipeline.regime.hmm_filter import HMMRegimeFilter
+        from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter
     else:
-        from pipeline.regime.hmm_filter import HMMRegimeFilter
+        from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter
     if train_df.height == 0:
         raise RuntimeError('OUTER-TRUE HMM FAILURE: empty train_df')
     if test_df.height == 0:
@@ -10019,6 +10171,9 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     assert train_ts_max < test_ts_min, (
         f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
     )
+    train_df = _purge_train_tail_for_label_horizon(train_df, test_ts_min, target_col)
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
     print(f'[OUTER-TRUE-HMM] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
     print(f'[OUTER-TRUE-HMM] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
     print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
@@ -10057,9 +10212,24 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     else:
         print(f'[HEARTBEAT] HMM skipped – only {df_1h_train.height} 1H bars (<60)', flush=True)
     df_1h_test = _resample_to_1h(test_df)
+    pre_hmm = _execution_state(result)
     result, hmm_filter = apply_hmm_filter(
         df_5min_base=result, df_1h_train=df_1h_train,
         df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
+    )
+    post_gate = _execution_state(result)
+    result = _recompute_pnl_after_gate(result)
+    post_recompute = _execution_state(result)
+    print(
+        '[HMM-GATE-DIAG] '
+        f'before rows={pre_hmm["rows"]} active={pre_hmm["active"]} trades={pre_hmm["trades"]} '
+        f'pnl_sum={pre_hmm["pnl_sum"]:.2f} pnl_cs={pre_hmm["pnl_cs"]} | '
+        f'after_gate rows={post_gate["rows"]} active={post_gate["active"]} trades={post_gate["trades"]} '
+        f'pnl_sum={post_gate["pnl_sum"]:.2f} pnl_cs={post_gate["pnl_cs"]} | '
+        f'after_recompute rows={post_recompute["rows"]} active={post_recompute["active"]} '
+        f'trades={post_recompute["trades"]} pnl_sum={post_recompute["pnl_sum"]:.2f} '
+        f'pnl_cs={post_recompute["pnl_cs"]}',
+        flush=True,
     )
     dt_hmm = time.perf_counter() - t_hmm
     print(f'[HEARTBEAT] HMM fit done seconds={dt_hmm:.1f}', flush=True)
@@ -10196,6 +10366,7 @@ Targeted verification that all structural fixes enforce strict t-1 causality.
 Uses synthetic data with known future values to detect any surviving leakage.
 """
 import sys
+import subprocess
 from pathlib import Path
 import numpy as np
 import polars as pl
@@ -10492,6 +10663,74 @@ def test_volume_profile_causality():
     return True
 
 
+def test_discovery_cli_accepts_bounded_window():
+    result = subprocess.run(
+        [sys.executable, "-m", "pipeline.cli", "discover", "--help"],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "--start" in result.stdout
+    assert "--end" in result.stdout
+
+
+def test_discovery_cache_key_changes_with_train_window():
+    from pipeline.cli import _stable_data_tag
+
+    base = _stable_data_tag("data/ES/2024.parquet")
+    bounded_a = _stable_data_tag("data/ES/2024.parquet", "2024-01-01", "2024-06-01")
+    bounded_b = _stable_data_tag("data/ES/2024.parquet", "2024-02-01", "2024-07-01")
+    assert base != bounded_a
+    assert bounded_a != bounded_b
+
+
+def test_outer_split_train_purge_removes_tail_only():
+    from pipeline.walkforward.walkforward import _purge_train_tail_for_label_horizon
+
+    ts = [datetime(2024, 1, 1) + timedelta(minutes=5 * i) for i in range(120)]
+    train_df = pl.DataFrame({
+        "ts_event": ts,
+        "target_sign_4h": np.ones(len(ts), dtype=np.int8),
+    })
+    test_start = datetime(2024, 1, 1) + timedelta(minutes=5 * 120)
+    purged = _purge_train_tail_for_label_horizon(train_df, test_start, "target_sign_4h")
+    cutoff = test_start - timedelta(hours=4)
+    assert purged.height < train_df.height
+    assert purged["ts_event"].max() < cutoff
+
+
+def test_hmm_gate_recompute_replaces_stale_pnl():
+    from pipeline.walkforward.walkforward import _recompute_pnl_after_gate
+
+    config.CURRENT_SYMBOL = "ES"
+    df = pl.DataFrame({
+        "open": [100.0, 101.0, 102.0],
+        "high": [101.0, 102.0, 103.0],
+        "low": [99.0, 100.0, 101.0],
+        "close": [100.5, 101.5, 102.5],
+        "target_exec": [0.0, 0.0, 0.0],
+        "unit_cost": [0.0, 0.0, 0.0],
+        "pnl": [999.0, 999.0, 999.0],
+        "position": [1.0, 1.0, 1.0],
+        "hmm_trade_gate": [False, False, False],
+    })
+    out = _recompute_pnl_after_gate(df)
+    assert "hmm_trade_gate" in out.columns
+    assert abs(float(out["pnl"].sum())) < 1e-9
+    assert abs(float(out["position"].abs().sum())) < 1e-9
+
+
+def test_equity_normalized_metrics_are_finite():
+    from pipeline.analytics.aggregate import compute_pro_metrics
+
+    metrics = compute_pro_metrics(pl.Series("pnl", [100.0, -50.0, 25.0]))
+    for key in ("starting_equity", "total_return_on_equity", "max_drawdown_pct"):
+        assert key in metrics
+        assert np.isfinite(float(metrics[key]))
+
+
 def run_all_tests():
     print("=" * 60)
     print(" CAUSAL VERIFICATION TESTS")
@@ -10506,6 +10745,11 @@ def run_all_tests():
         ("VWAP Lag", test_vwap_lag),
         ("Rolling Quantiles Lag", test_rolling_quantiles_lag),
         ("Volume Profile Causality", test_volume_profile_causality),
+        ("Discovery CLI Bounded Window", test_discovery_cli_accepts_bounded_window),
+        ("Discovery Cache Key Window", test_discovery_cache_key_changes_with_train_window),
+        ("Outer Split Train Purge", test_outer_split_train_purge_removes_tail_only),
+        ("HMM Gate Recompute", test_hmm_gate_recompute_replaces_stale_pnl),
+        ("Equity Metrics", test_equity_normalized_metrics_are_finite),
     ]
 
     for name, test_fn in tests:

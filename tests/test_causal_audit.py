@@ -5,6 +5,7 @@ Targeted verification that all structural fixes enforce strict t-1 causality.
 Uses synthetic data with known future values to detect any surviving leakage.
 """
 import sys
+import subprocess
 from pathlib import Path
 import numpy as np
 import polars as pl
@@ -301,6 +302,74 @@ def test_volume_profile_causality():
     return True
 
 
+def test_discovery_cli_accepts_bounded_window():
+    result = subprocess.run(
+        [sys.executable, "-m", "pipeline.cli", "discover", "--help"],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "--start" in result.stdout
+    assert "--end" in result.stdout
+
+
+def test_discovery_cache_key_changes_with_train_window():
+    from pipeline.cli import _stable_data_tag
+
+    base = _stable_data_tag("data/ES/2024.parquet")
+    bounded_a = _stable_data_tag("data/ES/2024.parquet", "2024-01-01", "2024-06-01")
+    bounded_b = _stable_data_tag("data/ES/2024.parquet", "2024-02-01", "2024-07-01")
+    assert base != bounded_a
+    assert bounded_a != bounded_b
+
+
+def test_outer_split_train_purge_removes_tail_only():
+    from pipeline.walkforward.walkforward import _purge_train_tail_for_label_horizon
+
+    ts = [datetime(2024, 1, 1) + timedelta(minutes=5 * i) for i in range(120)]
+    train_df = pl.DataFrame({
+        "ts_event": ts,
+        "target_sign_4h": np.ones(len(ts), dtype=np.int8),
+    })
+    test_start = datetime(2024, 1, 1) + timedelta(minutes=5 * 120)
+    purged = _purge_train_tail_for_label_horizon(train_df, test_start, "target_sign_4h")
+    cutoff = test_start - timedelta(hours=4)
+    assert purged.height < train_df.height
+    assert purged["ts_event"].max() < cutoff
+
+
+def test_hmm_gate_recompute_replaces_stale_pnl():
+    from pipeline.walkforward.walkforward import _recompute_pnl_after_gate
+
+    config.CURRENT_SYMBOL = "ES"
+    df = pl.DataFrame({
+        "open": [100.0, 101.0, 102.0],
+        "high": [101.0, 102.0, 103.0],
+        "low": [99.0, 100.0, 101.0],
+        "close": [100.5, 101.5, 102.5],
+        "target_exec": [0.0, 0.0, 0.0],
+        "unit_cost": [0.0, 0.0, 0.0],
+        "pnl": [999.0, 999.0, 999.0],
+        "position": [1.0, 1.0, 1.0],
+        "hmm_trade_gate": [False, False, False],
+    })
+    out = _recompute_pnl_after_gate(df)
+    assert "hmm_trade_gate" in out.columns
+    assert abs(float(out["pnl"].sum())) < 1e-9
+    assert abs(float(out["position"].abs().sum())) < 1e-9
+
+
+def test_equity_normalized_metrics_are_finite():
+    from pipeline.analytics.aggregate import compute_pro_metrics
+
+    metrics = compute_pro_metrics(pl.Series("pnl", [100.0, -50.0, 25.0]))
+    for key in ("starting_equity", "total_return_on_equity", "max_drawdown_pct"):
+        assert key in metrics
+        assert np.isfinite(float(metrics[key]))
+
+
 def run_all_tests():
     print("=" * 60)
     print(" CAUSAL VERIFICATION TESTS")
@@ -315,6 +384,11 @@ def run_all_tests():
         ("VWAP Lag", test_vwap_lag),
         ("Rolling Quantiles Lag", test_rolling_quantiles_lag),
         ("Volume Profile Causality", test_volume_profile_causality),
+        ("Discovery CLI Bounded Window", test_discovery_cli_accepts_bounded_window),
+        ("Discovery Cache Key Window", test_discovery_cache_key_changes_with_train_window),
+        ("Outer Split Train Purge", test_outer_split_train_purge_removes_tail_only),
+        ("HMM Gate Recompute", test_hmm_gate_recompute_replaces_stale_pnl),
+        ("Equity Metrics", test_equity_normalized_metrics_are_finite),
     ]
 
     for name, test_fn in tests:

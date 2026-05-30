@@ -3,6 +3,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from scipy.stats import spearmanr
+from core.config import config
 
 # Number of 5-minute bars in a trading year (~23h * 12 bars/h * 252 trading days)
 # Overridable via config.ANNUAL_FACTOR if set before aggregate import.
@@ -13,7 +14,8 @@ RISK_FREE_RATE = 0.0
 # are actually used downstream.  Eliminates SELECT * on parquet reads.
 _BACKTEST_COLUMNS_OF_INTEREST = [
     'ts_event', 'pnl', 'position', 'benchmark_pnl',
-    'prediction_prob', 'ret_exec',
+    'prediction_prob', 'ret_exec', 'equity_curve',
+    'return_on_equity', 'drawdown_pct',
 ]
 
 
@@ -83,10 +85,20 @@ def compute_pro_metrics(
     running_max = np.maximum.accumulate(cum_pnl)
     drawdown = cum_pnl - running_max
     max_drawdown = float(drawdown.min())
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    if starting_equity <= 0:
+        starting_equity = 100000.0
+    equity_curve = starting_equity + cum_pnl
+    running_equity_max = np.maximum.accumulate(equity_curve)
+    drawdown_pct = equity_curve / np.maximum(running_equity_max, eps) - 1.0
+    max_drawdown_pct = float(drawdown_pct.min()) if len(drawdown_pct) else 0.0
+    total_return_on_equity = total_pnl / starting_equity
 
     # --- Calmar ratio ---
     annualized_return = avg_pnl * ANNUAL_FACTOR
     calmar = annualized_return / (abs(max_drawdown) + eps)
+    annualized_return_on_equity = (avg_pnl * ANNUAL_FACTOR) / starting_equity
+    calmar_ratio_pct = annualized_return_on_equity / (abs(max_drawdown_pct) + eps)
 
     # --- Trade statistics ---
     trades = 0
@@ -171,10 +183,16 @@ def compute_pro_metrics(
     return {
         'total_pnl': round(total_pnl, 6),
         'total_return_percent': round(total_return_pct, 4),
+        'starting_equity': round(starting_equity, 2),
+        'total_return_on_equity': round(total_return_on_equity, 6),
+        'total_return_on_equity_percent': round(total_return_on_equity * 100.0, 4),
+        'annualized_return_on_equity': round(annualized_return_on_equity, 6),
         'sharpe_annualized': round(sharpe, 3) if np.isfinite(sharpe) else 0.0,
         'sortino_annualized': round(sortino, 3) if np.isfinite(sortino) else 0.0,
         'calmar_ratio': round(calmar, 3),
+        'calmar_ratio_pct': round(calmar_ratio_pct, 3) if np.isfinite(calmar_ratio_pct) else 0.0,
         'max_drawdown': round(max_drawdown, 6),
+        'max_drawdown_pct': round(max_drawdown_pct, 6),
         'win_rate': round(win_rate, 4),
         'profit_factor': round(profit_factor, 4) if np.isfinite(profit_factor) else 'inf',
         'avg_win': round(avg_win, 8),
@@ -218,7 +236,8 @@ def load_all_backtests(artifacts_root='output') -> dict:
 
             keep = ['ts_event']
             for col in ['pnl', 'position', 'benchmark_pnl',
-                        'prediction_prob', 'ret_exec']:
+                        'prediction_prob', 'ret_exec', 'equity_curve',
+                        'return_on_equity', 'drawdown_pct']:
                 if col in df.columns:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
@@ -371,6 +390,19 @@ def calculate_metrics(file_path: str):
     running_max = np.maximum.accumulate(cum_pnl)
     drawdown = cum_pnl - running_max
     max_drawdown = drawdown.min()
+    starting_equity = float(getattr(config, 'EQUITY', 100000.0))
+    equity_curve = starting_equity + cum_pnl
+    equity_running_max = np.maximum.accumulate(equity_curve)
+    drawdown_pct = equity_curve / np.maximum(equity_running_max, 1e-12) - 1.0
+    max_drawdown_pct = drawdown_pct.min()
+    total_roe = total_pnl / starting_equity if starting_equity > 0 else 0.0
+    gross_total_pnl = None
+    gross_sharpe = None
+    if 'gross_pnl' in df.columns:
+        gross = df['gross_pnl'].to_numpy()
+        gross_total_pnl = gross.sum()
+        gross_std = gross.std()
+        gross_sharpe = gross.mean() / gross_std * np.sqrt(ANNUAL_FACTOR) if gross_std > 0 else 0.0
     if 'position' in df.columns:
         position_changes = df['position'].diff().abs().sum()
         avg_position = df['position'].abs().mean()
@@ -425,7 +457,13 @@ def calculate_metrics(file_path: str):
     print(f'Avg PnL per bar:      {avg_pnl:12.6f}')
     print(f'Std PnL per bar:      {std_pnl:12.6f}')
     print(f'Sharpe (ann.):        {sharpe:12.3f}')
+    if gross_total_pnl is not None:
+        print(f'Gross Total PnL:      {gross_total_pnl:12.4f}')
+        print(f'Gross Sharpe (ann.):  {gross_sharpe:12.3f}')
+    print(f'Starting Equity:      {starting_equity:12.2f}')
+    print(f'Return on Equity:     {total_roe * 100.0:12.4f}%')
     print(f'Max Drawdown:         {max_drawdown:12.4f}')
+    print(f'Max Drawdown %:       {max_drawdown_pct * 100.0:12.4f}%')
     print(f'Turnover:             {turnover:12.4f}')
     print(f'Prediction-Target Corr:{corr:12.4f}')
     print(f'Hit Rate (bar-level): {hit_rate:12.4f}')

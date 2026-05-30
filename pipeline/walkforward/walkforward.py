@@ -4,6 +4,7 @@ import json
 import os
 import hashlib
 import time
+from datetime import timedelta
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -184,6 +185,53 @@ def _hash_col(df, col):
     if mask.sum() == 0:
         return 'all_nan'
     return hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+
+
+def _label_horizon_minutes(target_col: str) -> int:
+    if target_col in {'target_4h', 'target_sign_4h'}:
+        return 4 * 60
+    if target_col == 'target_tb':
+        return 64 * 5
+    if target_col in {'target_5m', 'target_sign'}:
+        return int(getattr(config, 'TARGET_5M_HORIZON', 1)) * 5
+    return max(4 * 60, 64 * 5)
+
+
+def _purge_train_tail_for_label_horizon(
+    train_df: pl.DataFrame,
+    boundary_ts,
+    target_col: str,
+) -> pl.DataFrame:
+    """Drop training rows whose forward label horizon can cross into test."""
+    horizon_minutes = _label_horizon_minutes(target_col)
+    cutoff = boundary_ts - timedelta(minutes=horizon_minutes)
+    before = train_df.height
+    purged = train_df.filter(pl.col('ts_event') < cutoff)
+    print(
+        f'[PURGE] train rows before={before} after={purged.height} '
+        f'cutoff={cutoff} horizon={horizon_minutes}m target={target_col}',
+        flush=True,
+    )
+    if purged.height == 0:
+        raise RuntimeError(
+            f'PURGE FAILURE: removed all train rows for target={target_col}, '
+            f'cutoff={cutoff}, horizon={horizon_minutes}m'
+        )
+    return purged
+
+
+def _execution_state(df: pl.DataFrame) -> dict:
+    active = 0
+    trades = 0
+    if 'target_exec' in df.columns:
+        target_exec = df['target_exec'].to_numpy().astype(np.float64)
+        active = int(np.sum(np.abs(target_exec) > 1e-12))
+    if 'position' in df.columns:
+        pos = df['position'].to_numpy().astype(np.float64)
+        trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9)) if len(pos) else 0
+    pnl_sum = float(df['pnl'].sum()) if 'pnl' in df.columns else float('nan')
+    pnl_cs = _hash_col(df, 'pnl') if 'pnl' in df.columns else 'missing'
+    return {'rows': df.height, 'active': active, 'trades': trades, 'pnl_sum': pnl_sum, 'pnl_cs': pnl_cs}
 
 
 def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fold_idx: int, prefix: str = ''):
@@ -480,7 +528,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     # Drop columns that _compute_pnl_from_target_exec will recompute so we
     # get a clean replacement without column-name conflicts.
-    recompute_cols = ['ret_exec', 'position', 'pos_change', 'intrabar_pnl', 'pnl']
+    recompute_cols = ['ret_exec', 'position', 'pos_change', 'intrabar_pnl', 'gross_pnl', 'pnl']
     df_clean = df.drop([c for c in recompute_cols if c in df.columns])
 
     # Re-run full PnL pipeline against the HMM-gated target_exec
@@ -848,6 +896,9 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     assert train_ts_max < test_ts_min, (
         f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
     )
+    train_df = _purge_train_tail_for_label_horizon(train_df, test_ts_min, target_col)
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
     print(f'[OUTER-TRUE] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
     print(f'[OUTER-TRUE] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
     print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
@@ -892,9 +943,9 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
                                        feature_cols: list, target_col: str = 'target_sign'
                                        ) -> Tuple[pl.DataFrame, dict]:
     if TYPE_CHECKING:
-        from pipeline.regime.hmm_filter import HMMRegimeFilter
+        from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter
     else:
-        from pipeline.regime.hmm_filter import HMMRegimeFilter
+        from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter
     if train_df.height == 0:
         raise RuntimeError('OUTER-TRUE HMM FAILURE: empty train_df')
     if test_df.height == 0:
@@ -906,6 +957,9 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     assert train_ts_max < test_ts_min, (
         f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
     )
+    train_df = _purge_train_tail_for_label_horizon(train_df, test_ts_min, target_col)
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
     print(f'[OUTER-TRUE-HMM] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
     print(f'[OUTER-TRUE-HMM] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
     print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
@@ -944,9 +998,24 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     else:
         print(f'[HEARTBEAT] HMM skipped – only {df_1h_train.height} 1H bars (<60)', flush=True)
     df_1h_test = _resample_to_1h(test_df)
+    pre_hmm = _execution_state(result)
     result, hmm_filter = apply_hmm_filter(
         df_5min_base=result, df_1h_train=df_1h_train,
         df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
+    )
+    post_gate = _execution_state(result)
+    result = _recompute_pnl_after_gate(result)
+    post_recompute = _execution_state(result)
+    print(
+        '[HMM-GATE-DIAG] '
+        f'before rows={pre_hmm["rows"]} active={pre_hmm["active"]} trades={pre_hmm["trades"]} '
+        f'pnl_sum={pre_hmm["pnl_sum"]:.2f} pnl_cs={pre_hmm["pnl_cs"]} | '
+        f'after_gate rows={post_gate["rows"]} active={post_gate["active"]} trades={post_gate["trades"]} '
+        f'pnl_sum={post_gate["pnl_sum"]:.2f} pnl_cs={post_gate["pnl_cs"]} | '
+        f'after_recompute rows={post_recompute["rows"]} active={post_recompute["active"]} '
+        f'trades={post_recompute["trades"]} pnl_sum={post_recompute["pnl_sum"]:.2f} '
+        f'pnl_cs={post_recompute["pnl_cs"]}',
+        flush=True,
     )
     dt_hmm = time.perf_counter() - t_hmm
     print(f'[HEARTBEAT] HMM fit done seconds={dt_hmm:.1f}', flush=True)

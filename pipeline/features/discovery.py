@@ -80,8 +80,17 @@ def _fit_discovery_fold(
     return importances, signs
 
 
-def run_feature_discovery(data_path: str, manifest_out: str):
+def run_feature_discovery(
+    data_path: str,
+    manifest_out: str,
+    discovery_start: str | None = None,
+    discovery_end: str | None = None,
+):
     logger.info('Phase 1: Feature Discovery')
+    logger.info(
+        '[DISCOVERY-WINDOW] manifest=%s start=%s end=%s data=%s',
+        manifest_out, discovery_start, discovery_end, data_path,
+    )
 
     # --- SARGable date filter: filter on raw ts_event BEFORE any function ---
     # Previously: ts_event → dt.convert_time_zone() → dt.date() → filter
@@ -158,6 +167,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             'selection_date': datetime.utcnow().isoformat() + 'Z',
             'discovery_status': 'skipped',
             'reason': 'no rows available after scan',
+            'discovery_window': {
+                'start': discovery_start,
+                'end': discovery_end,
+                'data_path': data_path,
+            },
         }
         with open(manifest_out, 'w') as f:
             json.dump(placeholder, f, indent=4)
@@ -400,6 +414,11 @@ def run_feature_discovery(data_path: str, manifest_out: str):
             'column_ordering': 'lexicographic',
         },
         'discovery_status': 'completed',
+        'discovery_window': {
+            'start': discovery_start,
+            'end': discovery_end,
+            'data_path': data_path,
+        },
         'folds': [],
         'htf_features_included': any(
             (c.startswith(('htf_', 'cross_', '1h_', 'daily_')) for c in feature_cols)
