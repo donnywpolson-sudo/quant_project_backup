@@ -385,7 +385,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
-    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE}
+    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'timeout': 300}
     if not _VERBOSE:
         kw['stdout'] = subprocess.DEVNULL
     if config.pipeline.enable_discovery:
@@ -412,7 +412,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
         try:
             subprocess.run(cmd, **kw)
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
             err_lines = stderr_text.strip().split('\n')
             print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
@@ -430,7 +430,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
                 subprocess.run(cmd_fb, **kw)
-            except subprocess.CalledProcessError as e2:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
                 stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
                 err2_lines = stderr2.strip().split('\n')
                 print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
