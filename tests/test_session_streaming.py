@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import polars as pl
 import numpy as np
-from quant.session import load_all_streams_chunked
+from pipeline.session.session import load_all_streams_chunked
 from core.config import config
 
 def make_small_synthetic(start_dt, end_dt):

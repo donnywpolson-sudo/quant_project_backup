@@ -221,7 +221,7 @@ def apply_hmm_filter(
 
     Usage inside walkforward.py's process_fold()::
 
-        from quant.regime.hmm_filter import apply_hmm_filter, HMMRegimeFilter
+        from pipeline.regime.hmm_filter import apply_hmm_filter, HMMRegimeFilter
 
         hmm_filter = HMMRegimeFilter()
         hmm_filter.initialize(df_1h_init)

@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from quant.config_manager import load_config, RootConfig
+from core.config import load_config, RootConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger('QuantRunner')

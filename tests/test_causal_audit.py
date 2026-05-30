@@ -14,14 +14,14 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.config import config
-from quant.features.htf_context import add_htf_context_features
-from quant.features.expansion import (
+from pipeline.features.htf_context import add_htf_context_features
+from pipeline.features.expansion import (
     add_regime, add_ratios_and_z_scores, add_rolling_quantiles,
     add_rolling_moments, add_vwap_deviation, add_acceleration
 )
-from quant.features.baseline import compute_baseline_features
-from quant.features.volume_profile import add_volume_profile_features
-from quant.align import align_htf_streams
+from pipeline.features.baseline import compute_baseline_features
+from pipeline.features.volume_profile import add_volume_profile_features
+from pipeline.align.align import align_htf_streams
 
 
 def make_synthetic_5min(n_days: int = 5) -> pl.DataFrame:

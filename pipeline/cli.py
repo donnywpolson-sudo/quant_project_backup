@@ -36,12 +36,12 @@ def _diag(df, stage):
         t = df.select([pl.col('ts_event').min().alias('lo'), pl.col('ts_event').max().alias('hi')])
         print(f'[DIAG]   ts_event min={t["lo"][0]} max={t["hi"][0]}', flush=True)
 from core.config import config, load_config
-from quant.ingest import load_and_clean_data
-from quant.features.engine import generate_features
-from quant.discovery import run_feature_discovery
-from quant.walkforward import run_walkforward, run_walkforward_with_hmm
+from _legacy.ingest import load_and_clean_data
+from pipeline.features.engine import generate_features
+from pipeline.features.discovery import run_feature_discovery
+from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm
 from core.io.canonical import write_canonical_parquet
-from quant.analytics import calculate_metrics, run_aggregation
+from pipeline.analytics.aggregate import calculate_metrics, run_aggregation
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
@@ -94,7 +94,7 @@ def main():
     np.random.seed(config.SEED)
     check_memory_safety()
     if args.command in ('discover', 'run', 'run-hmm'):
-        from quant.market_config import detect_symbol_from_path, load_market_config
+        from core.market import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
         config.CURRENT_SYMBOL = symbol

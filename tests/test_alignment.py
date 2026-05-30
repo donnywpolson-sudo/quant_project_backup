@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 from datetime import datetime, timedelta
-from quant.session import add_session_id, filter_session_hours, resample_to_frequency
-from quant.align import align_htf_streams
+from pipeline.session.session import add_session_id, filter_session_hours, resample_to_frequency
+from pipeline.align.align import align_htf_streams
 
 def make_synthetic_1min(session_start_et, session_end_et):
     ts = []

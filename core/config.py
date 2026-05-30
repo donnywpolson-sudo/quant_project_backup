@@ -15,17 +15,17 @@ Architecture:
 
 Usage:
     # Structured (Pydantic) — run.py
-    from quant.config_manager import load_config, RootConfig
+    from core.config import load_config, RootConfig
     cfg: RootConfig = load_config("alpha_1")
     print(cfg.discovery.bootstrap_folds)
 
     # Flat (SimpleNamespace) — all quant modules
-    from quant.config_manager import config
+    from core.config import config
     print(config.BOOTSTRAP_FOLDS)
     print(config.SEED)
 
     # Idempotent — safe to call multiple times
-    from quant.config_manager import load_config
+    from core.config import load_config
     load_config()  # no-op after first call
 """
 

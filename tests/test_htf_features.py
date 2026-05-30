@@ -3,8 +3,8 @@ import numpy as np
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
-from quant.ingest import load_and_clean_data
-from quant.features.engine import generate_features
+from _legacy.ingest import load_and_clean_data
+from pipeline.features.engine import generate_features
 
 def make_synthetic_with_trend():
     start_dt = datetime(2026, 1, 1, 18, 0)

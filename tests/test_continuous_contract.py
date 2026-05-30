@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from datetime import datetime
 import polars as pl
-from quant.continuous_contract import (
+from pipeline.contracts.continuous import (
     compute_roll_dates,
     build_ratio_adjusted_series,
     apply_splice,
