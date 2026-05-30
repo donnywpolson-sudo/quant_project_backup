@@ -183,6 +183,13 @@ def build_ratio_adjusted_series(
     All pre-roll prices are multiplied by this factor so that the
     resulting series has no price discontinuity at the roll point.
 
+    NOTE: This function is the test-helper / single-roll path.
+    Production uses ``build_continuous_series`` which handles
+    multiple rolls via cumulative splice. Both paths set
+    ``adjustment_factor`` to the per-roll ratio (the multiplier
+    applied at that specific roll), so downstream consumers see
+    consistent column semantics.
+
     Args:
         df_front: Front-month (expiring) contract data.
                   Must contain [ts_event, close, open, high, low, volume].
@@ -395,6 +402,13 @@ def build_continuous_series(
 
         cumulative_factor *= ratio
 
+        if not np.isfinite(cumulative_factor) or cumulative_factor <= 0.0:
+            raise RuntimeError(
+                f'CONTRACT FAIL: cumulative_factor became {cumulative_factor:.6f} '
+                f'at roll {roll_date} (ratio={ratio:.6f}). '
+                f'Cannot build continuous series — adjustment factor is invalid.'
+            )
+
         front_contract = roll_dates_df['front_contract'][i]
         back_contract = roll_dates_df['back_contract'][i]
 
@@ -406,6 +420,16 @@ def build_continuous_series(
             'back_contract': back_contract,
             'contract_month': back_contract,
         })
+
+    # Sanity guard: cumulative_factor should stay within reasonable bounds.
+    # Over very long histories with persistent contango/backwardation the
+    # factor may drift, but extreme values indicate data or roll logic issues.
+    if not (0.01 <= cumulative_factor <= 50.0):
+        logger.warning(
+            'cumulative_factor=%s for %s over %d rolls is outside safe range [0.01, 50.0]. '
+            'Check roll date computation and price ratio integrity.',
+            round(cumulative_factor, 6), symbol, len(roll_dates)
+        )
 
     adjustments_df = pl.DataFrame(adjustment_rows)
 
@@ -432,7 +456,10 @@ def build_continuous_series(
         .fill_null(current_contract),
     ])
 
-    # Add adjustment_factor (the per-roll ratio, 1.0 between rolls)
+    # Add adjustment_factor: the per-roll ratio, derived from cumulative
+    # factors. Equivalent to the ratio set by build_ratio_adjusted_series
+    # at each roll point — both paths produce the same per-roll multiplier
+    # for downstream consumers (1.0 between rolls, ratio at roll bars).
     df = df.with_columns(
         pl.when(pl.col('cumulative_factor').is_not_null())
         .then(

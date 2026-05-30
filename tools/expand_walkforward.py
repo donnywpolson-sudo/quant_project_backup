@@ -62,8 +62,12 @@ def compute_target_4h(df):
                             (fr>0).cast(pl.Int8).alias("target_sign_4h")])
 
 def add_session_id(df):
-    return df.with_columns(pl.col("ts_event").dt.convert_time_zone("Etc/GMT+5")
-        .dt.offset_by("6h").dt.date().cast(pl.String).alias("session_id"))
+    from core.config import config
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+    return df.drop('ts_local')
 
 # ---------- BASE FEATURES (14) ----------
 def build_base_features(df):

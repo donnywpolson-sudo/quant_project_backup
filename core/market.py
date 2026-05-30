@@ -9,7 +9,13 @@ def detect_symbol_from_path(data_path: str) -> str:
     for part in path.parent.parts:
         if part in config.MARKET_CONFIGS:
             return part
-    return 'ES'
+    raise RuntimeError(
+        f'SYMBOL FAIL: cannot detect symbol from path {data_path}. '
+        f'No known market ({sorted(config.MARKET_CONFIGS.keys())}) '
+        f'found in path parts {list(path.parent.parts)}. '
+        f'Ensure data directory structure includes the symbol name '
+        f'(e.g. data/ES/2024.parquet).'
+    )
 
 def load_market_config(symbol: str):
     yaml_path = config.MARKET_CONFIGS.get(symbol)

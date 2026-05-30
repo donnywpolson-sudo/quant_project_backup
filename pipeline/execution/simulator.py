@@ -305,23 +305,31 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     # 6b. Position clipping: max_position_size and notional cap
     #     using per-market contract_multiplier from market config.
     #     Symbol is resolved from config.CURRENT_SYMBOL, set by cli.py
-    #     when the command is invoked. Falls back to 'ES' if unset.
+    #     when the command is invoked. Fails fast if unset — no silent
+    #     fallback to ES because wrong multiplier silently corrupts PnL.
     # ------------------------------------------------------------------------
     import yaml
     from pathlib import Path
     from core.config import config as _cfg
 
-    symbol = getattr(_cfg, 'CURRENT_SYMBOL', None) or 'ES'
+    symbol = getattr(_cfg, 'CURRENT_SYMBOL', None)
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: CURRENT_SYMBOL is unset. '
+            'Cannot resolve contract multiplier for position clipping. '
+            'Ensure cli.py sets config.CURRENT_SYMBOL before execution.'
+        )
     market_cfg_path = _cfg.MARKET_CONFIGS.get(symbol)
-    if market_cfg_path and Path(market_cfg_path).exists():
-        with open(market_cfg_path, 'r') as f:
-            market_cfg = yaml.safe_load(f)
-        contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
-        max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
-        max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
-    else:
-        contract_multiplier = FIXED_CONTRACT_SIZE
-        max_pos = float('inf')
+    if not market_cfg_path or not Path(market_cfg_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            f'Cannot resolve contract multiplier.'
+        )
+    with open(market_cfg_path, 'r') as f:
+        market_cfg = yaml.safe_load(f)
+    contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
+    max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
+    max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
 
     # Clip to max_position_size
     df = df.with_columns(

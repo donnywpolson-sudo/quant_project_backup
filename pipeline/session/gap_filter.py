@@ -26,8 +26,11 @@ def filter_gaps(
     correctly regardless of the upstream Datetime resolution.
     """
     df = df.sort("ts_event")
+    time_unit = df["ts_event"].dtype.time_unit
+    us_per_minute = 60_000_000
     ns_per_minute = 60_000_000_000
-    gap = df["ts_event"].diff().cast(pl.Int64) / float(ns_per_minute)
+    divisor = float(ns_per_minute) if time_unit == 'ns' else float(us_per_minute)
+    gap = df["ts_event"].diff().cast(pl.Int64) / divisor
     df = df.with_columns(gap.alias("_gap_minutes"))
     df = df.filter(
         pl.col("_gap_minutes").is_null()

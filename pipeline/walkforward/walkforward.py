@@ -363,14 +363,22 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
         "pipeline.execution.simulator"
     )._compute_pnl_from_target_exec
 
-    symbol = getattr(config, 'CURRENT_SYMBOL', None) or 'ES'
+    symbol = getattr(config, 'CURRENT_SYMBOL', None)
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: CURRENT_SYMBOL is unset. '
+            'Cannot resolve contract multiplier for HMM PnL recompute. '
+            'Ensure cli.py sets config.CURRENT_SYMBOL before calling run-hmm.'
+        )
     market_cfg_path = config.MARKET_CONFIGS.get(symbol)
-    if market_cfg_path and Path(market_cfg_path).exists():
-        with open(market_cfg_path, 'r') as f:
-            market_cfg = yaml.safe_load(f)
-        contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
-    else:
-        contract_multiplier = 1.0
+    if not market_cfg_path or not Path(market_cfg_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            f'Cannot resolve contract multiplier.'
+        )
+    with open(market_cfg_path, 'r') as f:
+        market_cfg = yaml.safe_load(f)
+    contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
 
     # Preserve HMM columns so they survive the recompute
     hmm_cols = [c for c in df.columns if c.startswith('hmm_')]

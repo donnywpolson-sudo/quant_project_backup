@@ -27,7 +27,8 @@ _OHLCV_PROJECTION = ['ts_event', 'open', 'high', 'low', 'close', 'volume']
 
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
-    session_id = pl.col('ts_local').dt.offset_by('6h').dt.date().cast(pl.String)
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
     df = df.with_columns(session_id.alias('session_id'))
     return df.drop('ts_local')
 

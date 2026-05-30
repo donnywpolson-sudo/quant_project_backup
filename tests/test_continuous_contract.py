@@ -118,10 +118,39 @@ def test_apply_splice():
     print("  test_apply_splice: PASS")
 
 
+def test_contract_multiplier_no_es_fallback():
+    """Simulator must fail fast when CURRENT_SYMBOL is unset, not silently use ES."""
+    from core.config import config as _cfg, load_config
+    load_config()
+    from pipeline.execution.simulator import simulate_execution_classification
+    import polars as pl
+    from datetime import datetime, timezone
+
+    saved = getattr(_cfg, 'CURRENT_SYMBOL', None)
+    try:
+        if hasattr(_cfg, 'CURRENT_SYMBOL'):
+            delattr(_cfg, 'CURRENT_SYMBOL')
+        ts = [datetime(2024, 1, 2, 14, 30, tzinfo=timezone.utc)]
+        df = pl.DataFrame({
+            'ts_event': ts, 'open': [100.0], 'high': [101.0],
+            'low': [99.0], 'close': [100.5], 'volume': [1000],
+            'prediction_prob': [0.6],
+        })
+        try:
+            simulate_execution_classification(df)
+            assert False, 'Should have raised RuntimeError for missing CURRENT_SYMBOL'
+        except RuntimeError as e:
+            assert 'CURRENT_SYMBOL' in str(e), f'Expected CURRENT_SYMBOL in error, got: {e}'
+    finally:
+        if saved is not None:
+            _cfg.CURRENT_SYMBOL = saved
+
+
 if __name__ == "__main__":
     print("Running continuous_contract tests...")
     test_compute_roll_dates_es()
     test_compute_roll_dates_cl()
     test_build_continuous_series()
     test_apply_splice()
+    test_contract_multiplier_no_es_fallback()
     print("All continuous_contract tests PASSED.")

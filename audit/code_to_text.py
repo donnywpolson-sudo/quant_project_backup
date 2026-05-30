@@ -1,103 +1,107 @@
 import os
+import re
 
-# --- CONFIGURATION ---
-# 1. Find the directory where this script lives (the "audit" folder)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# 2. Set the root directory to one level up from the script's folder
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
-
-# 3. Save the output file inside the "audit" folder
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, "full_code.txt")
 
-# Folders to completely ignore
+MAX_FILE_CHARS = 80_000
+
+INCLUDE_EXTENSIONS = {
+    ".py", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"
+}
+
 IGNORE_DIRS = {
-    '.git', '.venv', 'venv', 'env', 'node_modules', '__pycache__', 
-    '.idea', '.vscode', 'build', 'dist', 'coverage', '.next'
+    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
+    ".idea", ".vscode", "build", "dist", "coverage", ".next",
+    "output", "outputs", "artifacts", "logs", "cache", ".cache",
+    "data", "raw_data", "processed_data",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".kilo"
 }
 
-# File extensions to ignore
-IGNORE_EXTENSIONS = {
-    '.pyc', '.pyo', '.exe', '.dll', '.so', '.dylib', 
-    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp',
-    '.mp3', '.mp4', '.wav', '.avi', '.mov',
-    '.zip', '.tar', '.gz', '.rar', '.7z',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx',
-    '.ttf', '.otf', '.woff', '.woff2',
-    '.db', '.sqlite3', '.log', '.lock'
-}
-
-# Specific files to ignore (Updated to match your new file names)
 IGNORE_FILES = {
-    'generate_prompt.py', 
-    'full_code.txt', 
-    '.env', 
-    '.env.local'
+    "generate_prompt.py",
+    "full_code.txt",
+    ".env",
+    ".env.local",
+    "credentials.json",
+    "secrets.json",
+    "token.json",
+    "kilo.jsonc",
 }
+
+SECRET_PATTERNS = [
+    (re.compile(r"db-[A-Za-z0-9_\-]{20,}"), "db-REDACTED"),
+    (re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(secret\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(password\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(token\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+]
+
+def should_skip_file(file):
+    if file in IGNORE_FILES or file.startswith("."):
+        return True
+    ext = os.path.splitext(file)[1].lower()
+    return ext not in INCLUDE_EXTENSIONS
+
+def redact(text):
+    for pattern, replacement in SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 def generate_context():
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as outfile:
-        
-        # 1. GENERATE DIRECTORY TREE
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
         outfile.write("# PROJECT DIRECTORY STRUCTURE\n")
         outfile.write("=============================\n\n")
-        
+
         for root, dirs, files in os.walk(ROOT_DIR):
-            # Modify dirs in-place to prevent visiting ignored directories
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-            
-            # Safely calculate depth based on relative path to root
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+
             rel_root = os.path.relpath(root, ROOT_DIR)
-            if rel_root == '.':
-                level = 0
-            else:
-                level = rel_root.count(os.sep) + 1
-                
-            indent = ' ' * 4 * level
-            folder_name = os.path.basename(root)
-            
-            if folder_name or root == ROOT_DIR:
-                outfile.write(f"{indent}{folder_name if folder_name else 'ROOT'}/\n")
-            
-            subindent = ' ' * 4 * (level + 1)
-            for f in files:
-                if f not in IGNORE_FILES and not f.startswith('.'):
+            level = 0 if rel_root == "." else rel_root.count(os.sep) + 1
+            indent = " " * 4 * level
+            outfile.write(f"{indent}{os.path.basename(root) or 'ROOT'}/\n")
+
+            subindent = " " * 4 * (level + 1)
+            for f in sorted(files):
+                if not should_skip_file(f):
                     outfile.write(f"{subindent}{f}\n")
 
-        # 2. GENERATE FILE CONTENTS
         outfile.write("\n\n# FILE CONTENTS\n")
         outfile.write("=================\n\n")
-        
+
         for root, dirs, files in os.walk(ROOT_DIR):
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-            
-            for file in files:
-                if file in IGNORE_FILES:
-                    continue
-                
-                ext = os.path.splitext(file)[1].lower()
-                if ext in IGNORE_EXTENSIONS:
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+
+            for file in sorted(files):
+                if should_skip_file(file):
                     continue
 
                 file_path = os.path.join(root, file)
                 rel_path = os.path.relpath(file_path, ROOT_DIR)
 
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as infile:
-                        content = infile.read()
-                        
-                        outfile.write(f"--- START OF FILE: {rel_path} ---\n")
-                        outfile.write(content)
-                        if not content.endswith('\n'):
-                            outfile.write('\n')
-                        outfile.write(f"--- END OF FILE: {rel_path} ---\n\n")
-                        
-                except UnicodeDecodeError:
-                    outfile.write(f"--- SKIPPED BINARY OR UNREADABLE FILE: {rel_path} ---\n\n")
-                except Exception as e:
-                    outfile.write(f"--- ERROR READING FILE: {rel_path} (Error: {e}) ---\n\n")
+                    with open(file_path, "r", encoding="utf-8") as infile:
+                        content = infile.read(MAX_FILE_CHARS + 1)
 
-    print(f"Success! Project context written to:\n{OUTPUT_FILE}")
+                    truncated = len(content) > MAX_FILE_CHARS
+                    content = content[:MAX_FILE_CHARS]
+                    content = redact(content)
+
+                    outfile.write(f"--- START OF FILE: {rel_path} ---\n")
+                    outfile.write(content)
+                    if not content.endswith("\n"):
+                        outfile.write("\n")
+                    if truncated:
+                        outfile.write(f"\n--- TRUNCATED: {rel_path} exceeded {MAX_FILE_CHARS} chars ---\n")
+                    outfile.write(f"--- END OF FILE: {rel_path} ---\n\n")
+
+                except UnicodeDecodeError:
+                    outfile.write(f"--- SKIPPED UNREADABLE FILE: {rel_path} ---\n\n")
+                except Exception as e:
+                    outfile.write(f"--- ERROR READING FILE: {rel_path} ({e}) ---\n\n")
+
+    print(f"Success. Project context written to:\n{OUTPUT_FILE}")
 
 if __name__ == "__main__":
     generate_context()

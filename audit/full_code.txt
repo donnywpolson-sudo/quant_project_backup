@@ -39,362 +39,11 @@ quant_project_backup/
         utils/
             manifest.py
             types.py
-    data/
-        CL/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        ES/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        GC/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        HG/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        NG/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        NQ/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        RTY/
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        SI/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        YM/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        ZB/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        ZC/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-        ZN/
-            2010.parquet
-            2011.parquet
-            2012.parquet
-            2013.parquet
-            2014.parquet
-            2015.parquet
-            2016.parquet
-            2017.parquet
-            2018.parquet
-            2019.parquet
-            2020.parquet
-            2021.parquet
-            2022.parquet
-            2023.parquet
-            2024.parquet
-            2025.parquet
-            2026.parquet
-    output/
-        manifest_2024.json
-        manifest_2024_split_1.json
-        manifest_2024_split_2.json
-        manifest_2024_split_3.json
-        manifest_2024_split_4.json
-        manifest_2024_split_5.json
-        manifest_2024_split_6.json
-        aggregated/
-            all_markets.json
-            CL_metrics.json
-            ES_metrics.json
-            ZB_metrics.json
-        cache/
-            aligned_data_1f3125ac3f33.parquet
-            aligned_data_54cdaed9f5f3.parquet
-            aligned_data_793df9163439.parquet
-            aligned_data_7f22063a0371.parquet
-            aligned_data_91458bddb8e3.parquet
-            aligned_data_91d9b764b17c.parquet
-            aligned_data_a00b4c0cb7a7.parquet
-            aligned_data_aa6e302e19f5.parquet
-            aligned_data_b3c47247939f.parquet
-            full_feature_matrix_1f3125ac3f33.parquet
-            full_feature_matrix_54cdaed9f5f3.parquet
-            full_feature_matrix_793df9163439.parquet
-            full_feature_matrix_7f22063a0371.parquet
-            full_feature_matrix_91458bddb8e3.parquet
-            full_feature_matrix_91d9b764b17c.parquet
-            full_feature_matrix_a00b4c0cb7a7.parquet
-            full_feature_matrix_aa6e302e19f5.parquet
-            full_feature_matrix_b3c47247939f.parquet
-        CL/
-            2024/
-                backtest_results.parquet
-            2024_split_1/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_2/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_3/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_4/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_5/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_6/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-        ES/
-            2024/
-                backtest_results.parquet
-            2024_split_1/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_2/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_3/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_4/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_5/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_6/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-        train_2024/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_1/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_2/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_3/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_4/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_5/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        train_2024_split_6/
-            CL_2024.parquet
-            ES_2024.parquet
-            ZB_2024.parquet
-        ZB/
-            2024/
-                backtest_results.parquet
-            2024_split_1/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_2/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_3/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_4/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_5/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
-            2024_split_6/
-                backtest_results.parquet
-                backtest_results_hmm.parquet
-                hmm_validation_report.json
     pipeline/
+        __init__.py
         cli.py
         orchestrator.py
         runner.py
-        __init__.py
         align/
             align.py
         analytics/
@@ -456,75 +105,6 @@ quant_project_backup/
 # FILE CONTENTS
 =================
 
---- START OF FILE: .gitignore ---
-# Python environment and caches
-__pycache__/
-.venv/
-*.pyc
-*.pyo
-*.egg-info/
-*.egg
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Project Data (Do not sync these)
-output/cache/
-futures/
-
-# Secrets and Settings
-.env
-.DS_Store
-*.log
-
-# Generated by the pipeline at runtime
-full_code.md                # auto‑generated snapshot (changes every run)
-*.parquet                   # any temporary Parquet files (resampled streams, cache)
-temp_*                      # temporary directories / files from resampling
-*.tmp
-
-# VS Code (optional – only if you don't want to share workspace settings)
-.vscode/
-*.code-workspace
-
-# Jupyter notebooks (if any)
-.ipynb_checkpoints/
-*.ipynb
-
-# OS metadata
-Thumbs.db
-desktop.ini
-
-# --- Additional entries for quant pipeline ---
-# Cache and model directories (from config)
-cache/
-models/
-
-# Generated test fixtures (synthetic data)
-tests/fixtures/
-!tests/fixtures/.gitkeep   # optional, to keep the directory
-
-# Serialized models / joblib files
-*.pkl
-*.joblib
-
-# CSV outputs (if any written outside artifacts)
-*.csv
-
-# Coverage and test reports
-.coverage
-htmlcov/
-.tox/
-
-# IDE folders (if not already covered)
-.idea/
-*.swp
-*.swo
-
-# Databento API Key
-.env
---- END OF FILE: .gitignore ---
-
 --- START OF FILE: README.md ---
 # Deterministic Intraday Futures ML Backtester
 
@@ -552,6 +132,13 @@ tqdm>=4.66.0
 --- START OF FILE: run.py ---
 import os
 import sys
+
+# ── UTF-8 everywhere (Windows hardening) ──
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import subprocess
 import logging
 import time
@@ -562,7 +149,12 @@ import polars as pl
 import numpy as np
 from core.config import load_config, RootConfig
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    encoding='utf-8',
+    force=True,
+)
 logger = logging.getLogger('QuantRunner')
 _VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
 _MIN_TRAIN_DAYS = 90
@@ -821,6 +413,25 @@ def _validate_symbol_data(f: Path, config) -> bool:
     return True
 
 
+def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout_text: str,
+                            log_dir: Path, symbol: str, split_idx: int, stage: str) -> None:
+    """Persist full subprocess failure output to a deterministic log file."""
+    import datetime as dt
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    log_path = log_dir / f'fail_{symbol}_split{split_idx}_{stage}_{timestamp}.log'
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write(f'command: {" ".join(cmd)}\n')
+        f.write(f'returncode: {returncode}\n')
+        f.write(f'symbol: {symbol}\n')
+        f.write(f'split_idx: {split_idx}\n')
+        f.write(f'stage: {stage}\n')
+        f.write(f'timestamp: {timestamp}\n')
+        f.write(f'--- STDOUT ---\n{stdout_text}\n--- STDERR ---\n{stderr_text}\n')
+
+
+_log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
+
 def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     if not per_symbol:
         return
@@ -937,9 +548,8 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
-    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE}
-    if not _VERBOSE:
-        kw['stdout'] = subprocess.DEVNULL
+    env['PYTHONIOENCODING'] = 'utf-8'
+    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'stdout': subprocess.PIPE, 'timeout': 300}
     if config.pipeline.enable_discovery:
         subprocess.run([sys.executable, '-m', 'pipeline.cli', 'discover',
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
@@ -964,12 +574,16 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
         try:
             subprocess.run(cmd, **kw)
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
+            stdout_text = e.stdout.decode(errors='replace') if isinstance(e.stdout, bytes) else str(e.stdout or '')
             err_lines = stderr_text.strip().split('\n')
             print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
             for line in err_lines[-3:]:
                 print(f'  > {line}')
+            if _log_failures:
+                _log_subprocess_failure(cmd, e.returncode, stderr_text, stdout_text,
+                                        Path('output') / 'logs', symbol, split_idx, 'hmm')
             logger.warning(
                 'run-hmm failed for %s split=%d (rc=%d)',
                 symbol, split_idx, e.returncode,
@@ -982,12 +596,16 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
                 subprocess.run(cmd_fb, **kw)
-            except subprocess.CalledProcessError as e2:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
                 stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
+                stdout2 = e2.stdout.decode(errors='replace') if isinstance(e2.stdout, bytes) else str(e2.stdout or '')
                 err2_lines = stderr2.strip().split('\n')
                 print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
                 for line in err2_lines[-3:]:
                     print(f'  > {line}')
+                if _log_failures:
+                    _log_subprocess_failure(cmd_fb, e2.returncode, stderr2, stdout2,
+                                            Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results_hmm.parquet'
@@ -1036,530 +654,216 @@ if __name__ == '__main__':
 --- END OF FILE: run.py ---
 
 --- START OF FILE: audit\audit_prompt.md ---
-# CLINE INLINE AGENT — ADVERSARIAL QUANT FORENSIC AUDIT (DEEPSEEK V4 PRO)
-
-You are an adversarial institutional quant auditor.
-
-Audit this Python trading/research codebase for STRICT CAUSALITY and EXECUTION REALISM.
-
-Primary objective:
-
-Detect and eliminate:
-
-* look-ahead leakage
-* hidden future dependence
-* target leakage
-* regime contamination
-* execution unreality
-* invalid fills
-* train/test contamination
-* walk-forward leakage
-* improper scaling
-* session bleed
-* pnl distortion
-* leverage violations
-* synthetic Sharpe inflation
-
-Assume ALL code is hostile until proven causal.
-
-False positives are preferable to missed leakage.
-
----
-
-# CODEBASE CONTEXT
-
-This repository contains:
-
-* parquet futures datasets
-* walk-forward pipelines
-* feature discovery manifests
-* sklearn preprocessing/modeling
-* rolling statistical features
-* regime/state logic
-* execution simulation
-* futures pnl accounting
-* train/test orchestration
-* subprocess-driven pipelines
-
-Critical orchestration files include:
-
-* run.py
-* quant.cli
-* feature discovery modules
-* preprocessing pipelines
-* execution/backtest engines
-* model training modules
-
-Trace causality recursively across modules.
-
-Treat ALL merges/transforms/fits as suspicious.
-
----
-
-# HARD RULES
-
-## 1. FEATURE CAUSALITY
-
-ALL derived features MUST use ONLY prior information.
-
-Flag ANY:
-
-* rolling() without lag
-* ewm() without lag
-* expanding() without lag
-* cumulative stats touching current bar
-* percentile/rank leakage
-* ATR/VWAP leakage
-* rolling volatility leakage
-* z-score leakage
-* PCA leakage
-* clustering leakage
-* fit_transform on full sample
-* global normalization
-* scaler fit before split
-* center=True
-
-Required pattern:
-
-```python
-feature = raw_feature.shift(1)
-```
-
-Aggressively search for:
-
-```python
-rolling(
-expanding(
-ewm(
-cum
-pct_change(
-rank(
-quantile(
-std(
-mean(
-min(
-max(
-zscore
-StandardScaler
-MinMaxScaler
-RobustScaler
-PCA
-GaussianHMM
-fit_transform
-```
-
----
-
-## 2. TARGET CAUSALITY
-
-Valid:
-
-```python
-target = np.log(close.shift(-h)) - np.log(open.shift(-1))
-```
-
-Flag:
-
-* same-bar prediction
-* current-bar returns
-* execution using current close
-* future leakage into labels
-* future joins/alignment
-
-Search:
-
-```python
-shift(-1)
-shift(-h)
-future_return
-forward_return
-target
-label
-pct_change
-```
-
----
-
-## 3. SESSION ISOLATION
-
-ALL rolling/fill/state operations MUST isolate by:
-
-```python
-session_id
-```
-
-Flag:
-
-```python
-groupby(df.index.date)
-groupby("date")
-timestamp.dt.date
-```
-
-Audit:
-
-* VWAP
-* fills
-* cumulative pnl
-* rolling stats
-* exposure
-* drawdown
-* state transitions
-
-Required:
-
-```python
-groupby("session_id")
-```
-
----
-
-## 4. FILL SAFETY
-
-.bfill() prohibited unless BOTH:
-
-```python
-.ffill().bfill()
-```
-
-AND session-isolated.
-
-Flag:
-
-* naked bfill
-* global fillna(method="bfill")
-* cross-session propagation
-
-Required:
-
-```python
-df["x"] = (
-    df.groupby("session_id")["x"]
-      .ffill()
-      .bfill()
-)
-```
-
----
-
-## 5. EXECUTION REALISM
-
-Flag:
-
-* same-bar fills
-* midpoint fills
-* close execution after close-generated signal
-* impossible intrabar fills
-* optimistic stop fills
-* TP fills through gaps
-* latency-free execution
-
-If next open breaches stop/target:
-
-```python
-fill_price = next_open
-```
-
-NOT stop/target price.
-
-Audit:
-
-* stops
-* targets
-* trailing stops
-* reversals
-* pyramids
-* overnight gaps
-
----
-
-## 6. TRANSACTION COSTS
-
-Per-side:
-
-```python
-cost = TX_COST / 2.0
-```
-
-Validate:
-
-* entry fees
-* exit fees
-* reversals
-* flattening
-* slippage
-* spread accounting
-
-Flag:
-
-* missing exit fee
-* one-sided commission
-* double charging
-* pnl without spread/slippage
-
----
-
-## 7. WALK-FORWARD / SPLIT INTEGRITY
-
-Audit ALL:
-
-* feature discovery timing
-* manifest generation
-* train/test overlap
-* preprocessing fit order
-* scaler/model fit timing
-* parquet overlap
-* fold contamination
-
-Flag:
-
-* fit before split
-* train_test_split without shuffle=False
-* random shuffling
-* future years inside training
-* feature discovery on merged datasets
-* preprocessing fit on train+test
-
-Validate strict chronology.
-
----
-
-## 8. REGIME / STATE MODEL SAFETY
-
-Flag:
-
-* GaussianHMM fit globally
-* future volatility usage
-* smoothed future states
-* global z-score
-* full-sample normalization
-
-Required:
-
-```python
-vol = returns.rolling(window).std().shift(1)
-```
-
-Only expanding or walk-forward fitting allowed.
-
----
-
-## 9. POSITION SIZE SAFETY
-
-Required:
-
-```python
-position = min(raw_size, max_position, notional_cap)
-```
-
-Flag:
-
-* uncapped leverage
-* NaN/infinite sizing
-* recursive exposure explosion
-* Kelly overleverage
-
-Validate:
-
-* integer contracts
-* leverage caps
-* notional exposure
-* margin realism
-
----
-
-## 10. PNL ACCOUNTING
-
-Audit:
-
-* contract multipliers
-* tick values
-* MTM timing
-* reversal accounting
-* realized/unrealized pnl
-* double counting
-
-Flag:
-
-* pnl using future prices
-* same-bar MTM
-* incorrect futures multipliers
-
----
-
-# HIGH-RISK OPERATIONS
-
-Treat as hostile:
-
-```python
-merge
-join
-concat
-reset_index
-reindex
-align
-ffill
-bfill
-rolling
-expanding
-shift
-groupby
-resample
-transform
-apply
-fit
-fit_transform
-predict
-```
-
-Trace temporal ordering explicitly.
-
----
-
-# OUTPUT FORMAT
-
-If NO violations:
-
-```text
-NO VIOLATION FOUND
-```
-
-Otherwise output ONLY:
-
-````text
-FILE: path/to/file.py
-LINE: 123
-
-```python
-# corrected code
-````
-
-```
-
-NO explanations.
-NO summaries.
-NO commentary.
-NO prose outside required format.
-
----
-
-# EXECUTION DIRECTIVES
-
-1. Perform recursive causal tracing across modules.
-2. Validate ALL shift directions.
-3. Validate ALL rolling windows.
-4. Audit ALL merges/joins.
-5. Audit preprocessing fit order.
-6. Detect hidden vectorized leakage.
-7. Detect walk-forward contamination.
-8. Detect session bleed.
-9. Detect synthetic Sharpe inflation.
-10. Reject optimistic assumptions.
-11. Prefer over-reporting to missed leakage.
-12. Assume hidden future dependence unless disproven.
+MODEL: DeepSeek V4 Pro
+MODE: TARGETED SAFE CODEBASE REPAIR
+
+You are a senior quant systems repair agent. Audit and patch this Python futures ML backtester with minimal edits only.
+
+PRIMARY GOAL:
+Make the codebase run safely and preserve causal correctness.
+
+TOKEN RULES:
+- Be brief.
+- Read targeted files only.
+- Do not summarize whole files.
+- Do not inspect unrelated code unless needed.
+- Prefer grep/search before opening files.
+- Patch small ranges only.
+- Stop after validation.
+
+GLOBAL SAFETY:
+- No destructive edits.
+- No file moves/renames.
+- No architecture rewrites.
+- No strategy redesign.
+- No alpha/threshold tuning.
+- No formatting-only churn.
+- No dependency additions unless required to fix a crash.
+- No infinite loops/exploration.
+- No broad refactor.
+- Preserve existing public APIs, CLI commands, configs, outputs, and cache paths.
+- Preserve temporal causality: features(t-1) -> prediction(t) -> execution(t+1).
+- Never introduce lookahead, target leakage, same-bar fills, full-sample scaler leakage, or cross-fold contamination.
+- Never silently fallback futures metadata to ES.
+
+FIRST PASS — MUST FIX COMPILE/RUNTIME BREAKS:
+1. Run/inspect syntax quickly:
+   - python -m py_compile run.py
+   - python -m py_compile core/config.py
+   - python -m py_compile pipeline/**/*.py where practical
+2. Fix only real syntax/import/runtime blockers.
+3. Visible known issue:
+   - run.py appears to have broken indentation/missing function around `_log_failures` and `_print_split_dashboard`.
+   - Restore `_print_split_dashboard(split_idx, total_splits, per_symbol)` as a proper function.
+   - Keep dashboard behavior unchanged.
+
+SECOND PASS — TARGETED AUDIT FIXES:
+A) Session ID offset consistency
+- Search for hardcoded session offsets like `offset_by('6h')`, `"6h"`, `timedelta(hours=6)`.
+- Replace hardcoded session offset with canonical logic derived from config.SESSION_START_LOCAL.
+- Default 18:00 session start must still equal 6h offset.
+- Ensure session.py and walkforward.py use equivalent session grouping logic.
+
+B) Contract multiplier safety
+- Search `_recompute_pnl_after_gate`, `CURRENT_SYMBOL`, multiplier fallback, `.get(..., 'ES')`, `.get(..., 50)`.
+- Remove silent ES fallback.
+- Require explicit symbol and valid multiplier.
+- Raise clear RuntimeError if symbol/multiplier missing.
+- Non-ES symbols must never use ES multiplier accidentally.
+
+C) Subprocess failure logs
+- Keep console concise.
+- Persist full stdout/stderr for failed subprocesses under existing output/log path.
+- Include command, return code, symbol, split_idx, stage.
+- Do not change fallback behavior.
+
+D) Continuous contract factor guard
+- Search cumulative_factor logic.
+- Do not redesign contract construction.
+- Add fail-fast guard for non-finite, <=0 factor.
+- Add warning for extreme but finite cumulative_factor.
+- Keep output schema unchanged.
+
+E) Adjustment factor semantics
+- Do not break output columns.
+- Add narrow comments/internal variable names only if needed.
+- No schema changes.
+
+TESTS:
+Add/update only minimal tests for touched behavior:
+- session offset consistency
+- no ES multiplier fallback
+- run.py compiles
+- subprocess failure log persistence if easy
+
+VALIDATION ORDER:
+1. python -m py_compile run.py
+2. python -m py_compile core/config.py
+3. python -m py_compile pipeline/...
+4. pytest tests/test_session_streaming.py -q
+5. pytest tests/test_continuous_contract.py -q
+6. pytest tests/test_causal_audit.py -q
+7. pytest -q only if fast/practical
+
+IF TESTS FAIL:
+- Fix only failures caused by your edits.
+- If unrelated failure exists, report it and stop.
+
+OUTPUT ONLY:
+1. Files changed
+2. Fixes made
+3. Commands run + pass/fail
+4. Remaining risks
+
+STOP CONDITION:
+Stop immediately once compile passes, targeted fixes are patched, and relevant tests pass.
 --- END OF FILE: audit\audit_prompt.md ---
 
 --- START OF FILE: audit\code_to_text.py ---
 import os
+import re
 
-# --- CONFIGURATION ---
-# 1. Find the directory where this script lives (the "audit" folder)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# 2. Set the root directory to one level up from the script's folder
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
-
-# 3. Save the output file inside the "audit" folder
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, "full_code.txt")
 
-# Folders to completely ignore
+MAX_FILE_CHARS = 80_000
+
+INCLUDE_EXTENSIONS = {
+    ".py", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"
+}
+
 IGNORE_DIRS = {
-    '.git', '.venv', 'venv', 'env', 'node_modules', '__pycache__', 
-    '.idea', '.vscode', 'build', 'dist', 'coverage', '.next'
+    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
+    ".idea", ".vscode", "build", "dist", "coverage", ".next",
+    "output", "outputs", "artifacts", "logs", "cache", ".cache",
+    "data", "raw_data", "processed_data",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".kilo"
 }
 
-# File extensions to ignore
-IGNORE_EXTENSIONS = {
-    '.pyc', '.pyo', '.exe', '.dll', '.so', '.dylib', 
-    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp',
-    '.mp3', '.mp4', '.wav', '.avi', '.mov',
-    '.zip', '.tar', '.gz', '.rar', '.7z',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx',
-    '.ttf', '.otf', '.woff', '.woff2',
-    '.db', '.sqlite3', '.log', '.lock'
-}
-
-# Specific files to ignore (Updated to match your new file names)
 IGNORE_FILES = {
-    'generate_prompt.py', 
-    'full_code.txt', 
-    '.env', 
-    '.env.local'
+    "generate_prompt.py",
+    "full_code.txt",
+    ".env",
+    ".env.local",
+    "credentials.json",
+    "secrets.json",
+    "token.json",
+    "kilo.jsonc",
 }
+
+SECRET_PATTERNS = [
+    (re.compile(r"db-[A-Za-z0-9_\-]{20,}"), "db-REDACTED"),
+    (re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(secret\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(password\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+    (re.compile(r"(?i)(token\s*[:=]\s*)['\"]?[^'\"\n]+"), r"\1REDACTED"),
+]
+
+def should_skip_file(file):
+    if file in IGNORE_FILES or file.startswith("."):
+        return True
+    ext = os.path.splitext(file)[1].lower()
+    return ext not in INCLUDE_EXTENSIONS
+
+def redact(text):
+    for pattern, replacement in SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 def generate_context():
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as outfile:
-        
-        # 1. GENERATE DIRECTORY TREE
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
         outfile.write("# PROJECT DIRECTORY STRUCTURE\n")
         outfile.write("=============================\n\n")
-        
+
         for root, dirs, files in os.walk(ROOT_DIR):
-            # Modify dirs in-place to prevent visiting ignored directories
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-            
-            # Safely calculate depth based on relative path to root
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+
             rel_root = os.path.relpath(root, ROOT_DIR)
-            if rel_root == '.':
-                level = 0
-            else:
-                level = rel_root.count(os.sep) + 1
-                
-            indent = ' ' * 4 * level
-            folder_name = os.path.basename(root)
-            
-            if folder_name or root == ROOT_DIR:
-                outfile.write(f"{indent}{folder_name if folder_name else 'ROOT'}/\n")
-            
-            subindent = ' ' * 4 * (level + 1)
-            for f in files:
-                if f not in IGNORE_FILES and not f.startswith('.'):
+            level = 0 if rel_root == "." else rel_root.count(os.sep) + 1
+            indent = " " * 4 * level
+            outfile.write(f"{indent}{os.path.basename(root) or 'ROOT'}/\n")
+
+            subindent = " " * 4 * (level + 1)
+            for f in sorted(files):
+                if not should_skip_file(f):
                     outfile.write(f"{subindent}{f}\n")
 
-        # 2. GENERATE FILE CONTENTS
         outfile.write("\n\n# FILE CONTENTS\n")
         outfile.write("=================\n\n")
-        
+
         for root, dirs, files in os.walk(ROOT_DIR):
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-            
-            for file in files:
-                if file in IGNORE_FILES:
-                    continue
-                
-                ext = os.path.splitext(file)[1].lower()
-                if ext in IGNORE_EXTENSIONS:
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+
+            for file in sorted(files):
+                if should_skip_file(file):
                     continue
 
                 file_path = os.path.join(root, file)
                 rel_path = os.path.relpath(file_path, ROOT_DIR)
 
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as infile:
-                        content = infile.read()
-                        
-                        outfile.write(f"--- START OF FILE: {rel_path} ---\n")
-                        outfile.write(content)
-                        if not content.endswith('\n'):
-                            outfile.write('\n')
-                        outfile.write(f"--- END OF FILE: {rel_path} ---\n\n")
-                        
-                except UnicodeDecodeError:
-                    outfile.write(f"--- SKIPPED BINARY OR UNREADABLE FILE: {rel_path} ---\n\n")
-                except Exception as e:
-                    outfile.write(f"--- ERROR READING FILE: {rel_path} (Error: {e}) ---\n\n")
+                    with open(file_path, "r", encoding="utf-8") as infile:
+                        content = infile.read(MAX_FILE_CHARS + 1)
 
-    print(f"Success! Project context written to:\n{OUTPUT_FILE}")
+                    truncated = len(content) > MAX_FILE_CHARS
+                    content = content[:MAX_FILE_CHARS]
+                    content = redact(content)
+
+                    outfile.write(f"--- START OF FILE: {rel_path} ---\n")
+                    outfile.write(content)
+                    if not content.endswith("\n"):
+                        outfile.write("\n")
+                    if truncated:
+                        outfile.write(f"\n--- TRUNCATED: {rel_path} exceeded {MAX_FILE_CHARS} chars ---\n")
+                    outfile.write(f"--- END OF FILE: {rel_path} ---\n\n")
+
+                except UnicodeDecodeError:
+                    outfile.write(f"--- SKIPPED UNREADABLE FILE: {rel_path} ---\n\n")
+                except Exception as e:
+                    outfile.write(f"--- ERROR READING FILE: {rel_path} ({e}) ---\n\n")
+
+    print(f"Success. Project context written to:\n{OUTPUT_FILE}")
 
 if __name__ == "__main__":
     generate_context()
@@ -1789,12 +1093,12 @@ execution:
   daily_loss_limit: "${ENV_DAILY_LOSS_LIMIT}"
 
 broker:
-  api_key: "${ENV_BROKER_API_KEY}"
-  api_secret: "${ENV_BROKER_API_SECRET}"
+  api_key: REDACTED"
+  api_secret: REDACTED"
   endpoint: "${ENV_BROKER_ENDPOINT}"
 
 data:
-  vendor_api_key: "${ENV_DATA_API_KEY}"
+  vendor_api_key: REDACTED"
   vendor_endpoint: "${ENV_DATA_ENDPOINT}"
 --- END OF FILE: configs\alpha_production.yaml ---
 
@@ -2777,2735 +2081,22 @@ if __name__ == '__main__':
     validate_dtypes(args.path)
 --- END OF FILE: core\utils\types.py ---
 
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2010.parquet ---
+--- START OF FILE: pipeline\__init__.py ---
 
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\CL\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ES\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\GC\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\HG\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NG\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\NQ\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\RTY\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\SI\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\YM\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZB\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZC\2026.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2010.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2011.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2012.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2013.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2014.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2015.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2016.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2017.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2018.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2019.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2020.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2021.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2022.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2023.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2025.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: data\ZN\2026.parquet ---
-
---- START OF FILE: output\manifest_2024.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T12:17:44.564874Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024.json ---
-
---- START OF FILE: output\manifest_2024_split_1.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T20:55:30.445246Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_1.json ---
-
---- START OF FILE: output\manifest_2024_split_2.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T13:39:42.419359Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_2.json ---
-
---- START OF FILE: output\manifest_2024_split_3.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T13:40:54.290417Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_3.json ---
-
---- START OF FILE: output\manifest_2024_split_4.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T13:41:51.818905Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_4.json ---
-
---- START OF FILE: output\manifest_2024_split_5.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T13:43:03.427689Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_5.json ---
-
---- START OF FILE: output\manifest_2024_split_6.json ---
-{
-    "version": "1.0",
-    "feature_names": [],
-    "selected_K": 0,
-    "selection_seed": 42,
-    "selection_date": "2026-05-29T13:44:04.242230Z",
-    "discovery_status": "skipped",
-    "reason": "only 0 samples available (need >= 2)"
-}
---- END OF FILE: output\manifest_2024_split_6.json ---
-
---- START OF FILE: output\aggregated\all_markets.json ---
-{
-  "total_pnl": 133439.71875,
-  "total_return_percent": 13343971.875,
-  "sharpe_annualized": 1.559,
-  "sortino_annualized": 1.737,
-  "calmar_ratio": 3.593,
-  "max_drawdown": -89241.851562,
-  "win_rate": 0.0,
-  "profit_factor": 0.0,
-  "avg_win": 0.0,
-  "avg_loss": 0.0,
-  "ratio_avg_win_loss": 0.0,
-  "number_of_trades": 0,
-  "avg_holding_bars": 0.0,
-  "turnover": 0.0,
-  "spearman_ic": null,
-  "spearman_ic_pvalue": null,
-  "benchmark_sharpe": null,
-  "benchmark_max_drawdown": null,
-  "correlation_with_benchmark": null,
-  "description": "Sum of all markets",
-  "markets": [
-    "CL",
-    "ES",
-    "ZB"
-  ]
-}
---- END OF FILE: output\aggregated\all_markets.json ---
-
---- START OF FILE: output\aggregated\CL_metrics.json ---
-{
-  "total_pnl": 52122.320312,
-  "total_return_percent": 5212232.0312,
-  "sharpe_annualized": 1.107,
-  "sortino_annualized": 1.361,
-  "calmar_ratio": 1.458,
-  "max_drawdown": -80795.265625,
-  "win_rate": 0.4797,
-  "profit_factor": 1.0184,
-  "avg_win": 420.17114258,
-  "avg_loss": -421.19851685,
-  "ratio_avg_win_loss": 0.998,
-  "number_of_trades": 15489,
-  "avg_holding_bars": 2.0,
-  "turnover": 0.1729,
-  "spearman_ic": 0.0122,
-  "spearman_ic_pvalue": 0.032781,
-  "benchmark_sharpe": 3.168,
-  "benchmark_max_drawdown": -0.082784,
-  "correlation_with_benchmark": 0.6149,
-  "market": "CL",
-  "num_years": 7,
-  "total_rows": 30777,
-  "years_breakdown": [
-    {
-      "total_pnl": 31151.722656,
-      "total_return_percent": 3115172.2656,
-      "sharpe_annualized": 0.779,
-      "sortino_annualized": 0.955,
-      "calmar_ratio": 1.99,
-      "max_drawdown": -41543.171875,
-      "win_rate": 0.4749,
-      "profit_factor": 1.0113,
-      "avg_win": 395.0473938,
-      "avg_loss": -397.39556885,
-      "ratio_avg_win_loss": 0.994,
-      "number_of_trades": 15129,
-      "avg_holding_bars": 1.7,
-      "turnover": 0.1942,
-      "spearman_ic": 0.0095,
-      "spearman_ic_pvalue": 0.122285,
-      "benchmark_sharpe": 2.03,
-      "benchmark_max_drawdown": -0.082491,
-      "correlation_with_benchmark": 0.6161,
-      "year": "2024"
-    },
-    {
-      "total_pnl": -10746.672852,
-      "total_return_percent": -1074667.2852,
-      "sharpe_annualized": -11.206,
-      "sortino_annualized": -14.454,
-      "calmar_ratio": -77.806,
-      "max_drawdown": -16091.570312,
-      "win_rate": 0.4624,
-      "profit_factor": 0.8066,
-      "avg_win": 426.16903687,
-      "avg_loss": -507.71984863,
-      "ratio_avg_win_loss": 0.839,
-      "number_of_trades": 271,
-      "avg_holding_bars": 2.1,
-      "turnover": 0.2117,
-      "spearman_ic": -0.0814,
-      "spearman_ic_pvalue": 0.047054,
-      "benchmark_sharpe": -2.649,
-      "benchmark_max_drawdown": -0.016113,
-      "correlation_with_benchmark": 0.5464,
-      "year": "2024_split_1"
-    },
-    {
-      "total_pnl": 16283.992188,
-      "total_return_percent": 1628399.2188,
-      "sharpe_annualized": 11.549,
-      "sortino_annualized": 15.664,
-      "calmar_ratio": 90.491,
-      "max_drawdown": -14304.023438,
-      "win_rate": 0.4979,
-      "profit_factor": 1.1502,
-      "avg_win": 432.78067017,
-      "avg_loss": -413.88143921,
-      "ratio_avg_win_loss": 1.046,
-      "number_of_trades": 491,
-      "avg_holding_bars": 1.7,
-      "turnover": 0.233,
-      "spearman_ic": 0.0172,
-      "spearman_ic_pvalue": 0.611269,
-      "benchmark_sharpe": 19.042,
-      "benchmark_max_drawdown": -0.008964,
-      "correlation_with_benchmark": 0.6481,
-      "year": "2024_split_2"
-    },
-    {
-      "total_pnl": -28730.447266,
-      "total_return_percent": -2873044.7266,
-      "sharpe_annualized": -21.881,
-      "sortino_annualized": -24.138,
-      "calmar_ratio": -75.139,
-      "max_drawdown": -30393.376953,
-      "win_rate": 0.4567,
-      "profit_factor": 0.7744,
-      "avg_win": 352.75662231,
-      "avg_loss": -417.70782471,
-      "ratio_avg_win_loss": 0.845,
-      "number_of_trades": 519,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.2342,
-      "spearman_ic": 0.0091,
-      "spearman_ic_pvalue": 0.789121,
-      "benchmark_sharpe": -6.937,
-      "benchmark_max_drawdown": -0.029626,
-      "correlation_with_benchmark": 0.4394,
-      "year": "2024_split_3"
-    },
-    {
-      "total_pnl": 11430.28418,
-      "total_return_percent": 1143028.418,
-      "sharpe_annualized": 10.188,
-      "sortino_annualized": 15.015,
-      "calmar_ratio": 90.75,
-      "max_drawdown": -11303.676758,
-      "win_rate": 0.4753,
-      "profit_factor": 1.1479,
-      "avg_win": 382.05743408,
-      "avg_loss": -337.01922607,
-      "ratio_avg_win_loss": 1.134,
-      "number_of_trades": 511,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.2118,
-      "spearman_ic": 0.0117,
-      "spearman_ic_pvalue": 0.744505,
-      "benchmark_sharpe": 16.434,
-      "benchmark_max_drawdown": -0.011617,
-      "correlation_with_benchmark": 0.695,
-      "year": "2024_split_4"
-    },
-    {
-      "total_pnl": 14966.670898,
-      "total_return_percent": 1496667.0898,
-      "sharpe_annualized": 13.52,
-      "sortino_annualized": 15.165,
-      "calmar_ratio": 128.265,
-      "max_drawdown": -11256.224609,
-      "win_rate": 0.5204,
-      "profit_factor": 1.201,
-      "avg_win": 380.47329712,
-      "avg_loss": -391.74200439,
-      "ratio_avg_win_loss": 0.971,
-      "number_of_trades": 450,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.2632,
-      "spearman_ic": -0.1358,
-      "spearman_ic_pvalue": 0.000258,
-      "benchmark_sharpe": 22.046,
-      "benchmark_max_drawdown": -0.012169,
-      "correlation_with_benchmark": 0.6864,
-      "year": "2024_split_5"
-    },
-    {
-      "total_pnl": 17766.787109,
-      "total_return_percent": 1776678.7109,
-      "sharpe_annualized": 15.162,
-      "sortino_annualized": 19.502,
-      "calmar_ratio": 147.625,
-      "max_drawdown": -11545.685547,
-      "win_rate": 0.5119,
-      "profit_factor": 1.2376,
-      "avg_win": 418.38699341,
-      "avg_loss": -401.58218384,
-      "ratio_avg_win_loss": 1.042,
-      "number_of_trades": 423,
-      "avg_holding_bars": 1.7,
-      "turnover": 0.2344,
-      "spearman_ic": 0.0351,
-      "spearman_ic_pvalue": 0.345076,
-      "benchmark_sharpe": 16.085,
-      "benchmark_max_drawdown": -0.010776,
-      "correlation_with_benchmark": 0.7305,
-      "year": "2024_split_6"
-    }
-  ]
-}
---- END OF FILE: output\aggregated\CL_metrics.json ---
-
---- START OF FILE: output\aggregated\ES_metrics.json ---
-{
-  "total_pnl": 100101.046875,
-  "total_return_percent": 10010104.6875,
-  "sharpe_annualized": 1.928,
-  "sortino_annualized": 1.914,
-  "calmar_ratio": 3.888,
-  "max_drawdown": -54331.398438,
-  "win_rate": 0.4862,
-  "profit_factor": 1.031,
-  "avg_win": 373.36804199,
-  "avg_loss": -384.94354248,
-  "ratio_avg_win_loss": 0.97,
-  "number_of_trades": 18082,
-  "avg_holding_bars": 1.8,
-  "turnover": 0.0223,
-  "spearman_ic": 0.0202,
-  "spearman_ic_pvalue": 0.000247,
-  "benchmark_sharpe": 13.16,
-  "benchmark_max_drawdown": -0.04457,
-  "correlation_with_benchmark": 0.5896,
-  "market": "ES",
-  "num_years": 7,
-  "total_rows": 32961,
-  "years_breakdown": [
-    {
-      "total_pnl": 76164.039062,
-      "total_return_percent": 7616403.9062,
-      "sharpe_annualized": 1.793,
-      "sortino_annualized": 1.773,
-      "calmar_ratio": 4.055,
-      "max_drawdown": -47219.34375,
-      "win_rate": 0.4839,
-      "profit_factor": 1.0266,
-      "avg_win": 341.95620728,
-      "avg_loss": -356.7350769,
-      "ratio_avg_win_loss": 0.959,
-      "number_of_trades": 17469,
-      "avg_holding_bars": 1.6,
-      "turnover": 0.0252,
-      "spearman_ic": 0.0236,
-      "spearman_ic_pvalue": 8.7e-05,
-      "benchmark_sharpe": 13.705,
-      "benchmark_max_drawdown": -0.04457,
-      "correlation_with_benchmark": 0.5731,
-      "year": "2024"
-    },
-    {
-      "total_pnl": -3024.363525,
-      "total_return_percent": -302436.3525,
-      "sharpe_annualized": -1.633,
-      "sortino_annualized": -1.638,
-      "calmar_ratio": -17.078,
-      "max_drawdown": -16271.290039,
-      "win_rate": 0.5,
-      "profit_factor": 0.9767,
-      "avg_win": 561.76947021,
-      "avg_loss": -621.17791748,
-      "ratio_avg_win_loss": 0.904,
-      "number_of_trades": 490,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.0396,
-      "spearman_ic": -0.0018,
-      "spearman_ic_pvalue": 0.959838,
-      "benchmark_sharpe": -1.883,
-      "benchmark_max_drawdown": -0.01446,
-      "correlation_with_benchmark": 0.699,
-      "year": "2024_split_1"
-    },
-    {
-      "total_pnl": 9793.404297,
-      "total_return_percent": 979340.4297,
-      "sharpe_annualized": 6.599,
-      "sortino_annualized": 6.308,
-      "calmar_ratio": 79.348,
-      "max_drawdown": -8679.833984,
-      "win_rate": 0.5032,
-      "profit_factor": 1.1094,
-      "avg_win": 320.9289856,
-      "avg_loss": -334.527771,
-      "ratio_avg_win_loss": 0.959,
-      "number_of_trades": 636,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.0294,
-      "spearman_ic": 0.034,
-      "spearman_ic_pvalue": 0.286202,
-      "benchmark_sharpe": 19.828,
-      "benchmark_max_drawdown": -0.007547,
-      "correlation_with_benchmark": 0.7088,
-      "year": "2024_split_2"
-    },
-    {
-      "total_pnl": -5887.337402,
-      "total_return_percent": -588733.7402,
-      "sharpe_annualized": -5.469,
-      "sortino_annualized": -5.854,
-      "calmar_ratio": -38.224,
-      "max_drawdown": -10897.686523,
-      "win_rate": 0.4828,
-      "profit_factor": 0.9227,
-      "avg_win": 258.36611938,
-      "avg_loss": -289.86349487,
-      "ratio_avg_win_loss": 0.891,
-      "number_of_trades": 613,
-      "avg_holding_bars": 1.5,
-      "turnover": 0.0287,
-      "spearman_ic": -0.0296,
-      "spearman_ic_pvalue": 0.353365,
-      "benchmark_sharpe": 34.791,
-      "benchmark_max_drawdown": -0.008084,
-      "correlation_with_benchmark": 0.388,
-      "year": "2024_split_3"
-    },
-    {
-      "total_pnl": -12122.823242,
-      "total_return_percent": -1212282.3242,
-      "sharpe_annualized": -9.781,
-      "sortino_annualized": -10.518,
-      "calmar_ratio": -59.887,
-      "max_drawdown": -16505.492188,
-      "win_rate": 0.468,
-      "profit_factor": 0.8756,
-      "avg_win": 305.769104,
-      "avg_loss": -346.72958374,
-      "ratio_avg_win_loss": 0.882,
-      "number_of_trades": 596,
-      "avg_holding_bars": 1.4,
-      "turnover": 0.0208,
-      "spearman_ic": 0.0121,
-      "spearman_ic_pvalue": 0.723365,
-      "benchmark_sharpe": 5.072,
-      "benchmark_max_drawdown": -0.010117,
-      "correlation_with_benchmark": 0.422,
-      "year": "2024_split_4"
-    },
-    {
-      "total_pnl": 4176.155273,
-      "total_return_percent": 417615.5273,
-      "sharpe_annualized": 2.353,
-      "sortino_annualized": 2.334,
-      "calmar_ratio": 28.621,
-      "max_drawdown": -11545.361328,
-      "win_rate": 0.505,
-      "profit_factor": 1.0342,
-      "avg_win": 420.84799194,
-      "avg_loss": -457.79067993,
-      "ratio_avg_win_loss": 0.919,
-      "number_of_trades": 609,
-      "avg_holding_bars": 1.3,
-      "turnover": 0.0238,
-      "spearman_ic": -0.0571,
-      "spearman_ic_pvalue": 0.090723,
-      "benchmark_sharpe": -9.432,
-      "benchmark_max_drawdown": -0.015842,
-      "correlation_with_benchmark": 0.6709,
-      "year": "2024_split_5"
-    },
-    {
-      "total_pnl": 31001.974609,
-      "total_return_percent": 3100197.4609,
-      "sharpe_annualized": 19.131,
-      "sortino_annualized": 23.257,
-      "calmar_ratio": 144.296,
-      "max_drawdown": -17982.226562,
-      "win_rate": 0.5209,
-      "profit_factor": 1.3331,
-      "avg_win": 418.28286743,
-      "avg_loss": -379.83023071,
-      "ratio_avg_win_loss": 1.101,
-      "number_of_trades": 577,
-      "avg_holding_bars": 1.4,
-      "turnover": 0.0249,
-      "spearman_ic": -0.0164,
-      "spearman_ic_pvalue": 0.636153,
-      "benchmark_sharpe": 20.265,
-      "benchmark_max_drawdown": -0.009385,
-      "correlation_with_benchmark": 0.7902,
-      "year": "2024_split_6"
-    }
-  ]
-}
---- END OF FILE: output\aggregated\ES_metrics.json ---
-
---- START OF FILE: output\aggregated\ZB_metrics.json ---
-{
-  "total_pnl": -18783.613281,
-  "total_return_percent": -1878361.3281,
-  "sharpe_annualized": -0.536,
-  "sortino_annualized": -0.629,
-  "calmar_ratio": -0.763,
-  "max_drawdown": -69639.609375,
-  "win_rate": 0.4055,
-  "profit_factor": 0.9909,
-  "avg_win": 525.66064453,
-  "avg_loss": -545.53070068,
-  "ratio_avg_win_loss": 0.964,
-  "number_of_trades": 10382,
-  "avg_holding_bars": 2.4,
-  "turnover": 0.0753,
-  "spearman_ic": 0.0199,
-  "spearman_ic_pvalue": 0.00177,
-  "benchmark_sharpe": 5.364,
-  "benchmark_max_drawdown": -0.055168,
-  "correlation_with_benchmark": 0.6217,
-  "market": "ZB",
-  "num_years": 7,
-  "total_rows": 24597,
-  "years_breakdown": [
-    {
-      "total_pnl": -33243.96875,
-      "total_return_percent": -3324396.875,
-      "sharpe_annualized": -1.061,
-      "sortino_annualized": -1.235,
-      "calmar_ratio": -1.651,
-      "max_drawdown": -63874.964844,
-      "win_rate": 0.4003,
-      "profit_factor": 0.9833,
-      "avg_win": 500.10443115,
-      "avg_loss": -527.70141602,
-      "ratio_avg_win_loss": 0.948,
-      "number_of_trades": 10231,
-      "avg_holding_bars": 2.1,
-      "turnover": 0.0828,
-      "spearman_ic": 0.014,
-      "spearman_ic_pvalue": 0.038169,
-      "benchmark_sharpe": 6.299,
-      "benchmark_max_drawdown": -0.047713,
-      "correlation_with_benchmark": 0.6201,
-      "year": "2024"
-    },
-    {
-      "total_pnl": 9089.330078,
-      "total_return_percent": 908933.0078,
-      "sharpe_annualized": 20.143,
-      "sortino_annualized": 32.461,
-      "calmar_ratio": 411.788,
-      "max_drawdown": -4723.728516,
-      "win_rate": 0.396,
-      "profit_factor": 1.3474,
-      "avg_win": 584.72576904,
-      "avg_loss": -441.43313599,
-      "ratio_avg_win_loss": 1.325,
-      "number_of_trades": 151,
-      "avg_holding_bars": 2.0,
-      "turnover": 0.1113,
-      "spearman_ic": NaN,
-      "spearman_ic_pvalue": NaN,
-      "benchmark_sharpe": 0.779,
-      "benchmark_max_drawdown": -0.008411,
-      "correlation_with_benchmark": 0.6866,
-      "year": "2024_split_1"
-    },
-    {
-      "total_pnl": -1619.153564,
-      "total_return_percent": -161915.3564,
-      "sharpe_annualized": -2.276,
-      "sortino_annualized": -2.847,
-      "calmar_ratio": -23.211,
-      "max_drawdown": -8902.511719,
-      "win_rate": 0.4077,
-      "profit_factor": 0.9516,
-      "avg_win": 439.96429443,
-      "avg_loss": -471.21447754,
-      "ratio_avg_win_loss": 0.934,
-      "number_of_trades": 263,
-      "avg_holding_bars": 1.9,
-      "turnover": 0.0963,
-      "spearman_ic": -0.0215,
-      "spearman_ic_pvalue": 0.617483,
-      "benchmark_sharpe": -1.545,
-      "benchmark_max_drawdown": -0.008018,
-      "correlation_with_benchmark": 0.5622,
-      "year": "2024_split_2"
-    },
-    {
-      "total_pnl": 1274.96228,
-      "total_return_percent": 127496.228,
-      "sharpe_annualized": 1.929,
-      "sortino_annualized": 1.825,
-      "calmar_ratio": 27.113,
-      "max_drawdown": -7284.09082,
-      "win_rate": 0.399,
-      "profit_factor": 1.0253,
-      "avg_win": 525.63446045,
-      "avg_loss": -506.27166748,
-      "ratio_avg_win_loss": 1.038,
-      "number_of_trades": 200,
-      "avg_holding_bars": 2.0,
-      "turnover": 0.0805,
-      "spearman_ic": NaN,
-      "spearman_ic_pvalue": NaN,
-      "benchmark_sharpe": -6.563,
-      "benchmark_max_drawdown": -0.011798,
-      "correlation_with_benchmark": 0.692,
-      "year": "2024_split_3"
-    },
-    {
-      "total_pnl": -9187.338867,
-      "total_return_percent": -918733.8867,
-      "sharpe_annualized": -14.587,
-      "sortino_annualized": -20.819,
-      "calmar_ratio": -86.377,
-      "max_drawdown": -16047.24707,
-      "win_rate": 0.379,
-      "profit_factor": 0.809,
-      "avg_win": 482.52667236,
-      "avg_loss": -568.99346924,
-      "ratio_avg_win_loss": 0.848,
-      "number_of_trades": 220,
-      "avg_holding_bars": 1.8,
-      "turnover": 0.0567,
-      "spearman_ic": NaN,
-      "spearman_ic_pvalue": NaN,
-      "benchmark_sharpe": 4.342,
-      "benchmark_max_drawdown": -0.009459,
-      "correlation_with_benchmark": 0.6405,
-      "year": "2024_split_4"
-    },
-    {
-      "total_pnl": 12126.041016,
-      "total_return_percent": 1212604.1016,
-      "sharpe_annualized": 15.742,
-      "sortino_annualized": 21.02,
-      "calmar_ratio": 249.817,
-      "max_drawdown": -6430.543945,
-      "win_rate": 0.4721,
-      "profit_factor": 1.2381,
-      "avg_win": 452.73431396,
-      "avg_loss": -515.99554443,
-      "ratio_avg_win_loss": 0.877,
-      "number_of_trades": 272,
-      "avg_holding_bars": 1.8,
-      "turnover": 0.1045,
-      "spearman_ic": 0.039,
-      "spearman_ic_pvalue": 0.372949,
-      "benchmark_sharpe": -7.726,
-      "benchmark_max_drawdown": -0.013089,
-      "correlation_with_benchmark": 0.6484,
-      "year": "2024_split_5"
-    },
-    {
-      "total_pnl": 2776.506592,
-      "total_return_percent": 277650.6592,
-      "sharpe_annualized": 6.186,
-      "sortino_annualized": 10.832,
-      "calmar_ratio": 62.388,
-      "max_drawdown": -8527.141602,
-      "win_rate": 0.3871,
-      "profit_factor": 1.0786,
-      "avg_win": 572.31066895,
-      "avg_loss": -558.54144287,
-      "ratio_avg_win_loss": 1.025,
-      "number_of_trades": 156,
-      "avg_holding_bars": 2.3,
-      "turnover": 0.0742,
-      "spearman_ic": NaN,
-      "spearman_ic_pvalue": NaN,
-      "benchmark_sharpe": -5.562,
-      "benchmark_max_drawdown": -0.00906,
-      "correlation_with_benchmark": 0.6001,
-      "year": "2024_split_6"
-    }
-  ]
-}
---- END OF FILE: output\aggregated\ZB_metrics.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_1f3125ac3f33.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_54cdaed9f5f3.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_793df9163439.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_7f22063a0371.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_91458bddb8e3.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_91d9b764b17c.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_a00b4c0cb7a7.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_aa6e302e19f5.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\aligned_data_b3c47247939f.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_1f3125ac3f33.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_54cdaed9f5f3.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_793df9163439.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_7f22063a0371.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91458bddb8e3.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_91d9b764b17c.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_a00b4c0cb7a7.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_aa6e302e19f5.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\cache\full_feature_matrix_b3c47247939f.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_1\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_1\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_1\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -14.9945,
-    "annualized_sortino": -19.7994,
-    "max_drawdown": -32095.672012,
-    "calmar_ratio": -52.5748,
-    "total_return_percent": -2663891.061,
-    "win_rate": 0.4459,
-    "profit_factor": 0.7867,
-    "number_of_trades": 518,
-    "avg_trade_pnl": -51.35057969,
-    "turnover": 0.1878,
-    "volatility_annualized": 112536.447619
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": -7.8698,
-    "annualized_sortino": -7.6705,
-    "max_drawdown": -13265.513638,
-    "calmar_ratio": -46.0024,
-    "total_return_percent": -963379.0421,
-    "win_rate": 0.4351,
-    "profit_factor": 0.8267,
-    "number_of_trades": 239,
-    "avg_trade_pnl": -38.08162597,
-    "turnover": 0.1702,
-    "volatility_annualized": 77542.880572
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": -14.9945,
-    "filtered_sharpe": -7.8698,
-    "sharpe_difference": 7.1247,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 600,
-      "pct_time": 54.64,
-      "total_pnl": -13727.764637,
-      "avg_pnl_per_bar": -22.87960773,
-      "sharpe_contribution": -19.9237
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 366,
-      "pct_time": 33.33,
-      "total_pnl": -356.931244,
-      "avg_pnl_per_bar": -0.97522198,
-      "sharpe_contribution": -3.2732
-    },
-    "HighVol_Expansion": {
-      "bars": 132,
-      "pct_time": 12.02,
-      "total_pnl": 4450.90546,
-      "avg_pnl_per_bar": 33.71898076,
-      "sharpe_contribution": 16.7394
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+7.1247). Calmar improved from -52.5748 to -46.0024. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 244,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_1\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_2\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_2\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_2\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 4.1914,
-    "annualized_sortino": 5.5966,
-    "max_drawdown": -14304.02985,
-    "calmar_ratio": 33.8614,
-    "total_return_percent": 958235.3779,
-    "win_rate": 0.4906,
-    "profit_factor": 1.0392,
-    "number_of_trades": 799,
-    "avg_trade_pnl": 7.85662669,
-    "turnover": 0.2068,
-    "volatility_annualized": 115558.349384
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 10.109,
-    "annualized_sortino": 10.0231,
-    "max_drawdown": -9807.448608,
-    "calmar_ratio": 92.2714,
-    "total_return_percent": 1790325.238,
-    "win_rate": 0.5179,
-    "profit_factor": 1.1461,
-    "number_of_trades": 504,
-    "avg_trade_pnl": 26.89804643,
-    "turnover": 0.1461,
-    "volatility_annualized": 89519.250409
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": 4.1914,
-    "filtered_sharpe": 10.109,
-    "sharpe_difference": 5.9175,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 36,
-      "pct_time": 2.62,
-      "total_pnl": -986.536079,
-      "avg_pnl_per_bar": -27.40377998,
-      "sharpe_contribution": -15.5291
-    },
-    "LowVol_Range": {
-      "bars": 672,
-      "pct_time": 48.84,
-      "total_pnl": -1137.497025,
-      "avg_pnl_per_bar": -1.69270391,
-      "sharpe_contribution": -15.9087
-    },
-    "HighVol_Correction": {
-      "bars": 156,
-      "pct_time": 11.34,
-      "total_pnl": 999.984741,
-      "avg_pnl_per_bar": 6.4101586,
-      "sharpe_contribution": 21.1831
-    },
-    "HighVol_Expansion": {
-      "bars": 512,
-      "pct_time": 37.21,
-      "total_pnl": 19027.300743,
-      "avg_pnl_per_bar": 37.16269676,
-      "sharpe_contribution": 18.1855
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+5.9175). Calmar improved from 33.8614 to 92.2714. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 291,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_2\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_3\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_3\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_3\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -11.7268,
-    "annualized_sortino": -14.1883,
-    "max_drawdown": -31245.765554,
-    "calmar_ratio": -39.9738,
-    "total_return_percent": -2471015.1102,
-    "win_rate": 0.4544,
-    "profit_factor": 0.8804,
-    "number_of_trades": 812,
-    "avg_trade_pnl": -23.8538168,
-    "turnover": 0.2438,
-    "volatility_annualized": 106509.413328
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": -8.5667,
-    "annualized_sortino": -6.8309,
-    "max_drawdown": -15329.837753,
-    "calmar_ratio": -35.3483,
-    "total_return_percent": -1072048.9046,
-    "win_rate": 0.4061,
-    "profit_factor": 0.8174,
-    "number_of_trades": 293,
-    "avg_trade_pnl": -35.25650612,
-    "turnover": 0.1857,
-    "volatility_annualized": 63254.466927
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": -11.7268,
-    "filtered_sharpe": -8.5667,
-    "sharpe_difference": 3.1601,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 411,
-      "pct_time": 29.87,
-      "total_pnl": 26.236351,
-      "avg_pnl_per_bar": 0.0638354,
-      "sharpe_contribution": 0.1078
-    },
-    "LowVol_Range": {
-      "bars": 167,
-      "pct_time": 12.14,
-      "total_pnl": 81.738892,
-      "avg_pnl_per_bar": 0.48945444,
-      "sharpe_contribution": 20.4692
-    },
-    "HighVol_Correction": {
-      "bars": 472,
-      "pct_time": 34.3,
-      "total_pnl": 1949.486664,
-      "avg_pnl_per_bar": 4.13026836,
-      "sharpe_contribution": 7.2381
-    },
-    "HighVol_Expansion": {
-      "bars": 326,
-      "pct_time": 23.69,
-      "total_pnl": -12777.950953,
-      "avg_pnl_per_bar": -39.19616857,
-      "sharpe_contribution": -24.5047
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+3.1601). Calmar improved from -39.9738 to -35.3483. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 289,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_3\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_4\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_4\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_4\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 0.3107,
-    "annualized_sortino": 0.3819,
-    "max_drawdown": -12153.84926,
-    "calmar_ratio": 2.7363,
-    "total_return_percent": 61012.4687,
-    "win_rate": 0.4791,
-    "profit_factor": 1.0174,
-    "number_of_trades": 812,
-    "avg_trade_pnl": 3.07776913,
-    "turnover": 0.2186,
-    "volatility_annualized": 107020.395347
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 8.4653,
-    "annualized_sortino": 9.7164,
-    "max_drawdown": -6601.6982,
-    "calmar_ratio": 108.217,
-    "total_return_percent": 1310666.3027,
-    "win_rate": 0.4852,
-    "profit_factor": 1.1697,
-    "number_of_trades": 542,
-    "avg_trade_pnl": 26.34663615,
-    "turnover": 0.2367,
-    "volatility_annualized": 84393.837767
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": 0.3107,
-    "filtered_sharpe": 8.4653,
-    "sharpe_difference": 8.1545,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 326,
-      "pct_time": 25.55,
-      "total_pnl": 1482.811279,
-      "avg_pnl_per_bar": 4.54850086,
-      "sharpe_contribution": 7.1577
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 292,
-      "pct_time": 22.88,
-      "total_pnl": -269.064796,
-      "avg_pnl_per_bar": -0.92145478,
-      "sharpe_contribution": -2.0339
-    },
-    "HighVol_Expansion": {
-      "bars": 658,
-      "pct_time": 51.57,
-      "total_pnl": 11892.916544,
-      "avg_pnl_per_bar": 18.07434125,
-      "sharpe_contribution": 11.2919
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+8.1545). Calmar improved from 2.7363 to 108.2170. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 280,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_4\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_5\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_5\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_5\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 12.4396,
-    "annualized_sortino": 15.8894,
-    "max_drawdown": -11256.218121,
-    "calmar_ratio": 120.3686,
-    "total_return_percent": 2380494.8124,
-    "win_rate": 0.5071,
-    "profit_factor": 1.1766,
-    "number_of_trades": 773,
-    "avg_trade_pnl": 30.47614965,
-    "turnover": 0.2818,
-    "volatility_annualized": 108918.079304
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 13.8376,
-    "annualized_sortino": 11.5532,
-    "max_drawdown": -8499.751476,
-    "calmar_ratio": 128.0177,
-    "total_return_percent": 1911779.6413,
-    "win_rate": 0.5219,
-    "profit_factor": 1.2857,
-    "number_of_trades": 433,
-    "avg_trade_pnl": 44.74626512,
-    "turnover": 0.1859,
-    "volatility_annualized": 78634.698705
-  },
-  "psr_result": {
-    "psr": 0.9645,
-    "base_sharpe": 12.4396,
-    "filtered_sharpe": 13.8376,
-    "sharpe_difference": 1.3981,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.035463
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 328,
-      "pct_time": 26.84,
-      "total_pnl": 13124.412712,
-      "avg_pnl_per_bar": 40.01345339,
-      "sharpe_contribution": 26.0503
-    },
-    "LowVol_Range": {
-      "bars": 376,
-      "pct_time": 30.77,
-      "total_pnl": 1824.377808,
-      "avg_pnl_per_bar": 4.85206864,
-      "sharpe_contribution": 16.4329
-    },
-    "HighVol_Correction": {
-      "bars": 373,
-      "pct_time": 30.52,
-      "total_pnl": -764.025574,
-      "avg_pnl_per_bar": -2.04832593,
-      "sharpe_contribution": -15.8293
-    },
-    "HighVol_Expansion": {
-      "bars": 145,
-      "pct_time": 11.87,
-      "total_pnl": 4933.031467,
-      "avg_pnl_per_bar": 34.02090667,
-      "sharpe_contribution": 15.0261
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=0.9645, \u0394SR=+1.3981). Calmar improved from 120.3686 to 128.0177. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 272,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_5\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_6\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\CL\2024_split_6\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\CL\2024_split_6\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 7.6298,
-    "annualized_sortino": 9.4872,
-    "max_drawdown": -13889.06192,
-    "calmar_ratio": 58.0726,
-    "total_return_percent": 1421756.707,
-    "win_rate": 0.5087,
-    "profit_factor": 1.1102,
-    "number_of_trades": 692,
-    "avg_trade_pnl": 19.67860034,
-    "turnover": 0.2239,
-    "volatility_annualized": 105714.381494
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 14.1119,
-    "annualized_sortino": 14.8269,
-    "max_drawdown": -8118.333931,
-    "calmar_ratio": 161.8711,
-    "total_return_percent": 2316418.7065,
-    "win_rate": 0.5295,
-    "profit_factor": 1.2825,
-    "number_of_trades": 474,
-    "avg_trade_pnl": 47.94940844,
-    "turnover": 0.2385,
-    "volatility_annualized": 93121.798697
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": 7.6298,
-    "filtered_sharpe": 14.1119,
-    "sharpe_difference": 6.4821,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 597,
-      "pct_time": 48.69,
-      "total_pnl": -979.893131,
-      "avg_pnl_per_bar": -1.64136203,
-      "sharpe_contribution": -1.5215
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 240,
-      "pct_time": 19.58,
-      "total_pnl": -2041.656067,
-      "avg_pnl_per_bar": -8.50690028,
-      "sharpe_contribution": -13.9972
-    },
-    "HighVol_Expansion": {
-      "bars": 389,
-      "pct_time": 31.73,
-      "total_pnl": 26185.736263,
-      "avg_pnl_per_bar": 67.31551739,
-      "sharpe_contribution": 35.547
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+6.4821). Calmar improved from 58.0726 to 161.8711. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 266,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\CL\2024_split_6\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_1\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_1\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_1\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -3.3153,
-    "annualized_sortino": -3.3145,
-    "max_drawdown": -17595.478985,
-    "calmar_ratio": -29.4743,
-    "total_return_percent": -938026.1688,
-    "win_rate": 0.4799,
-    "profit_factor": 0.96,
-    "number_of_trades": 798,
-    "avg_trade_pnl": -10.42058999,
-    "turnover": 0.0356,
-    "volatility_annualized": 156430.839136
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 1.7601,
-    "annualized_sortino": 1.3641,
-    "max_drawdown": -15335.654385,
-    "calmar_ratio": 14.6882,
-    "total_return_percent": 407418.2606,
-    "win_rate": 0.4966,
-    "profit_factor": 1.0299,
-    "number_of_trades": 439,
-    "avg_trade_pnl": 8.68907839,
-    "turnover": 0.0526,
-    "volatility_annualized": 127974.586622
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": -3.3153,
-    "filtered_sharpe": 1.7601,
-    "sharpe_difference": 5.0754,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 466,
-      "pct_time": 37.04,
-      "total_pnl": -115.140835,
-      "avg_pnl_per_bar": -0.24708334,
-      "sharpe_contribution": -0.0912
-    },
-    "LowVol_Range": {
-      "bars": 533,
-      "pct_time": 42.37,
-      "total_pnl": -1900.40448,
-      "avg_pnl_per_bar": -3.56548683,
-      "sharpe_contribution": -15.4658
-    },
-    "HighVol_Correction": {
-      "bars": 187,
-      "pct_time": 14.86,
-      "total_pnl": -1499.590942,
-      "avg_pnl_per_bar": -8.0192029,
-      "sharpe_contribution": -19.3374
-    },
-    "HighVol_Expansion": {
-      "bars": 72,
-      "pct_time": 5.72,
-      "total_pnl": 7589.318863,
-      "avg_pnl_per_bar": 105.40720643,
-      "sharpe_contribution": 32.2347
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+5.0754). Calmar improved from -29.4743 to 14.6882. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 284,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_1\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_2\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_2\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_2\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 7.2338,
-    "annualized_sortino": 7.1395,
-    "max_drawdown": -8679.832596,
-    "calmar_ratio": 82.5946,
-    "total_return_percent": 1535817.4267,
-    "win_rate": 0.4969,
-    "profit_factor": 1.1156,
-    "number_of_trades": 962,
-    "avg_trade_pnl": 16.15022573,
-    "turnover": 0.0245,
-    "volatility_annualized": 99105.447442
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 9.3401,
-    "annualized_sortino": 5.8772,
-    "max_drawdown": -8679.832596,
-    "calmar_ratio": 89.0763,
-    "total_return_percent": 1656342.416,
-    "win_rate": 0.5298,
-    "profit_factor": 1.2147,
-    "number_of_trades": 436,
-    "avg_trade_pnl": 34.41930845,
-    "turnover": 0.0385,
-    "volatility_annualized": 82779.371617
-  },
-  "psr_result": {
-    "psr": 0.9908,
-    "base_sharpe": 7.2338,
-    "filtered_sharpe": 9.3401,
-    "sharpe_difference": 2.1063,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.009211
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 326,
-      "pct_time": 21.88,
-      "total_pnl": 14167.209427,
-      "avg_pnl_per_bar": 43.45769763,
-      "sharpe_contribution": 46.2966
-    },
-    "LowVol_Range": {
-      "bars": 674,
-      "pct_time": 45.23,
-      "total_pnl": -44.65625,
-      "avg_pnl_per_bar": -0.06625556,
-      "sharpe_contribution": -1.6022
-    },
-    "HighVol_Correction": {
-      "bars": 167,
-      "pct_time": 11.21,
-      "total_pnl": -886.682007,
-      "avg_pnl_per_bar": -5.30947309,
-      "sharpe_contribution": -20.4692
-    },
-    "HighVol_Expansion": {
-      "bars": 323,
-      "pct_time": 21.68,
-      "total_pnl": 3327.55299,
-      "avg_pnl_per_bar": 10.30202164,
-      "sharpe_contribution": 4.3589
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=0.9908, \u0394SR=+2.1063). Calmar improved from 82.5946 to 89.0763. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 312,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_2\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_3\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_3\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_3\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 0.5901,
-    "annualized_sortino": 0.6124,
-    "max_drawdown": -11070.346794,
-    "calmar_ratio": 5.6302,
-    "total_return_percent": 132986.0878,
-    "win_rate": 0.4856,
-    "profit_factor": 1.0096,
-    "number_of_trades": 939,
-    "avg_trade_pnl": 1.46717877,
-    "turnover": 0.0295,
-    "volatility_annualized": 105621.321548
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 1.9065,
-    "annualized_sortino": 1.188,
-    "max_drawdown": -5223.788445,
-    "calmar_ratio": 18.2362,
-    "total_return_percent": 203256.9153,
-    "win_rate": 0.4629,
-    "profit_factor": 1.046,
-    "number_of_trades": 283,
-    "avg_trade_pnl": 6.5530251,
-    "turnover": 0.0423,
-    "volatility_annualized": 49966.409078
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": 0.5901,
-    "filtered_sharpe": 1.9065,
-    "sharpe_difference": 1.3164,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 96,
-      "pct_time": 6.47,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "LowVol_Range": {
-      "bars": 706,
-      "pct_time": 47.57,
-      "total_pnl": 1384.50457,
-      "avg_pnl_per_bar": 1.96105463,
-      "sharpe_contribution": 11.1218
-    },
-    "HighVol_Correction": {
-      "bars": 274,
-      "pct_time": 18.46,
-      "total_pnl": 351.031158,
-      "avg_pnl_per_bar": 1.28113561,
-      "sharpe_contribution": 15.9615
-    },
-    "HighVol_Expansion": {
-      "bars": 408,
-      "pct_time": 27.49,
-      "total_pnl": 297.033424,
-      "avg_pnl_per_bar": 0.7280231,
-      "sharpe_contribution": 0.5398
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+1.3164). Calmar improved from 5.6302 to 18.2362. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 310,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_3\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_4\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_4\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_4\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -5.6274,
-    "annualized_sortino": -5.6228,
-    "max_drawdown": -20202.288631,
-    "calmar_ratio": -26.7713,
-    "total_return_percent": -1052880.9334,
-    "win_rate": 0.4918,
-    "profit_factor": 0.9239,
-    "number_of_trades": 917,
-    "avg_trade_pnl": -11.5745279,
-    "turnover": 0.0233,
-    "volatility_annualized": 96108.842956
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 2.6942,
-    "annualized_sortino": 1.7912,
-    "max_drawdown": -10598.053185,
-    "calmar_ratio": 15.9998,
-    "total_return_percent": 330103.8105,
-    "win_rate": 0.5139,
-    "profit_factor": 1.0501,
-    "number_of_trades": 397,
-    "avg_trade_pnl": 7.13155205,
-    "turnover": 0.0204,
-    "volatility_annualized": 62937.119352
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": -5.6274,
-    "filtered_sharpe": 2.6942,
-    "sharpe_difference": 8.3216,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 358,
-      "pct_time": 26.44,
-      "total_pnl": 8562.134499,
-      "avg_pnl_per_bar": 23.91657681,
-      "sharpe_contribution": 26.5371
-    },
-    "LowVol_Range": {
-      "bars": 499,
-      "pct_time": 36.85,
-      "total_pnl": 338.481049,
-      "avg_pnl_per_bar": 0.67831873,
-      "sharpe_contribution": 11.8179
-    },
-    "HighVol_Correction": {
-      "bars": 353,
-      "pct_time": 26.07,
-      "total_pnl": -85.165482,
-      "avg_pnl_per_bar": -0.24126199,
-      "sharpe_contribution": -3.2546
-    },
-    "HighVol_Expansion": {
-      "bars": 144,
-      "pct_time": 10.64,
-      "total_pnl": -5514.411961,
-      "avg_pnl_per_bar": -38.2945275,
-      "sharpe_contribution": -16.1618
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+8.3216). Calmar improved from -26.7713 to 15.9998. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 295,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_4\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_5\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_5\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_5\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -1.4242,
-    "annualized_sortino": -1.4771,
-    "max_drawdown": -20204.711452,
-    "calmar_ratio": -8.9763,
-    "total_return_percent": -359846.7484,
-    "win_rate": 0.4836,
-    "profit_factor": 0.9814,
-    "number_of_trades": 945,
-    "avg_trade_pnl": -3.62925972,
-    "turnover": 0.0252,
-    "volatility_annualized": 127347.396232
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 5.1044,
-    "annualized_sortino": 3.3427,
-    "max_drawdown": -6015.922821,
-    "calmar_ratio": 57.064,
-    "total_return_percent": 681135.5549,
-    "win_rate": 0.4752,
-    "profit_factor": 1.1134,
-    "number_of_trades": 242,
-    "avg_trade_pnl": 23.33238818,
-    "turnover": 0.0392,
-    "volatility_annualized": 67254.672782
-  },
-  "psr_result": {
-    "psr": 1.0,
-    "base_sharpe": -1.4242,
-    "filtered_sharpe": 5.1044,
-    "sharpe_difference": 6.5285,
-    "confidence_level": 0.95,
-    "significant": true,
-    "p_value": 0.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 144,
-      "pct_time": 10.43,
-      "total_pnl": -1934.89381,
-      "avg_pnl_per_bar": -13.43676257,
-      "sharpe_contribution": -8.5125
-    },
-    "LowVol_Range": {
-      "bars": 738,
-      "pct_time": 53.48,
-      "total_pnl": 207.245773,
-      "avg_pnl_per_bar": 0.28082083,
-      "sharpe_contribution": 5.6271
-    },
-    "HighVol_Correction": {
-      "bars": 275,
-      "pct_time": 19.93,
-      "total_pnl": 794.219208,
-      "avg_pnl_per_bar": 2.88806985,
-      "sharpe_contribution": 22.2827
-    },
-    "HighVol_Expansion": {
-      "bars": 223,
-      "pct_time": 16.16,
-      "total_pnl": 7744.784378,
-      "avg_pnl_per_bar": 34.72997479,
-      "sharpe_contribution": 17.0866
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "STRONG ACCEPT: HMM regime filter significantly improves risk-adjusted performance (PSR=1.0000, \u0394SR=+6.5285). Calmar improved from -8.9763 to 57.0640. Deploy with regime-aware position sizing.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 298,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_5\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_6\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ES\2024_split_6\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ES\2024_split_6\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 14.362,
-    "annualized_sortino": 17.3933,
-    "max_drawdown": -17982.21423,
-    "calmar_ratio": 91.4946,
-    "total_return_percent": 3150890.7768,
-    "win_rate": 0.5006,
-    "profit_factor": 1.2442,
-    "number_of_trades": 897,
-    "avg_trade_pnl": 35.21810549,
-    "turnover": 0.0256,
-    "volatility_annualized": 114557.490834
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 11.751,
-    "annualized_sortino": 12.5586,
-    "max_drawdown": -14028.372936,
-    "calmar_ratio": 81.669,
-    "total_return_percent": 2194114.0339,
-    "win_rate": 0.4922,
-    "profit_factor": 1.2599,
-    "number_of_trades": 640,
-    "avg_trade_pnl": 34.76469817,
-    "turnover": 0.0352,
-    "volatility_annualized": 97496.536623
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": 14.362,
-    "filtered_sharpe": 11.751,
-    "sharpe_difference": -2.611,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 665,
-      "pct_time": 49.92,
-      "total_pnl": 288.626926,
-      "avg_pnl_per_bar": 0.43402545,
-      "sharpe_contribution": 0.4278
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 318,
-      "pct_time": 23.87,
-      "total_pnl": -1241.123596,
-      "avg_pnl_per_bar": -3.90290439,
-      "sharpe_contribution": -20.6321
-    },
-    "HighVol_Expansion": {
-      "bars": 349,
-      "pct_time": 26.2,
-      "total_pnl": 22893.637009,
-      "avg_pnl_per_bar": 65.59781378,
-      "sharpe_contribution": 28.0772
-    }
-  },
-  "fallback_triggered": false,
-  "fallback_reason": null,
-  "recommendation": "REJECT: HMM regime filter DEGRADES performance (\u0394SR=-2.6110). The trade-gating logic is removing profitable trades. Review regime mapping and allowed/prohibited regime lists. Consider more granular state definitions.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 292,
-      "success": true,
-      "fallback": false
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ES\2024_split_6\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_1\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_2\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_3\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_4\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_5\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\CL_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\ES_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\train_2024_split_6\ZB_2024.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_1\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_1\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_1\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 5.0201,
-    "annualized_sortino": 6.2821,
-    "max_drawdown": -10733.682098,
-    "calmar_ratio": 46.1832,
-    "total_return_percent": 588712.7747,
-    "win_rate": 0.382,
-    "profit_factor": 1.0807,
-    "number_of_trades": 411,
-    "avg_trade_pnl": 14.31062707,
-    "turnover": 0.091,
-    "volatility_annualized": 98746.295603
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 5.0201,
-    "annualized_sortino": 6.2821,
-    "max_drawdown": -10733.682098,
-    "calmar_ratio": 46.1832,
-    "total_return_percent": 588712.7747,
-    "win_rate": 0.382,
-    "profit_factor": 1.0807,
-    "number_of_trades": 411,
-    "avg_trade_pnl": 14.31062707,
-    "turnover": 0.091,
-    "volatility_annualized": 98746.295603
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": 5.0201,
-    "filtered_sharpe": 5.0201,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 826,
-      "pct_time": 100.0,
-      "total_pnl": 5887.127747,
-      "avg_pnl_per_bar": 7.1272733,
-      "sharpe_contribution": 5.0201
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 183,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_1\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_2\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_2\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_2\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 1.3321,
-    "annualized_sortino": 1.6962,
-    "max_drawdown": -13399.324615,
-    "calmar_ratio": 8.4683,
-    "total_return_percent": 170647.5662,
-    "win_rate": 0.43,
-    "profit_factor": 1.0196,
-    "number_of_trades": 493,
-    "avg_trade_pnl": 3.45937556,
-    "turnover": 0.0817,
-    "volatility_annualized": 85181.856164
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 1.3321,
-    "annualized_sortino": 1.6962,
-    "max_drawdown": -13399.324615,
-    "calmar_ratio": 8.4683,
-    "total_return_percent": 170647.5662,
-    "win_rate": 0.43,
-    "profit_factor": 1.0196,
-    "number_of_trades": 493,
-    "avg_trade_pnl": 3.45937556,
-    "turnover": 0.0817,
-    "volatility_annualized": 85181.856164
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": 1.3321,
-    "filtered_sharpe": 1.3321,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 1046,
-      "pct_time": 100.0,
-      "total_pnl": 1706.475662,
-      "avg_pnl_per_bar": 1.63142989,
-      "sharpe_contribution": 1.3321
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 216,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_2\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_3\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_3\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_3\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -1.6154,
-    "annualized_sortino": -1.5239,
-    "max_drawdown": -10801.938492,
-    "calmar_ratio": -14.2693,
-    "total_return_percent": -210532.1228,
-    "win_rate": 0.3699,
-    "profit_factor": 0.9816,
-    "number_of_trades": 419,
-    "avg_trade_pnl": -3.3776063,
-    "turnover": 0.0882,
-    "volatility_annualized": 95418.677941
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": -1.6154,
-    "annualized_sortino": -1.5239,
-    "max_drawdown": -10801.938492,
-    "calmar_ratio": -14.2693,
-    "total_return_percent": -210532.1228,
-    "win_rate": 0.3699,
-    "profit_factor": 0.9816,
-    "number_of_trades": 419,
-    "avg_trade_pnl": -3.3776063,
-    "turnover": 0.0882,
-    "volatility_annualized": 95418.677941
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": -1.6154,
-    "filtered_sharpe": -1.6154,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 950,
-      "pct_time": 100.0,
-      "total_pnl": -2105.321228,
-      "avg_pnl_per_bar": -2.21612761,
-      "sharpe_contribution": -1.6154
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 181,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_3\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_4\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_4\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_4\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -10.5161,
-    "annualized_sortino": -15.4252,
-    "max_drawdown": -20693.817902,
-    "calmar_ratio": -44.9669,
-    "total_return_percent": -1287060.4767,
-    "win_rate": 0.3654,
-    "profit_factor": 0.8553,
-    "number_of_trades": 468,
-    "avg_trade_pnl": -28.62449881,
-    "turnover": 0.0802,
-    "volatility_annualized": 88486.508567
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": -10.5161,
-    "annualized_sortino": -15.4252,
-    "max_drawdown": -20693.817902,
-    "calmar_ratio": -44.9669,
-    "total_return_percent": -1287060.4767,
-    "win_rate": 0.3654,
-    "profit_factor": 0.8553,
-    "number_of_trades": 468,
-    "avg_trade_pnl": -28.62449881,
-    "turnover": 0.0802,
-    "volatility_annualized": 88486.508567
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": -10.5161,
-    "filtered_sharpe": -10.5161,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 962,
-      "pct_time": 100.0,
-      "total_pnl": -12870.604767,
-      "avg_pnl_per_bar": -13.37900703,
-      "sharpe_contribution": -10.5161
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 197,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_4\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_5\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_5\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_5\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": 11.8537,
-    "annualized_sortino": 16.2237,
-    "max_drawdown": -9142.861786,
-    "calmar_ratio": 144.6634,
-    "total_return_percent": 1951095.3094,
-    "win_rate": 0.4367,
-    "profit_factor": 1.1698,
-    "number_of_trades": 545,
-    "avg_trade_pnl": 33.36663796,
-    "turnover": 0.0897,
-    "volatility_annualized": 111580.422681
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": 11.8537,
-    "annualized_sortino": 16.2237,
-    "max_drawdown": -9142.861786,
-    "calmar_ratio": 144.6634,
-    "total_return_percent": 1951095.3094,
-    "win_rate": 0.4367,
-    "profit_factor": 1.1698,
-    "number_of_trades": 545,
-    "avg_trade_pnl": 33.36663796,
-    "turnover": 0.0897,
-    "volatility_annualized": 111580.422681
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": 11.8537,
-    "filtered_sharpe": 11.8537,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 1026,
-      "pct_time": 100.0,
-      "total_pnl": 19510.953094,
-      "avg_pnl_per_bar": 19.01652348,
-      "sharpe_contribution": 11.8537
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 214,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_5\hmm_validation_report.json ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_6\backtest_results.parquet ---
-
---- SKIPPED BINARY OR UNREADABLE FILE: output\ZB\2024_split_6\backtest_results_hmm.parquet ---
-
---- START OF FILE: output\ZB\2024_split_6\hmm_validation_report.json ---
-{
-  "base_metrics": {
-    "label": "Base",
-    "annualized_sharpe": -1.0115,
-    "annualized_sortino": -1.5914,
-    "max_drawdown": -11438.717468,
-    "calmar_ratio": -7.2596,
-    "total_return_percent": -103156.0577,
-    "win_rate": 0.3853,
-    "profit_factor": 0.976,
-    "number_of_trades": 327,
-    "avg_trade_pnl": -4.81705001,
-    "turnover": 0.0938,
-    "volatility_annualized": 82094.690078
-  },
-  "hmm_metrics": {
-    "label": "HMM-Filtered",
-    "annualized_sharpe": -1.0115,
-    "annualized_sortino": -1.5914,
-    "max_drawdown": -11438.717468,
-    "calmar_ratio": -7.2596,
-    "total_return_percent": -103156.0577,
-    "win_rate": 0.3853,
-    "profit_factor": 0.976,
-    "number_of_trades": 327,
-    "avg_trade_pnl": -4.81705001,
-    "turnover": 0.0938,
-    "volatility_annualized": 82094.690078
-  },
-  "psr_result": {
-    "psr": 0.0,
-    "base_sharpe": -1.0115,
-    "filtered_sharpe": -1.0115,
-    "sharpe_difference": 0.0,
-    "confidence_level": 0.95,
-    "significant": false,
-    "p_value": 1.0
-  },
-  "regime_attribution": {
-    "LowVol_Bullish": {
-      "bars": 864,
-      "pct_time": 100.0,
-      "total_pnl": -1031.560577,
-      "avg_pnl_per_bar": -1.19393585,
-      "sharpe_contribution": -1.0115
-    },
-    "LowVol_Range": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Correction": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    },
-    "HighVol_Expansion": {
-      "bars": 0,
-      "pct_time": 0.0,
-      "total_pnl": 0.0,
-      "avg_pnl_per_bar": 0.0,
-      "sharpe_contribution": 0.0
-    }
-  },
-  "fallback_triggered": true,
-  "fallback_reason": null,
-  "recommendation": "HMM filter is INACTIVE (fallback: unknown). Results reflect pass-through execution. Consider: (1) increasing min_train_bars, (2) adding more feature transforms for stationarity, (3) reducing retrain frequency.",
-  "hmm_training_log": [
-    {
-      "phase": "initialize",
-      "bars": 186,
-      "success": false,
-      "fallback": true
-    }
-  ],
-  "n_folds": 2
-}
---- END OF FILE: output\ZB\2024_split_6\hmm_validation_report.json ---
+--- END OF FILE: pipeline\__init__.py ---
 
 --- START OF FILE: pipeline\cli.py ---
+import os
+import sys
+
+# ── UTF-8 everywhere (Windows hardening) ──
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import logging
-import os
 import random
 import numpy as np
 import psutil
@@ -6024,10 +2615,6 @@ class PipelineRunner:
     def executed_stages(self) -> list[str]:
         return list(self._executed)
 --- END OF FILE: pipeline\runner.py ---
-
---- START OF FILE: pipeline\__init__.py ---
-
---- END OF FILE: pipeline\__init__.py ---
 
 --- START OF FILE: pipeline\align\align.py ---
 """
@@ -6724,6 +3311,13 @@ def build_ratio_adjusted_series(
     All pre-roll prices are multiplied by this factor so that the
     resulting series has no price discontinuity at the roll point.
 
+    NOTE: This function is the test-helper / single-roll path.
+    Production uses ``build_continuous_series`` which handles
+    multiple rolls via cumulative splice. Both paths set
+    ``adjustment_factor`` to the per-roll ratio (the multiplier
+    applied at that specific roll), so downstream consumers see
+    consistent column semantics.
+
     Args:
         df_front: Front-month (expiring) contract data.
                   Must contain [ts_event, close, open, high, low, volume].
@@ -6936,6 +3530,13 @@ def build_continuous_series(
 
         cumulative_factor *= ratio
 
+        if not np.isfinite(cumulative_factor) or cumulative_factor <= 0.0:
+            raise RuntimeError(
+                f'CONTRACT FAIL: cumulative_factor became {cumulative_factor:.6f} '
+                f'at roll {roll_date} (ratio={ratio:.6f}). '
+                f'Cannot build continuous series — adjustment factor is invalid.'
+            )
+
         front_contract = roll_dates_df['front_contract'][i]
         back_contract = roll_dates_df['back_contract'][i]
 
@@ -6947,6 +3548,16 @@ def build_continuous_series(
             'back_contract': back_contract,
             'contract_month': back_contract,
         })
+
+    # Sanity guard: cumulative_factor should stay within reasonable bounds.
+    # Over very long histories with persistent contango/backwardation the
+    # factor may drift, but extreme values indicate data or roll logic issues.
+    if not (0.01 <= cumulative_factor <= 50.0):
+        logger.warning(
+            'cumulative_factor=%s for %s over %d rolls is outside safe range [0.01, 50.0]. '
+            'Check roll date computation and price ratio integrity.',
+            round(cumulative_factor, 6), symbol, len(roll_dates)
+        )
 
     adjustments_df = pl.DataFrame(adjustment_rows)
 
@@ -6973,7 +3584,10 @@ def build_continuous_series(
         .fill_null(current_contract),
     ])
 
-    # Add adjustment_factor (the per-roll ratio, 1.0 between rolls)
+    # Add adjustment_factor: the per-roll ratio, derived from cumulative
+    # factors. Equivalent to the ratio set by build_ratio_adjusted_series
+    # at each roll point — both paths produce the same per-roll multiplier
+    # for downstream consumers (1.0 between rolls, ratio at roll bars).
     df = df.with_columns(
         pl.when(pl.col('cumulative_factor').is_not_null())
         .then(
@@ -7321,23 +3935,31 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     # 6b. Position clipping: max_position_size and notional cap
     #     using per-market contract_multiplier from market config.
     #     Symbol is resolved from config.CURRENT_SYMBOL, set by cli.py
-    #     when the command is invoked. Falls back to 'ES' if unset.
+    #     when the command is invoked. Fails fast if unset — no silent
+    #     fallback to ES because wrong multiplier silently corrupts PnL.
     # ------------------------------------------------------------------------
     import yaml
     from pathlib import Path
     from core.config import config as _cfg
 
-    symbol = getattr(_cfg, 'CURRENT_SYMBOL', None) or 'ES'
+    symbol = getattr(_cfg, 'CURRENT_SYMBOL', None)
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: CURRENT_SYMBOL is unset. '
+            'Cannot resolve contract multiplier for position clipping. '
+            'Ensure cli.py sets config.CURRENT_SYMBOL before execution.'
+        )
     market_cfg_path = _cfg.MARKET_CONFIGS.get(symbol)
-    if market_cfg_path and Path(market_cfg_path).exists():
-        with open(market_cfg_path, 'r') as f:
-            market_cfg = yaml.safe_load(f)
-        contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
-        max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
-        max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
-    else:
-        contract_multiplier = FIXED_CONTRACT_SIZE
-        max_pos = float('inf')
+    if not market_cfg_path or not Path(market_cfg_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            f'Cannot resolve contract multiplier.'
+        )
+    with open(market_cfg_path, 'r') as f:
+        market_cfg = yaml.safe_load(f)
+    contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
+    max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
+    max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
 
     # Clip to max_position_size
     df = df.with_columns(
@@ -10859,10 +7481,13 @@ def filter_gaps(
     Remove bars where the time gap between consecutive ts_event values
     exceeds *max_gap_minutes*.
 
-    PATCH 1 APPLIED: divisor corrected from 60_000_000_000.0 → 60_000_000.0.
+    Detects the time unit of the ts_event column and uses the correct
+    divisor (60e9 for ns, 60e6 for us) so the gap filter behaves
+    correctly regardless of the upstream Datetime resolution.
     """
     df = df.sort("ts_event")
-    gap = df["ts_event"].diff().cast(pl.Int64) / 60_000_000.0  # µs → minutes
+    ns_per_minute = 60_000_000_000
+    gap = df["ts_event"].diff().cast(pl.Int64) / float(ns_per_minute)
     df = df.with_columns(gap.alias("_gap_minutes"))
     df = df.filter(
         pl.col("_gap_minutes").is_null()
@@ -11155,7 +7780,8 @@ _OHLCV_PROJECTION = ['ts_event', 'open', 'high', 'low', 'close', 'volume']
 
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
-    session_id = pl.col('ts_local').dt.offset_by('6h').dt.date().cast(pl.String)
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
     df = df.with_columns(session_id.alias('session_id'))
     return df.drop('ts_local')
 
@@ -12542,14 +9168,22 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
         "pipeline.execution.simulator"
     )._compute_pnl_from_target_exec
 
-    symbol = getattr(config, 'CURRENT_SYMBOL', None) or 'ES'
+    symbol = getattr(config, 'CURRENT_SYMBOL', None)
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: CURRENT_SYMBOL is unset. '
+            'Cannot resolve contract multiplier for HMM PnL recompute. '
+            'Ensure cli.py sets config.CURRENT_SYMBOL before calling run-hmm.'
+        )
     market_cfg_path = config.MARKET_CONFIGS.get(symbol)
-    if market_cfg_path and Path(market_cfg_path).exists():
-        with open(market_cfg_path, 'r') as f:
-            market_cfg = yaml.safe_load(f)
-        contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
-    else:
-        contract_multiplier = 1.0
+    if not market_cfg_path or not Path(market_cfg_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            f'Cannot resolve contract multiplier.'
+        )
+    with open(market_cfg_path, 'r') as f:
+        market_cfg = yaml.safe_load(f)
+    contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
 
     # Preserve HMM columns so they survive the recompute
     hmm_cols = [c for c in df.columns if c.startswith('hmm_')]
@@ -12847,6 +9481,49 @@ def test_filter_session_hours_excludes_gap():
     local_hours = df['ts_event'].dt.convert_time_zone('America/New_York').dt.hour().to_list()
     assert 17 not in local_hours
     assert 18 in local_hours
+
+
+def test_session_offset_consistency():
+    """
+    Verify that session.py's add_session_id and walkforward.py's
+    _resample_to_1h produce identical session_id assignments.
+    Both must derive the offset from config.SESSION_START_LOCAL,
+    not a hardcoded value.
+    """
+    from datetime import timezone as tz
+    from pipeline.walkforward.walkforward import _resample_to_1h
+    from core.config import config
+
+    # Two bars straddling midnight UTC with 18:00 ET session start.
+    # Session offset = 24 - 18 = 6h, so bars from 18:00 ET Jan 7
+    # through 17:55 ET Jan 8 all map to date 2026-01-08.
+    # Generate enough 5-min bars to fill one complete hour (12 bars
+    # needed, >10 for the 1H resample filter).
+    ts = []
+    base = datetime(2026, 1, 7, 23, 0, tzinfo=tz.utc)
+    for i in range(14):
+        ts.append(base + timedelta(minutes=i * 5))
+    df = pl.DataFrame({
+        'ts_event': ts,
+        'open':  [100.0 + i * 0.1 for i in range(14)],
+        'high':  [101.0 + i * 0.1 for i in range(14)],
+        'low':   [99.0 + i * 0.1 for i in range(14)],
+        'close': [100.5 + i * 0.1 for i in range(14)],
+        'volume': [1000] * 14,
+    }).with_columns(pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC')))
+
+    df_session = add_session_id(df)
+    sid_session = df_session['session_id'].to_list()
+
+    df_hh = _resample_to_1h(df)
+    sid_hh = df_hh['session_id'].unique().sort().to_list()
+
+    assert sid_session[0] == sid_session[-1], \
+        f'bars in same session should share session_id: first={sid_session[0]}, last={sid_session[-1]}'
+    assert sid_session[0] == '2026-01-08', \
+        f'session_id should be 2026-01-08 (18:00 ET start + 6h offset), got {sid_session[0]}'
+    assert len(sid_hh) > 0 and sid_hh[0] == '2026-01-08', \
+        f'1H session_id should be 2026-01-08, got: {sid_hh}'
 --- END OF FILE: tests\test_alignment.py ---
 
 --- START OF FILE: tests\test_causal_audit.py ---
@@ -13315,12 +9992,41 @@ def test_apply_splice():
     print("  test_apply_splice: PASS")
 
 
+def test_contract_multiplier_no_es_fallback():
+    """Simulator must fail fast when CURRENT_SYMBOL is unset, not silently use ES."""
+    from core.config import config as _cfg, load_config
+    load_config()
+    from pipeline.execution.simulator import simulate_execution_classification
+    import polars as pl
+    from datetime import datetime, timezone
+
+    saved = getattr(_cfg, 'CURRENT_SYMBOL', None)
+    try:
+        if hasattr(_cfg, 'CURRENT_SYMBOL'):
+            delattr(_cfg, 'CURRENT_SYMBOL')
+        ts = [datetime(2024, 1, 2, 14, 30, tzinfo=timezone.utc)]
+        df = pl.DataFrame({
+            'ts_event': ts, 'open': [100.0], 'high': [101.0],
+            'low': [99.0], 'close': [100.5], 'volume': [1000],
+            'prediction_prob': [0.6],
+        })
+        try:
+            simulate_execution_classification(df)
+            assert False, 'Should have raised RuntimeError for missing CURRENT_SYMBOL'
+        except RuntimeError as e:
+            assert 'CURRENT_SYMBOL' in str(e), f'Expected CURRENT_SYMBOL in error, got: {e}'
+    finally:
+        if saved is not None:
+            _cfg.CURRENT_SYMBOL = saved
+
+
 if __name__ == "__main__":
     print("Running continuous_contract tests...")
     test_compute_roll_dates_es()
     test_compute_roll_dates_cl()
     test_build_continuous_series()
     test_apply_splice()
+    test_contract_multiplier_no_es_fallback()
     print("All continuous_contract tests PASSED.")
 --- END OF FILE: tests\test_continuous_contract.py ---
 

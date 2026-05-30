@@ -121,8 +121,8 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
                 window, total_days, data_start, data_end,
             )
             # Single split covering the full range — temporal separation
-            # is enforced inside cli.py via _build_ts_folds which slices
-            # by actual timestamps, not file boundaries.
+            # is enforced inside cli.py via --start/--end date boundaries
+            # which slice by actual timestamps, not file boundaries.
             all_years = sorted(file_bounds.keys())
             return [(all_years, all_years)]
 
@@ -137,8 +137,9 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
 
             # File assignment by date overlap — yearly parquet files span
             # full calendar years. Overlap-based assignment is safe because
-            # cli.py's _build_ts_folds enforces strict temporal separation
-            # by slicing within each file at the timestamp level.
+            # cli.py enforces strict temporal separation by passing
+            # --start/--end date boundaries, slicing within each file at
+            # the timestamp level.
             train_files = [
                 yr for yr, (fmin, fmax) in file_bounds.items()
                 if fmax >= train_start and fmin < train_end
@@ -281,6 +282,25 @@ def _validate_symbol_data(f: Path, config) -> bool:
     return True
 
 
+def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout_text: str,
+                            log_dir: Path, symbol: str, split_idx: int, stage: str) -> None:
+    """Persist full subprocess failure output to a deterministic log file."""
+    import datetime as dt
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    log_path = log_dir / f'fail_{symbol}_split{split_idx}_{stage}_{timestamp}.log'
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write(f'command: {" ".join(cmd)}\n')
+        f.write(f'returncode: {returncode}\n')
+        f.write(f'symbol: {symbol}\n')
+        f.write(f'split_idx: {split_idx}\n')
+        f.write(f'stage: {stage}\n')
+        f.write(f'timestamp: {timestamp}\n')
+        f.write(f'--- STDOUT ---\n{stdout_text}\n--- STDERR ---\n{stderr_text}\n')
+
+
+_log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
+
 def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     if not per_symbol:
         return
@@ -398,9 +418,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
-    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'timeout': 300}
-    if not _VERBOSE:
-        kw['stdout'] = subprocess.DEVNULL
+    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'stdout': subprocess.PIPE, 'timeout': 300}
     if config.pipeline.enable_discovery:
         subprocess.run([sys.executable, '-m', 'pipeline.cli', 'discover',
                         '--data', train_glob, '--out', str(manifest_path)], **kw)
@@ -427,10 +445,14 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             subprocess.run(cmd, **kw)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
+            stdout_text = e.stdout.decode(errors='replace') if isinstance(e.stdout, bytes) else str(e.stdout or '')
             err_lines = stderr_text.strip().split('\n')
             print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
             for line in err_lines[-3:]:
                 print(f'  > {line}')
+            if _log_failures:
+                _log_subprocess_failure(cmd, e.returncode, stderr_text, stdout_text,
+                                        Path('output') / 'logs', symbol, split_idx, 'hmm')
             logger.warning(
                 'run-hmm failed for %s split=%d (rc=%d)',
                 symbol, split_idx, e.returncode,
@@ -445,10 +467,14 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 subprocess.run(cmd_fb, **kw)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
                 stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
+                stdout2 = e2.stdout.decode(errors='replace') if isinstance(e2.stdout, bytes) else str(e2.stdout or '')
                 err2_lines = stderr2.strip().split('\n')
                 print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
                 for line in err2_lines[-3:]:
                     print(f'  > {line}')
+                if _log_failures:
+                    _log_subprocess_failure(cmd_fb, e2.returncode, stderr2, stdout2,
+                                            Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
         bt_path = out_dir / 'backtest_results_hmm.parquet'

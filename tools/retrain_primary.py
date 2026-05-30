@@ -129,17 +129,13 @@ def build_features(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
-    """Add session_id from timestamp (Chicago 18:00 session boundary)."""
-    # Offsetting by 6 hours: 18:00 ET -> next day 00:00 UTC
-    df = df.with_columns(
-        pl.col("ts_event")
-        .dt.convert_time_zone("Etc/GMT+5")
-        .dt.offset_by("6h")
-        .dt.date()
-        .cast(pl.String)
-        .alias("session_id")
-    )
-    return df
+    """Add session_id from timestamp using config-derived session boundary."""
+    from core.config import config
+    df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
+    _offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
+    df = df.with_columns(session_id.alias('session_id'))
+    return df.drop('ts_local')
 
 
 def robust_scale(X_train, X_test):
