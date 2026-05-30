@@ -13,11 +13,10 @@ import logging
 from pathlib import Path
 
 import polars as pl
-import yaml
 
 from core.config import config
 from pipeline.contracts.continuous import build_continuous_series
-from core.market import detect_symbol_from_path, load_market_config
+from core.market import detect_symbol_from_path, load_market_config, get_contract_multiplier
 
 from pipeline.tracking.state import PipelineState
 
@@ -162,17 +161,7 @@ def ingestion_stage(state: PipelineState) -> PipelineState:
     # --- 2. Symbol detection & contract multiplier --------------------------
     symbol = detect_symbol_from_path(data_glob)
     load_market_config(symbol)
-    contract_multiplier = 1.0
-    market_cfg_yaml = config.MARKET_CONFIGS.get(symbol)
-    if market_cfg_yaml and Path(market_cfg_yaml).exists():
-        try:
-            with open(market_cfg_yaml) as fh:
-                mkt = yaml.safe_load(fh)
-            contract_multiplier = float(
-                mkt.get("metadata", {}).get("contract_multiplier", 1.0)
-            )
-        except Exception:
-            contract_multiplier = 1.0
+    contract_multiplier = get_contract_multiplier(symbol)
 
     state.metadata["symbol"] = symbol
     state.metadata["contract_multiplier"] = contract_multiplier

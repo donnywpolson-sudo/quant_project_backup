@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.config import config
+from core.config import config, load_config
+load_config()
 from pipeline.features.htf_context import add_htf_context_features
 from pipeline.features.expansion import (
     add_regime, add_ratios_and_z_scores, add_rolling_quantiles,

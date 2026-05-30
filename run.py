@@ -18,6 +18,7 @@ import shutil
 import polars as pl
 import numpy as np
 from core.config import load_config, RootConfig
+from core.market import get_contract_multiplier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -234,12 +235,6 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
     return splits
 
 
-_CONTRACT_MULTIPLIERS = {
-    'CL': 1000, 'ES': 50, 'NQ': 20, 'RTY': 50,
-    'GC': 100, 'SI': 5000, 'HG': 25000,
-    'ZB': 1000, 'ZN': 1000, 'ZF': 1000, 'ZT': 2000, 'ZC': 50, 'NG': 10000,
-    '6E': 125000, '6J': 12500000, '6B': 62500, 'YM': 5,
-}
 _MIN_ROWS = 1000
 _MIN_PRICE = {'CL': 0.1, 'ES': 500, 'NQ': 1000, 'GC': 500, 'SI': 5, 'HG': 1,
               'ZB': 50, 'ZN': 50, 'ZC': 50, 'NG': 0.5}
@@ -505,14 +500,14 @@ def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
     pnl_sum = df['pnl'].sum()
     pnl_mean = df['pnl'].mean()
     pnl_std = df['pnl'].std()
-    multiplier = _CONTRACT_MULTIPLIERS.get(symbol, 1)
+    multiplier = get_contract_multiplier(symbol)
     notional = df['close'].mean() * multiplier if 'close' in df.columns else 0
-    logger.info('[VALIDATE] %s: rows=%d pnl_sum=%.2f pnl_mean=%.6f pnl_std=%.4f notional=%.0f mult=%d',
+    logger.info('[VALIDATE] %s: rows=%d pnl_sum=%.2f pnl_mean=%.6f pnl_std=%.4f notional=%.0f mult=%.6g',
                 symbol, df.height, pnl_sum, pnl_mean, pnl_std, notional, multiplier)
     if abs(pnl_std) < 0.0001 and multiplier > 1:
         raise RuntimeError(
             'BACKTEST FAILURE: %s pnl std %.8f is zero-scale '
-            '(multiplier=%d, notional=%.0f) -- PnL not in USD futures' %
+            '(multiplier=%.6g, notional=%.0f) -- PnL not in USD futures' %
             (symbol, pnl_std, multiplier, notional)
         )
 

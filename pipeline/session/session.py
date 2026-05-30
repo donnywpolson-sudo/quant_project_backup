@@ -25,11 +25,31 @@ SESSION_BREAK_END = config.SESSION_BREAK_END_LOCAL
 _OHLCV_PROJECTION = ['ts_event', 'open', 'high', 'low', 'close', 'volume']
 
 
+def session_start_offset_by() -> str:
+    start = config.SESSION_START_LOCAL
+    start_minutes = start.hour * 60 + start.minute
+    offset_minutes = (24 * 60 - start_minutes) % (24 * 60)
+    hours, minutes = divmod(offset_minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f'{hours}h')
+    if minutes:
+        parts.append(f'{minutes}m')
+    return ''.join(parts) or '0m'
+
+
+def session_id_expr(local_ts_col: str = 'ts_local') -> pl.Expr:
+    return (
+        pl.col(local_ts_col)
+        .dt.offset_by(session_start_offset_by())
+        .dt.date()
+        .cast(pl.String)
+    )
+
+
 def add_session_id(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(pl.col('ts_event').dt.convert_time_zone(config.TIMEZONE).alias('ts_local'))
-    _offset = 24 - config.SESSION_START_LOCAL.hour
-    session_id = pl.col('ts_local').dt.offset_by(f'{_offset}h').dt.date().cast(pl.String)
-    df = df.with_columns(session_id.alias('session_id'))
+    df = df.with_columns(session_id_expr('ts_local').alias('session_id'))
     return df.drop('ts_local')
 
 

@@ -308,9 +308,8 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #     when the command is invoked. Fails fast if unset — no silent
     #     fallback to ES because wrong multiplier silently corrupts PnL.
     # ------------------------------------------------------------------------
-    import yaml
-    from pathlib import Path
     from core.config import config as _cfg
+    from core.market import get_contract_multiplier
 
     symbol = getattr(_cfg, 'CURRENT_SYMBOL', None)
     if not symbol:
@@ -319,15 +318,13 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
             'Cannot resolve contract multiplier for position clipping. '
             'Ensure cli.py sets config.CURRENT_SYMBOL before execution.'
         )
+    contract_multiplier = get_contract_multiplier(symbol)
+
+    import yaml
+    from pathlib import Path
     market_cfg_path = _cfg.MARKET_CONFIGS.get(symbol)
-    if not market_cfg_path or not Path(market_cfg_path).exists():
-        raise RuntimeError(
-            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
-            f'Cannot resolve contract multiplier.'
-        )
     with open(market_cfg_path, 'r') as f:
-        market_cfg = yaml.safe_load(f)
-    contract_multiplier = market_cfg.get('metadata', {}).get('contract_multiplier', 1.0)
+        market_cfg = yaml.safe_load(f) or {}
     max_pos_size_raw = market_cfg.get('risk', {}).get('max_position_size')
     max_pos = float(max_pos_size_raw) if max_pos_size_raw else float('inf')
 

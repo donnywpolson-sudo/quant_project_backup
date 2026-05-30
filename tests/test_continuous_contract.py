@@ -146,6 +146,26 @@ def test_contract_multiplier_no_es_fallback():
             _cfg.CURRENT_SYMBOL = saved
 
 
+def test_contract_multiplier_missing_metadata_fails(tmp_path):
+    """Market config must define a finite positive multiplier."""
+    from core.config import config as _cfg, load_config
+    from core.market import get_contract_multiplier
+    load_config()
+
+    bad_cfg = tmp_path / 'BAD.yaml'
+    bad_cfg.write_text('metadata:\n  ticker: BAD\n', encoding='utf-8')
+    saved_configs = dict(_cfg.MARKET_CONFIGS)
+    try:
+        _cfg.MARKET_CONFIGS['BAD'] = str(bad_cfg)
+        try:
+            get_contract_multiplier('BAD')
+            assert False, 'Should have raised RuntimeError for missing multiplier'
+        except RuntimeError as e:
+            assert 'contract_multiplier' in str(e)
+    finally:
+        _cfg.MARKET_CONFIGS = saved_configs
+
+
 if __name__ == "__main__":
     print("Running continuous_contract tests...")
     test_compute_roll_dates_es()

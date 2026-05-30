@@ -313,7 +313,7 @@ def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
     Resample 5-minute data to 1-hour frequency for HMM detection layer.
     Preserves session_id grouping and uses only OHLCV columns.
     """
-    from pipeline.session.session import add_session_id
+    from pipeline.session.session import session_id_expr
 
     df = df_5min.select(['ts_event', 'open', 'high', 'low', 'close', 'volume'])
     df = df.with_columns(
@@ -322,17 +322,7 @@ def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         pl.col('ts_local').dt.truncate('1h').alias('ts_hour')
     )
-    # Session ID: offset by (24 - SESSION_START.hour) hours to align
-    # overnight futures session to the correct calendar date.
-    # Dynamically derived from config instead of hardcoded 6h.
-    session_start_offset = 24 - config.SESSION_START_LOCAL.hour
-    session_id = (
-        pl.col('ts_local')
-        .dt.offset_by(f'{session_start_offset}h')
-        .dt.date()
-        .cast(pl.String)
-    )
-    df = df.with_columns(session_id.alias('session_id'))
+    df = df.with_columns(session_id_expr('ts_local').alias('session_id'))
 
     agg = df.group_by(['session_id', 'ts_hour'], maintain_order=True).agg([
         pl.col('open').first().alias('open'),
@@ -449,8 +439,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     Preserves all HMM columns (hmm_regime_*, hmm_trade_gate).
     """
-    import yaml
-    from pathlib import Path
+    from core.market import get_contract_multiplier
     _compute_pnl_from_target_exec = importlib.import_module(
         "pipeline.execution.simulator"
     )._compute_pnl_from_target_exec
@@ -462,15 +451,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
             'Cannot resolve contract multiplier for HMM PnL recompute. '
             'Ensure cli.py sets config.CURRENT_SYMBOL before calling run-hmm.'
         )
-    market_cfg_path = config.MARKET_CONFIGS.get(symbol)
-    if not market_cfg_path or not Path(market_cfg_path).exists():
-        raise RuntimeError(
-            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
-            f'Cannot resolve contract multiplier.'
-        )
-    with open(market_cfg_path, 'r') as f:
-        market_cfg = yaml.safe_load(f)
-    contract_multiplier = float(market_cfg.get('metadata', {}).get('contract_multiplier', 1.0))
+    contract_multiplier = get_contract_multiplier(symbol)
 
     # Preserve HMM columns so they survive the recompute
     hmm_cols = [c for c in df.columns if c.startswith('hmm_')]
@@ -769,7 +750,10 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
     net_sharpe = float(pnl_arr.mean() / max(pnl_arr.std(), 1e-12) * bar_sqrt) if len(pnl_arr) > 0 else 0.0
     costs = float(gross.sum() - pnl_arr.sum()) if len(gross) > 0 else 0.0
     ic = float(np.corrcoef(probs[:len(y_test_vals)], y_test_vals)[0, 1]) if len(probs) > 5 and len(y_test_vals) == len(probs) else 0.0
-    turnover = float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64))).sum() / max(len(pos), 1))
+    turnover = (
+        float(np.abs(np.diff(pos.astype(np.float64), prepend=pos[0])).sum() / len(pos))
+        if len(pos) > 0 else 0.0
+    )
 
     y_train_dist = dict(zip(*np.unique(y_train_vals, return_counts=True))) if len(y_train_vals) > 0 else {}
     y_test_dist = dict(zip(*np.unique(y_test_vals, return_counts=True))) if len(y_test_vals) > 0 else {}

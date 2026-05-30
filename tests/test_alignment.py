@@ -1,6 +1,6 @@
 import polars as pl
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from pipeline.session.session import add_session_id, filter_session_hours, resample_to_frequency
 from pipeline.align.align import align_htf_streams
 
@@ -85,3 +85,16 @@ def test_session_offset_consistency():
         f'session_id should be 2026-01-08 (18:00 ET start + 6h offset), got {sid_session[0]}'
     assert len(sid_hh) > 0 and sid_hh[0] == '2026-01-08', \
         f'1H session_id should be 2026-01-08, got: {sid_hh}'
+
+
+def test_session_offset_non_hour_start():
+    """Canonical session offset must preserve minute component."""
+    from core.config import config
+    from pipeline.session.session import session_start_offset_by
+
+    saved = config.SESSION_START_LOCAL
+    try:
+        config.SESSION_START_LOCAL = time(18, 30)
+        assert session_start_offset_by() == '5h30m'
+    finally:
+        config.SESSION_START_LOCAL = saved

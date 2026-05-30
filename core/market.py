@@ -1,5 +1,6 @@
 import yaml
 import logging
+import math
 from pathlib import Path
 from core.config import config
 logger = logging.getLogger(__name__)
@@ -38,3 +39,36 @@ def load_market_config(symbol: str):
         if value is not None:
             setattr(config, attr, value)
             logger.info(f'Overrode {attr} = {value} for {symbol}')
+
+
+def get_contract_multiplier(symbol: str) -> float:
+    if not symbol:
+        raise RuntimeError(
+            'CONTRACT FAIL: symbol is required. Cannot resolve contract multiplier.'
+        )
+    yaml_path = config.MARKET_CONFIGS.get(symbol)
+    if not yaml_path or not Path(yaml_path).exists():
+        raise RuntimeError(
+            f'CONTRACT FAIL: no market config found for symbol={symbol}. '
+            'Cannot resolve contract multiplier.'
+        )
+    with open(yaml_path, 'r') as f:
+        market_cfg = yaml.safe_load(f) or {}
+    metadata = market_cfg.get('metadata') or {}
+    if 'contract_multiplier' not in metadata:
+        raise RuntimeError(
+            f'CONTRACT FAIL: contract_multiplier missing for symbol={symbol}.'
+        )
+    try:
+        multiplier = float(metadata['contract_multiplier'])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f'CONTRACT FAIL: invalid contract_multiplier for symbol={symbol}: '
+            f'{metadata["contract_multiplier"]!r}.'
+        ) from exc
+    if not math.isfinite(multiplier) or multiplier <= 0.0:
+        raise RuntimeError(
+            f'CONTRACT FAIL: invalid contract_multiplier for symbol={symbol}: '
+            f'{multiplier}.'
+        )
+    return multiplier
