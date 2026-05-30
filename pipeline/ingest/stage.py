@@ -154,31 +154,7 @@ def ingestion_stage(state: PipelineState) -> PipelineState:
         )
         state.data = pl.read_parquet(cache_path)
         state.metadata.setdefault("symbol", detect_symbol_from_path(data_glob))
-    return state
-
-
-def load_and_clean_data(
-    data_glob: str,
-    cache_path: str = None,
-    cross_asset_symbols: list = None,
-) -> pl.DataFrame:
-    """Compatibility wrapper for code that expects the old quant.ingest API.
-
-    Runs the ingestion stage internally and returns the adjusted DataFrame
-    directly, matching the original `load_and_clean_data` contract.
-    """
-    from pipeline.tracking.state import PipelineState
-
-    state = PipelineState(
-        data=pl.DataFrame(),
-        metadata={
-            "data_glob": data_glob,
-            "cache_path": cache_path,
-            "cross_asset_symbols": cross_asset_symbols,
-        },
-    )
-    state = ingestion_stage(state)
-    return state.data
+        return state
 
     # --- 1. Read raw data ---------------------------------------------------
     df_raw = _read_raw_files(data_glob)
@@ -216,8 +192,6 @@ def load_and_clean_data(
 
     # --- 5. Transfer metadata forward ---------------------------------------
     state.metadata["cross_asset_symbols"] = cross_asset_symbols
-    state.metadata["data_glob"] = data_glob
-    state.metadata["cache_path"] = cache_path
     state.data = df_adjusted
 
     logger.info(
@@ -225,3 +199,27 @@ def load_and_clean_data(
         state.data.height,
     )
     return state
+
+
+def load_and_clean_data(
+    data_glob: str,
+    cache_path: str = None,
+    cross_asset_symbols: list = None,
+) -> pl.DataFrame:
+    """Compatibility wrapper for code that expects the old quant.ingest API.
+
+    Runs the ingestion stage internally and returns the adjusted DataFrame
+    directly, matching the original `load_and_clean_data` contract.
+    """
+    from pipeline.tracking.state import PipelineState
+
+    state = PipelineState(
+        data=pl.DataFrame(),
+        metadata={
+            "data_glob": data_glob,
+            "cache_path": cache_path,
+            "cross_asset_symbols": cross_asset_symbols,
+        },
+    )
+    state = ingestion_stage(state)
+    return state.data

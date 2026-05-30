@@ -133,7 +133,7 @@ def load_all_streams_chunked(data_glob: str) -> dict:
         raise FileNotFoundError(f'No parquet files found matching {data_glob}')
     print(f'[SESSION] Found {len(all_files)} files.', flush=True)
     streams = {}
-    for freq in config.RESAMPLE_FREQUENCIES:
+    for freq in getattr(config, 'RESAMPLE_FREQUENCIES', ['5m', '1h', '1d']):
         _, df = process_frequency(freq, all_files)
         streams[freq] = df
     return streams

@@ -43,13 +43,20 @@ def add_triple_barrier_target(df: pl.DataFrame) -> pl.DataFrame:
         bar_vol = df['htf_daily_vol_5'].to_numpy().astype(np.float64)
         bar_vol = np.nan_to_num(bar_vol, nan=0.0005)
     else:
-        rolling_std = np.full(n, np.nan)
-        min_window = 20
-        for i in range(min_window, n):
-            rets = np.diff(np.log(close[max(0, i - min_window):i + 1] + 1e-12))
-            if len(rets) > 1:
-                rolling_std[i] = np.std(rets)
-        bar_vol = np.nan_to_num(rolling_std, nan=0.0005)
+        # Vectorized fallback: use Polars rolling_std on log returns.
+        # Avoids O(n²) Python for-loop over np.diff slices.
+        log_ret = (
+            pl.col('close')
+            .log()
+            .diff()
+            .cast(pl.Float64)
+        )
+        bar_vol = (
+            log_ret
+            .rolling_std(window_size=260, min_samples=20)
+            .fill_null(0.0005)
+        )
+        bar_vol = bar_vol.eval(df).to_numpy(allow_copy=False).astype(np.float64)
 
     bar_vol = np.maximum(bar_vol, 0.0001)
     vol_4h = bar_vol * np.sqrt(H_BARS)

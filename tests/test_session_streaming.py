@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import polars as pl
 import numpy as np
 from quant.session import load_all_streams_chunked
+from core.config import config
 
 def make_small_synthetic(start_dt, end_dt):
     ts = []
@@ -19,6 +20,7 @@ def make_small_synthetic(start_dt, end_dt):
     return df
 
 def test_streaming_resample_produces_htf():
+    config.RESAMPLE_FREQUENCIES = ['5m', '1h', '1d']
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'synth.parquet'
         df = make_small_synthetic(datetime(2026, 1, 1, 18, 0), datetime(2026, 1, 4, 16, 0))

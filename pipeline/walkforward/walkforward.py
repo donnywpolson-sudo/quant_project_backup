@@ -181,21 +181,28 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
 
         if train_X.height >= 40:
             split = max(train_X.height // 3, 20)
-            train_primary_X = train_X.slice(0, split)
-            train_primary_y = train_y.slice(0, split)
-            train_val_X = train_X.slice(split)
-            train_val_y = train_y.slice(split)
-            probs_val = train_and_predict(train_primary_X, train_primary_y, train_val_X, feature_cols)
-            meta_val_pred = np.where(probs_val > 0.55, 1, np.where(probs_val < 0.45, -1, 0)).astype(np.int8)
-            meta_val_df = pl.DataFrame({'primary_prediction': meta_val_pred})
-            meta_val_actual = np.where(
-                train_val_y.to_numpy().astype(np.float32).ravel() > 0, 1, -1
-            ).astype(np.int8)
-            meta_val_df = meta_val_df.with_columns(pl.Series('target_tb', meta_val_actual))
-            meta_val_df = add_meta_label_target(meta_val_df, 'primary_prediction')
-            meta_train_y = meta_val_df['target_meta'].to_numpy().astype(np.float32)
-            meta_train_X = train_val_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
-            meta_model = train_meta_model(meta_train_X, meta_val_pred.astype(np.float32), meta_train_y)
+            if split < 200:
+                logger.info(
+                    'Meta-model skipped: insufficient holdout (%d rows, need >= 200)',
+                    split,
+                )
+                enable_meta = False
+            else:
+                train_primary_X = train_X.slice(0, split)
+                train_primary_y = train_y.slice(0, split)
+                train_val_X = train_X.slice(split)
+                train_val_y = train_y.slice(split)
+                probs_val = train_and_predict(train_primary_X, train_primary_y, train_val_X, feature_cols)
+                meta_val_pred = np.where(probs_val > 0.55, 1, np.where(probs_val < 0.45, -1, 0)).astype(np.int8)
+                meta_val_df = pl.DataFrame({'primary_prediction': meta_val_pred})
+                meta_val_actual = np.where(
+                    train_val_y.to_numpy().astype(np.float32).ravel() > 0, 1, -1
+                ).astype(np.int8)
+                meta_val_df = meta_val_df.with_columns(pl.Series('target_tb', meta_val_actual))
+                meta_val_df = add_meta_label_target(meta_val_df, 'primary_prediction')
+                meta_train_y = meta_val_df['target_meta'].to_numpy().astype(np.float32)
+                meta_train_X = train_val_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
+                meta_model = train_meta_model(meta_train_X, meta_val_pred.astype(np.float32), meta_train_y)
 
     result = simulate_execution_classification(result)
 
@@ -224,8 +231,16 @@ def _resample_to_1h(df_5min: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(
         pl.col('ts_local').dt.truncate('1h').alias('ts_hour')
     )
-    # Add session_id for proper grouping
-    session_id = pl.col('ts_local').dt.offset_by('6h').dt.date().cast(pl.String)
+    # Session ID: offset by (24 - SESSION_START.hour) hours to align
+    # overnight futures session to the correct calendar date.
+    # Dynamically derived from config instead of hardcoded 6h.
+    session_start_offset = 24 - config.SESSION_START_LOCAL.hour
+    session_id = (
+        pl.col('ts_local')
+        .dt.offset_by(f'{session_start_offset}h')
+        .dt.date()
+        .cast(pl.String)
+    )
     df = df.with_columns(session_id.alias('session_id'))
 
     agg = df.group_by(['session_id', 'ts_hour'], maintain_order=True).agg([
