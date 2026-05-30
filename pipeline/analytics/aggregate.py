@@ -201,9 +201,10 @@ def load_all_backtests(artifacts_root='output') -> dict:
     root = Path(artifacts_root)
     results = {}
 
-    # Search for backtest_results.parquet nested two levels deep:
-    #   <root>/<market>/<year>/backtest_results.parquet
-    for f in root.glob('*/*/backtest_results.parquet'):
+    # Search for backtest_results*.parquet in split-aware directories:
+    #   <root>/<market>/<year>_split_<idx>/backtest_results_hmm.parquet
+    #   <root>/<market>/<year>_split_<idx>/backtest_results.parquet
+    for f in sorted(root.glob('*/*_split_*/backtest_results*.parquet')):
         try:
             # Projection: read only columns we'll actually use downstream.
             # Polars will read the parquet footer to discover which of the
@@ -222,7 +223,9 @@ def load_all_backtests(artifacts_root='output') -> dict:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
             market = f.parent.parent.name
-            year = f.parent.name
+            year_dir = f.parent.name  # e.g. "2024_split_1" or "2024"
+            year = year_dir.split('_')[0] if '_split_' in year_dir else year_dir
+            split_tag = year_dir if '_split_' in year_dir else None
             results.setdefault(market, []).append((year, df))
         except Exception:
             continue

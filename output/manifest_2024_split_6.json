@@ -3,7 +3,7 @@
     "feature_names": [],
     "selected_K": 0,
     "selection_seed": 42,
-    "selection_date": "2026-05-30T05:02:12.051916Z",
+    "selection_date": "2026-05-30T11:07:39.971321Z",
     "discovery_status": "skipped",
     "reason": "only 0 samples available (need >= 2)"
 }

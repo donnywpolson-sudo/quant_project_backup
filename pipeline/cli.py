@@ -47,7 +47,7 @@ from core.config import config, load_config
 from _legacy.ingest import load_and_clean_data
 from pipeline.features.engine import generate_features
 from pipeline.features.discovery import run_feature_discovery
-from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm
+from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm, run_outer_train_test_eval, run_outer_train_test_eval_with_hmm
 from core.io.canonical import write_canonical_parquet
 from pipeline.analytics.aggregate import calculate_metrics, run_aggregation
 logger = logging.getLogger(__name__)
@@ -70,9 +70,30 @@ def prune_features_by_manifest(df, manifest_path, target_col):
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
-def _stable_data_tag(data_arg: str) -> str:
-    h = hashlib.sha256(data_arg.encode()).hexdigest()[:12]
+def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
+    key = data_arg
+    if start:
+        key += '|' + start
+    if end:
+        key += '|' + end
+    h = hashlib.sha256(key.encode()).hexdigest()[:12]
     return h
+
+
+def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) -> pl.DataFrame:
+    from datetime import datetime as _dt, timezone
+    if not start_str or not end_str:
+        raise RuntimeError(f'MISSING BOUNDARY: {label} start/end required for outer_split mode')
+    start_dt = _dt.fromisoformat(start_str).replace(tzinfo=timezone.utc)
+    end_dt = _dt.fromisoformat(end_str).replace(tzinfo=timezone.utc)
+    before = df.height
+    result = df.filter((pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt))
+    ts_min = result['ts_event'].min() if result.height > 0 else None
+    ts_max = result['ts_event'].max() if result.height > 0 else None
+    print(f'[OUTER-TRUE] {label} filter ({start_str} -> {end_str}): {before} -> {result.height} rows, ts=[{ts_min}, {ts_max})', flush=True)
+    if result.height == 0:
+        raise RuntimeError(f'EMPTY WINDOW: {label} [{start_str}, {end_str}) returned 0 rows')
+    return result
 
 def main():
     parser = argparse.ArgumentParser()
@@ -86,12 +107,16 @@ def main():
     run_parser.add_argument('--out', required=True)
     run_parser.add_argument('--start', default=None, help='Start date (ISO format)')
     run_parser.add_argument('--end', default=None, help='End date (ISO format)')
+    run_parser.add_argument('--train-start', default=None, help='Train window start date (ISO)')
+    run_parser.add_argument('--train-end', default=None, help='Train window end date (ISO)')
     run_hmm_parser = subparsers.add_parser('run-hmm')
     run_hmm_parser.add_argument('--data', required=True)
     run_hmm_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_hmm_parser.add_argument('--out', required=True)
     run_hmm_parser.add_argument('--start', default=None, help='Start date (ISO format)')
     run_hmm_parser.add_argument('--end', default=None, help='End date (ISO format)')
+    run_hmm_parser.add_argument('--train-start', default=None, help='Train window start date (ISO)')
+    run_hmm_parser.add_argument('--train-end', default=None, help='Train window end date (ISO)')
     run_hmm_parser.add_argument('--retrain-interval', type=int, default=5,
                                 help='Retrain HMM every N folds (default: 5).')
     aggregate_parser = subparsers.add_parser('aggregate')
@@ -128,11 +153,13 @@ def main():
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[CLI] Loading aligned data...', flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -144,29 +171,45 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
-            print('[CLI] Discovery disabled -- skipping manifest pruning, using baseline features only.', flush=True)
+            print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
-        # Per-split date window filtering (for single-year walkforward isolation)
-        if getattr(args, 'start', None) and getattr(args, 'end', None):
-            from datetime import datetime as _dt, timezone
-            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-            before = df_pruned.height
-            df_pruned = df_pruned.filter(
-                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+        print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols (target={"included" if target_col in df_pruned.columns else "MISSING"})', flush=True)
+        # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
+        if getattr(config, 'WF_MODE', '') != 'outer_split':
+            if getattr(args, 'start', None) and getattr(args, 'end', None):
+                from datetime import datetime as _dt, timezone
+                start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+                end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+                before = df_pruned.height
+                df_pruned = df_pruned.filter(
+                    (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+                )
+                print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+                if df_pruned.height == 0:
+                    print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
+                    os.makedirs(args.out, exist_ok=True)
+                    placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                    placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
+                    print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                    return
+            # Assertion: all rows must be within the requested date window
+            t_min = df_pruned['ts_event'].min()
+            t_max = df_pruned['ts_event'].max()
+            assert t_min >= start_dt, (
+                f'SPLIT BOUNDARY VIOLATION: ts_event min={t_min} < start={start_dt}. '
+                f'Upstream data or cache may have stale full-year data.'
             )
-            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
-            if df_pruned.height == 0:
-                print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
-                os.makedirs(args.out, exist_ok=True)
-                placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
-                placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
-                print(f'[CLI] Empty backtest written to {args.out}', flush=True)
-                return
+            assert t_max < end_dt, (
+                f'SPLIT BOUNDARY VIOLATION: ts_event max={t_max} >= end={end_dt}. '
+                f'Upstream data or cache may have stale full-year data.'
+            )
+            logger.info('[SPLIT] run: %d rows ts_event range [%s, %s) within [%s, %s)',
+                df_pruned.height, t_min, t_max, start_dt, end_dt)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -180,7 +223,13 @@ def main():
         _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
         feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
-        result_df = run_walkforward(X, y, feature_cols, target_col)
+        if getattr(config, 'WF_MODE', '') == 'outer_split':
+            train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            result_df = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
+        else:
+            result_df = run_walkforward(X, y, feature_cols, target_col)
+        print(f'[CLI] Walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results.parquet')
         atomic_write_parquet(result_df, out_path)
@@ -197,14 +246,16 @@ def main():
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[CLI] Loading aligned data...', flush=True)
         df_aligned = load_and_clean_data(
             args.data,
             cache_path=str(aligned_cache) if aligned_cache.exists() else None,
         )
+        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -216,21 +267,38 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
-        if getattr(args, 'start', None) and getattr(args, 'end', None):
-            from datetime import datetime as _dt, timezone
-            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-            before = df_pruned.height
-            df_pruned = df_pruned.filter(
-                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
-            )
-            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+        print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols', flush=True)
+        # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
+        if getattr(config, 'WF_MODE', '') != 'outer_split':
+            if getattr(args, 'start', None) and getattr(args, 'end', None):
+                from datetime import datetime as _dt, timezone
+                start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+                end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+                before = df_pruned.height
+                df_pruned = df_pruned.filter(
+                    (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+                )
+                print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+                if df_pruned.height == 0:
+                    print('[CLI] Empty date window — writing placeholder output and exiting', flush=True)
+                    os.makedirs(args.out, exist_ok=True)
+                    placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                    placeholder.write_parquet(os.path.join(args.out, 'backtest_results_hmm.parquet'))
+                    print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                    return
+            t_min = df_pruned['ts_event'].min()
+            t_max = df_pruned['ts_event'].max()
+            assert t_min >= start_dt, f'SPLIT BOUNDARY VIOLATION: min={t_min} < start={start_dt}'
+            assert t_max < end_dt, f'SPLIT BOUNDARY VIOLATION: max={t_max} >= end={end_dt}'
+            logger.info('[SPLIT] run-hmm: %d rows ts_event [%s, %s) within [%s, %s)',
+                df_pruned.height, t_min, t_max, start_dt, end_dt)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -258,10 +326,18 @@ def main():
             f'(HMM retrain every {args.retrain_interval} folds)...',
             flush=True,
         )
-        result_df, validation = run_walkforward_with_hmm(
-            X, y, feature_cols, target_col,
-            hmm_retrain_interval=args.retrain_interval,
-        )
+        if getattr(config, 'WF_MODE', '') == 'outer_split':
+            train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            result_df, validation = run_outer_train_test_eval_with_hmm(
+                train_df, test_df, feature_cols, target_col,
+            )
+        else:
+            result_df, validation = run_walkforward_with_hmm(
+                X, y, feature_cols, target_col,
+                hmm_retrain_interval=args.retrain_interval,
+            )
+        print(f'[CLI] HMM walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
         atomic_write_parquet(result_df, out_path)

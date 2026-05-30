@@ -11,6 +11,7 @@ import subprocess
 import logging
 import time
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import polars as pl
@@ -26,6 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger('QuantRunner')
 _VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
 _MIN_TRAIN_DAYS = 90
+_RUN_START = time.time()
+_RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
+_PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
+_VERIFICATION_TABLE = []  # rows for the verification table printed per split
 
 def get_files(data_dir: str, config: RootConfig) -> list[Path]:
     files = list(Path(data_dir).rglob('*.parquet'))
@@ -151,7 +156,7 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
 
             if train_files and test_files:
                 splits.append((sorted(train_files), sorted(test_files),
-                               test_start, test_end))
+                               train_start, train_end, test_start, test_end))
                 logger.debug(
                     'Split %d: train=%s→%s (%d files) | test=%s→%s (%d files)',
                     len(splits),
@@ -301,7 +306,37 @@ def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout
 
 _log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
 
+def _print_verification_table():
+    if not _VERIFICATION_TABLE:
+        return
+    print('\n' + '=' * 140)
+    print(' VERIFICATION TABLE — each row must have unique path, ts_min, pnl_cs')
+    print('=' * 140)
+    print(f'{"split":>5} {"sym":>4} {"path":>55} {"mtime":>12} {"run_id":>8} {"rows":>6} {"ts_min":>26} {"ts_max":>26} {"pnl_cs":>8} {"sharpe":>7} {"pnl":>12} {"trades":>6}')
+    print('-' * 140)
+    for row in _VERIFICATION_TABLE:
+        path_short = row['path'][-55:] if len(row['path']) > 55 else row['path']
+        print(f'{row["split"]:>5} {row["symbol"]:>4} {path_short:>55} {row["mtime"]:>12.0f} {row["run_id"]:>8} {row["rows"]:>6} {str(row["ts_min"]):>26} {str(row["ts_max"]):>26} {row["pnl_cs"]:>8} {row["sharpe"]:>+7.3f} {row["pnl"]:>+12.2f} {row["trades"]:>6}')
+    print('=' * 140)
+    # Verify: no duplicate pnl_cs per symbol
+    seen = {}
+    for row in _VERIFICATION_TABLE:
+        key = (row['symbol'], row['pnl_cs'])
+        if row['pnl_cs'] not in ('missing', 'all_nan'):
+            if key in seen:
+                print(f'\n*** IDENTICAL PNL OUTPUT DETECTED: {row["symbol"]} split={row["split"]} matches split={seen[key]["split"]} pnl_cs={row["pnl_cs"]} ***\n', flush=True)
+            seen[key] = row
+    # Verify: no duplicate paths
+    paths_seen = set()
+    for row in _VERIFICATION_TABLE:
+        if row['path'] in paths_seen:
+            print(f'\n*** DUPLICATE RESULT PATH: {row["path"]} split={row["split"]} ***\n', flush=True)
+        paths_seen.add(row['path'])
+    print(flush=True)
+
+
 def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
+    _print_verification_table()
     if not per_symbol:
         return
     h = '\u2500'
@@ -322,6 +357,17 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
     print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
     print(f'{bl}{h * 52}{br}\n', flush=True)
+
+
+def _hash_column(df: pl.DataFrame, col: str) -> str:
+    if col not in df.columns:
+        return 'missing'
+    vals = df[col].to_numpy()
+    mask = np.isfinite(vals)
+    if mask.sum() == 0:
+        return 'all_nan'
+    h = hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+    return h
 
 
 def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> None:
@@ -352,11 +398,16 @@ def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> 
         pos = bt['position'].to_numpy().astype(np.float64)
         shifts = np.abs(np.diff(pos, prepend=pos[0]))
         trades = f'{int(np.sum(shifts > 1e-9))}'
+    pred_cs = _hash_column(bt, 'prediction_prob')
+    pnl_cs = _hash_column(bt, 'pnl')
+    sig_cs = _hash_column(bt, 'raw_signal') if 'raw_signal' in bt.columns else _hash_column(bt, 'target_exec')
     logger.info(
         '[DIAG] symbol=%s split=%d prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
-        'gross_sharpe=%s net_sharpe=%s cost_drag=%s turnover=%s trades=%s',
+        'gross_sharpe=%s net_sharpe=%s cost_drag=%s turnover=%s trades=%s '
+        'pred_cs=%s pnl_cs=%s sig_cs=%s',
         symbol, split_idx, pmean, pstd, gt055, lt045,
         gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+        pred_cs, pnl_cs, sig_cs,
     )
 
 
@@ -419,10 +470,14 @@ def load_all_splits_for_year(year: int) -> list:
 
 
 def process_split(train_years: list[int], test_years: list[int], files: list[Path],
-                  config: RootConfig, split_idx: int, total_splits: int,
-                  test_start=None, test_end=None) -> None:
+                   config: RootConfig, split_idx: int, total_splits: int,
+                   train_start=None, train_end=None, test_start=None, test_end=None) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
+    print(f'[SPLIT {split_idx}/{total_splits}] test_window=[{test_start}, {test_end}) run_id={_RUN_ID}',
+          f'cwd={os.getcwd()} run_py_mtime={Path("run.py").stat().st_mtime:.0f}',
+          f'cli_py_mtime={Path("pipeline/cli.py").stat().st_mtime:.0f}',
+          flush=True)
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
@@ -473,10 +528,24 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Purge stale backtest files from previous runs
+        for _stale_name in ('backtest_results_hmm.parquet', 'backtest_results.parquet'):
+            _stale_path = out_dir / _stale_name
+            if _stale_path.exists() and _stale_path.stat().st_mtime < _RUN_START:
+                logger.warning('[STALE] Removing pre-existing file: %s (mtime=%.0f < run_start=%.0f)',
+                               _stale_path, _stale_path.stat().st_mtime, _RUN_START)
+                _stale_path.unlink()
         cmd = [sys.executable, '-m', 'pipeline.cli', 'run-hmm', '--data', str(f),
                '--manifest', str(manifest_path), '--out', str(out_dir)]
+        if train_start and train_end:
+            cmd.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        logger.info('[SUBPROCESS] split=%d symbol=%s start=%s end=%s cmd=%s',
+                    split_idx, symbol,
+                    test_start.isoformat() if test_start else 'None',
+                    test_end.isoformat() if test_end else 'None',
+                    ' '.join(cmd))
         try:
             subprocess.run(cmd, **kw)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -497,6 +566,8 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
             cmd_fb = [sys.executable, '-m', 'pipeline.cli', 'run', '--data', str(f),
                        '--manifest', str(manifest_path), '--out', str(out_dir)]
+            if train_start and train_end:
+                cmd_fb.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
             if test_start and test_end:
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
@@ -517,11 +588,56 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         if not bt_path.exists():
             bt_path = out_dir / 'backtest_results.parquet'
         if bt_path.exists():
+            _bt_mtime = bt_path.stat().st_mtime
+            assert _bt_mtime >= _RUN_START, (
+                f'STALE RESULT: {bt_path} mtime={_bt_mtime:.0f} < run_start={_RUN_START:.0f}. '
+                f'Subprocess may have failed silently and an old file was read.'
+            )
+            print(f'[BACKTEST] {symbol} path={bt_path} mtime={_bt_mtime:.0f} run_id={_RUN_ID}', flush=True)
             try:
                 bt = pl.read_parquet(bt_path)
+                t_min = str(bt['ts_event'].min()) if 'ts_event' in bt.columns else 'missing'
+                t_max = str(bt['ts_event'].max()) if 'ts_event' in bt.columns else 'missing'
+                print(f'[BACKTEST] {symbol} rows={bt.height} ts_min={t_min} ts_max={t_max}', flush=True)
+                # Assert timestamps are within the test window
+                if test_start and test_end and 'ts_event' in bt.columns:
+                    from datetime import datetime as _dt, timezone
+                    ts_start = _dt.fromisoformat(test_start.isoformat()).replace(tzinfo=timezone.utc)
+                    ts_end = _dt.fromisoformat(test_end.isoformat()).replace(tzinfo=timezone.utc)
+                    bt_t_min = bt['ts_event'].min()
+                    bt_t_max = bt['ts_event'].max()
+                    assert bt_t_min >= ts_start, (
+                        f'BOUNDARY VIOLATION: {symbol} split={split_idx} bt_t_min={bt_t_min} < test_start={ts_start}'
+                    )
+                    assert bt_t_max < ts_end, (
+                        f'BOUNDARY VIOLATION: {symbol} split={split_idx} bt_t_max={bt_t_max} >= test_end={ts_end}'
+                    )
+                pnl_cs = _hash_column(bt, 'pnl')
+                pred_cs = _hash_column(bt, 'prediction_prob')
                 pnl = bt['pnl'].sum()
                 sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
                 hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
+                print(f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} sharpe={sharpe:.3f} pnl={pnl:.2f}', flush=True)
+                if symbol not in _PER_SYMBOL_PNL_CS:
+                    _PER_SYMBOL_PNL_CS[symbol] = {}
+                if pnl_cs != 'missing' and pnl_cs != 'all_nan':
+                    for prior_split, prior_cs in _PER_SYMBOL_PNL_CS[symbol].items():
+                        assert prior_cs != pnl_cs, (
+                            f'IDENTICAL PNL OUTPUT: {symbol} split={split_idx} pnl_cs={pnl_cs} '
+                            f'matches split={prior_split}. Stale cache or file reuse detected.'
+                        )
+                    _PER_SYMBOL_PNL_CS[symbol][split_idx] = pnl_cs
+                # Collect for verification table
+                trades = 0
+                if 'position' in bt.columns:
+                    pos = bt['position'].to_numpy().astype(np.float64)
+                    trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9))
+                _VERIFICATION_TABLE.append({
+                    'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
+                    'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': bt.height,
+                    'ts_min': str(t_min), 'ts_max': str(t_max),
+                    'pnl_cs': pnl_cs, 'pnl': pnl, 'sharpe': sharpe, 'trades': trades,
+                })
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
                 raw_path = out_dir / 'backtest_results.parquet'
@@ -552,8 +668,10 @@ if __name__ == '__main__':
         logging.getLogger('quant').setLevel(logging.WARNING)
     for i, split_data in enumerate(splits, 1):
         train, test = split_data[0], split_data[1]
-        test_start = split_data[2] if len(split_data) > 2 else None
-        test_end = split_data[3] if len(split_data) > 3 else None
-        process_split(train, test, files, config, i, total, test_start, test_end)
+        train_start = split_data[2] if len(split_data) > 2 else None
+        train_end   = split_data[3] if len(split_data) > 3 else None
+        test_start  = split_data[4] if len(split_data) > 4 else None
+        test_end    = split_data[5] if len(split_data) > 5 else None
+        process_split(train, test, files, config, i, total, train_start, train_end, test_start, test_end)
     logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')

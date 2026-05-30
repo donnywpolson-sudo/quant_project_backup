@@ -2,6 +2,7 @@ import logging
 import importlib
 import json
 import os
+import hashlib
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -153,6 +154,16 @@ def _safe_corr(a, b):
     return float(np.corrcoef(a_m, b_m)[0, 1])
 
 
+def _hash_col(df, col):
+    if col not in df.columns:
+        return 'missing'
+    vals = df[col].to_numpy()
+    mask = np.isfinite(vals)
+    if mask.sum() == 0:
+        return 'all_nan'
+    return hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+
+
 def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fold_idx: int, prefix: str = ''):
     """Log prediction distribution, IC, gross/net Sharpe, turnover, trade count."""
     import numpy as np
@@ -201,12 +212,16 @@ def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fol
         pos = result['position'].to_numpy().astype(np.float64)
         shifts = np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64)))
         trades = f'{int(np.sum(shifts > 1e-9))}'
+    pred_cs = _hash_col(result, 'prediction_prob')
+    pnl_cs = _hash_col(result, 'pnl')
+    sig_cs = _hash_col(result, 'raw_signal') if 'raw_signal' in result.columns else _hash_col(result, 'target_exec')
     logger.info(
         '[DIAG] fold=%d%s prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
         'min=%.3f max=%.3f ic=%s gross_sharpe=%s net_sharpe=%s cost_drag=%s '
-        'turnover=%s trades=%s',
+        'turnover=%s trades=%s pred_cs=%s pnl_cs=%s sig_cs=%s',
         fold_idx, prefix, pmean, pstd, gt055, lt045, pmin, pmax,
         ic, gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+        pred_cs, pnl_cs, sig_cs,
     )
 
 
@@ -580,6 +595,8 @@ def run_walkforward_with_hmm(
     if not fold_indices:
         logger.warning('No folds produced for HMM -- returning empty result.')
         return pl.DataFrame(), {}
+    test_bars_per_fold = [i3 - i2 for _, _, i2, i3 in fold_indices]
+    print(f'[WALKFORWARD-HMM] {len(fold_indices)} folds, test_bars_per_fold={test_bars_per_fold}, total_input={df.height} rows', flush=True)
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
@@ -637,6 +654,7 @@ def run_walkforward_with_hmm(
     # Concatenate results
     df_base = pl.concat(results_base).sort(['session_id', 'ts_event'])
     df_hmm = pl.concat(results_hmm).sort(['session_id', 'ts_event'])
+    print(f'[WALKFORWARD-HMM] {len(results_hmm)} folds concatenated: {df_hmm.height} rows before warmup', flush=True)
 
     # Validation
     report = compare_strategies(
@@ -657,6 +675,7 @@ def run_walkforward_with_hmm(
     validation_dict['n_folds'] = len(folds)
 
     df_hmm = exclude_warmup(df_hmm, getattr(config, 'BURN_IN_BARS', 500))
+    print(f'[WALKFORWARD-HMM] After exclude_warmup({getattr(config, "BURN_IN_BARS", 500)}): {df_hmm.height} rows, ts_min={df_hmm["ts_event"].min()} ts_max={df_hmm["ts_event"].max()}', flush=True)
     return df_hmm, validation_dict
 
 
@@ -679,6 +698,8 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if not fold_indices:
         logger.warning('No folds produced -- returning empty result.')
         return pl.DataFrame()
+    test_bars_per_fold = [i3 - i2 for _, _, i2, i3 in fold_indices]
+    print(f'[WALKFORWARD] {len(fold_indices)} folds, test_bars_per_fold={test_bars_per_fold}, total_input={df.height} rows, pruned_features={len(feature_cols)}', flush=True)
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
@@ -703,5 +724,125 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
         results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')((delayed(process_fold)(train_X, train_y, test_original, feat_cols) for train_X, train_y, test_original, feat_cols in folds))
     final = pl.concat(results)
     final = final.sort(['session_id', 'ts_event'])
+    print(f'[WALKFORWARD] {len(results)} folds concatenated: {final.height} rows before warmup', flush=True)
     final = exclude_warmup(final, getattr(config, 'BURN_IN_BARS', 500))
+    print(f'[WALKFORWARD] After exclude_warmup({getattr(config, "BURN_IN_BARS", 500)}): {final.height} rows, ts_min={final["ts_event"].min()} ts_max={final["ts_event"].max()}', flush=True)
     return final
+
+
+# ============================================================================
+# True Outer-Split Evaluation Mode
+# ============================================================================
+#
+# Differs from bar-based inner-walkforward:
+#   1. Receives separate train_df and test_df already sliced by run.py via
+#      --train-start/--train-end and --start/--end in cli.py.
+#   2. Trains a single model on train_df, predicts on all of test_df in one pass.
+#   3. No inner folds, no 60/40 splitting of the test window.
+#   4. Minimal warmup only for position carry-over.
+#
+# This ensures the 180d training window is fully used and the 30d test
+# window is fully evaluated.
+
+_OUTER_BURN_IN = 50  # minimal warmup for position carry-over only
+
+
+def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
+                              feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
+    if train_df.height == 0:
+        raise RuntimeError('OUTER-TRUE FAILURE: empty train_df')
+    if test_df.height == 0:
+        raise RuntimeError('OUTER-TRUE FAILURE: empty test_df')
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
+    test_ts_min = test_df['ts_event'].min()
+    test_ts_max = test_df['ts_event'].max()
+    assert train_ts_max < test_ts_min, (
+        f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
+    )
+    print(f'[OUTER-TRUE] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
+    print(f'[OUTER-TRUE] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
+    print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
+    if target_col not in train_df.columns or target_col not in test_df.columns:
+        raise KeyError(f"Target column '{target_col}' missing from train/test")
+    train_X = train_df.select(feature_cols)
+    train_y = train_df[target_col]
+    test_X = test_df.select(feature_cols)
+    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
+    result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
+    result = result.with_columns(compute_benchmark(result))
+    result = simulate_execution_classification(result)
+    if _OUTER_BURN_IN > 0:
+        result = exclude_warmup(result, _OUTER_BURN_IN)
+    output_frac = result.height / max(test_df.height, 1)
+    assert output_frac >= 0.90, (
+        f'OUTER-TRUE ROW COLLAPSE: output={result.height} test={test_df.height} '
+        f'fraction={output_frac:.2%} < 90%'
+    )
+    ts_out_min = result['ts_event'].min()
+    ts_out_max = result['ts_event'].max()
+    pnl_cs = _hash_col(result, 'pnl') if 'pnl' in result.columns else 'missing'
+    print(f'[OUTER-TRUE] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
+    print(f'[OUTER-TRUE] result_rows={result.height} fraction={output_frac:.1%} '
+          f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    return result
+
+
+def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataFrame,
+                                       feature_cols: list, target_col: str = 'target_sign'
+                                       ) -> Tuple[pl.DataFrame, dict]:
+    if TYPE_CHECKING:
+        from pipeline.regime.hmm_filter import HMMRegimeFilter
+    else:
+        from pipeline.regime.hmm_filter import HMMRegimeFilter
+    if train_df.height == 0:
+        raise RuntimeError('OUTER-TRUE HMM FAILURE: empty train_df')
+    if test_df.height == 0:
+        raise RuntimeError('OUTER-TRUE HMM FAILURE: empty test_df')
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
+    test_ts_min = test_df['ts_event'].min()
+    test_ts_max = test_df['ts_event'].max()
+    assert train_ts_max < test_ts_min, (
+        f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
+    )
+    print(f'[OUTER-TRUE-HMM] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
+    print(f'[OUTER-TRUE-HMM] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
+    print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
+    if target_col not in train_df.columns or target_col not in test_df.columns:
+        raise KeyError(f"Target column '{target_col}' missing")
+    train_X = train_df.select(feature_cols)
+    train_y = train_df[target_col]
+    test_X = test_df.select(feature_cols)
+    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
+    result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
+    result = result.with_columns(compute_benchmark(result))
+    result = simulate_execution_classification(result)
+    hmm_filter = HMMRegimeFilter()
+    df_1h_train = _resample_to_1h(train_df)
+    if df_1h_train.height >= 60:
+        hmm_filter.initialize(df_1h_train)
+    df_1h_test = _resample_to_1h(test_df)
+    result, hmm_filter = apply_hmm_filter(
+        df_5min_base=result, df_1h_train=df_1h_train,
+        df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
+    )
+    if _OUTER_BURN_IN > 0:
+        result = exclude_warmup(result, _OUTER_BURN_IN)
+    output_frac = result.height / max(test_df.height, 1)
+    assert output_frac >= 0.90, (
+        f'OUTER-TRUE HMM ROW COLLAPSE: output={result.height} test={test_df.height} '
+        f'fraction={output_frac:.2%} < 90%'
+    )
+    ts_out_min = result['ts_event'].min()
+    ts_out_max = result['ts_event'].max()
+    pnl_cs = _hash_col(result, 'pnl') if 'pnl' in result.columns else 'missing'
+    print(f'[OUTER-TRUE-HMM] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
+    print(f'[OUTER-TRUE-HMM] result_rows={result.height} fraction={output_frac:.1%} '
+          f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    validation = {'n_folds': 1, 'outer_split': True, 'mode': 'outer_split',
+                  'train_rows': train_df.height, 'test_rows': test_df.height,
+                  'output_rows': result.height, 'hmm_active': hmm_filter.is_active}
+    return result, validation

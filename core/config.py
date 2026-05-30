@@ -181,6 +181,7 @@ class WalkforwardConfig(BaseModel):
     burn_in_bars: int = 500
     enable_meta_labeling: bool = False
     meta_threshold: float = 0.5
+    mode: str = ""  # "" = inner bar-fold walkforward, "outer_split" = single train→test pass
 
 
 class ExecutionConfig(BaseModel):
@@ -414,6 +415,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.BURN_IN_BARS = c.walkforward.burn_in_bars
     config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
     config.META_THRESHOLD = c.walkforward.meta_threshold
+    config.WF_MODE = c.walkforward.mode
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at
