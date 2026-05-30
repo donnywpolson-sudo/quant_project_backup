@@ -7,6 +7,8 @@ os.environ.setdefault("PYTHONUTF8", "1")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+print('[HEARTBEAT] pipeline.cli imported', flush=True)
+
 import argparse
 import logging
 import random
@@ -16,6 +18,7 @@ from pathlib import Path
 import polars as pl
 import json
 import hashlib
+import time
 from core.io.atomic import atomic_write_parquet, atomic_write_json
 
 
@@ -96,6 +99,7 @@ def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) ->
     return result
 
 def main():
+    print('[HEARTBEAT] pipeline.cli main entered', flush=True)
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='command', required=True)
     discover_parser = subparsers.add_parser('discover')
@@ -123,6 +127,10 @@ def main():
     aggregate_parser.add_argument('--artifacts', default='output')
     args = parser.parse_args()
     load_config()  # populate config namespace from config.yaml
+    wf_mode = getattr(config, 'WF_MODE', '')
+    env_name = os.environ.get('QUANT_ENV', 'default')
+    print(f'[CONFIG] env={env_name} WF_MODE={wf_mode!r} train_start={getattr(args, "train_start", None)} train_end={getattr(args, "train_end", None)} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
+    print(f'[BRANCH] command={args.command} using_outer_split={wf_mode == "outer_split"}', flush=True)
     random.seed(config.SEED)
     np.random.seed(config.SEED)
     check_memory_safety()
@@ -224,6 +232,8 @@ def main():
         feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
         if getattr(config, 'WF_MODE', '') == 'outer_split':
+            assert getattr(args, 'train_start', None), 'OUTER_SPLIT active but --train-start missing from CLI args'
+            assert getattr(args, 'train_end', None), 'OUTER_SPLIT active but --train-end missing from CLI args'
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
             test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
             result_df = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
@@ -243,19 +253,28 @@ def main():
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
     elif args.command == 'run-hmm':
+        t0 = time.perf_counter()
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
+        print('[HEARTBEAT] cli entered run-hmm', flush=True)
+        print(f'[HEARTBEAT] config loaded WF_MODE={getattr(config, "WF_MODE", "")!r}', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
         print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
-        print('[CLI] Loading aligned data...', flush=True)
+        print('[HEARTBEAT] loading aligned data start', flush=True)
+        t_load = time.perf_counter()
         df_aligned = load_and_clean_data(
             args.data,
             cache_path=str(aligned_cache) if aligned_cache.exists() else None,
         )
-        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
+        dt_load = time.perf_counter() - t_load
+        print(f'[HEARTBEAT] loading aligned data done rows={df_aligned.height} seconds={dt_load:.1f}', flush=True)
+        if dt_load > 60:
+            print(f'[SLOW] stage=load_aligned_data seconds={dt_load:.1f}', flush=True)
+        print('[HEARTBEAT] generating/loading feature matrix start', flush=True)
+        t_feat = time.perf_counter()
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -267,7 +286,13 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        dt_feat = time.perf_counter() - t_feat
+        print(f'[HEARTBEAT] feature matrix done rows={df_features.height} cols={len(df_features.columns)} seconds={dt_feat:.1f}', flush=True)
+        if dt_feat > 60:
+            print(f'[SLOW] stage=feature_matrix seconds={dt_feat:.1f}', flush=True)
         print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
+        print('[HEARTBEAT] applying manifest start', flush=True)
+        t_man = time.perf_counter()
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
@@ -275,6 +300,10 @@ def main():
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
         print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols', flush=True)
+        dt_man = time.perf_counter() - t_man
+        print(f'[HEARTBEAT] manifest done rows={df_pruned.height} cols={len(df_pruned.columns)} seconds={dt_man:.1f}', flush=True)
+        if dt_man > 60:
+            print(f'[SLOW] stage=manifest seconds={dt_man:.1f}', flush=True)
         # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
         if getattr(config, 'WF_MODE', '') != 'outer_split':
             if getattr(args, 'start', None) and getattr(args, 'end', None):
@@ -327,11 +356,25 @@ def main():
             flush=True,
         )
         if getattr(config, 'WF_MODE', '') == 'outer_split':
+            assert getattr(args, 'train_start', None), 'OUTER_SPLIT HMM active but --train-start missing from CLI args'
+            assert getattr(args, 'train_end', None), 'OUTER_SPLIT HMM active but --train-end missing from CLI args'
+            print('[HEARTBEAT] slicing train/test start', flush=True)
+            t_slice = time.perf_counter()
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
             test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            dt_slice = time.perf_counter() - t_slice
+            print(f'[HEARTBEAT] train rows={train_df.height} test rows={test_df.height} seconds={dt_slice:.1f}', flush=True)
+            if dt_slice > 60:
+                print(f'[SLOW] stage=slicing seconds={dt_slice:.1f}', flush=True)
+            print('[HEARTBEAT] walkforward+hmm start', flush=True)
+            t_wf = time.perf_counter()
             result_df, validation = run_outer_train_test_eval_with_hmm(
                 train_df, test_df, feature_cols, target_col,
             )
+            dt_wf = time.perf_counter() - t_wf
+            print(f'[HEARTBEAT] walkforward+hmm done rows={result_df.height} seconds={dt_wf:.1f}', flush=True)
+            if dt_wf > 60:
+                print(f'[SLOW] stage=walkforward+hmm seconds={dt_wf:.1f}', flush=True)
         else:
             result_df, validation = run_walkforward_with_hmm(
                 X, y, feature_cols, target_col,
@@ -340,7 +383,15 @@ def main():
         print(f'[CLI] HMM walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
+        print('[HEARTBEAT] writing parquet start', flush=True)
+        t_write = time.perf_counter()
         atomic_write_parquet(result_df, out_path)
+        dt_write = time.perf_counter() - t_write
+        print(f'[HEARTBEAT] writing parquet done path={out_path} seconds={dt_write:.1f}', flush=True)
+        if dt_write > 60:
+            print(f'[SLOW] stage=parquet_write seconds={dt_write:.1f}', flush=True)
+        dt_total = time.perf_counter() - t0
+        print(f'[HEARTBEAT] total run-hmm seconds={dt_total:.1f}', flush=True)
         print(f'[CLI] HMM-filtered results saved to {out_path}', flush=True)
         # Save validation report
         val_path = os.path.join(args.out, 'hmm_validation_report.json')

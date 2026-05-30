@@ -8,6 +8,9 @@ discovery:
   bootstrap_folds: 3
   discovery_window_days: 30
 
+walkforward:
+  mode: outer_split
+
 execution:
   slippage_k: 0.0
   vol_penalty: 0.0

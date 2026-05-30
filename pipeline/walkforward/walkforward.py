@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 import hashlib
+import time
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -765,14 +766,24 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
     if target_col not in train_df.columns or target_col not in test_df.columns:
         raise KeyError(f"Target column '{target_col}' missing from train/test")
-    train_X = train_df.select(feature_cols)
     train_y = train_df[target_col]
-    test_X = test_df.select(feature_cols)
-    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    print('[HEARTBEAT] model fit+predict start', flush=True)
+    t_model = time.perf_counter()
+    probs = train_and_predict(train_df, train_y, test_df, feature_cols)
+    dt_model = time.perf_counter() - t_model
+    print(f'[HEARTBEAT] model fit+predict done seconds={dt_model:.1f}', flush=True)
+    if dt_model > 60:
+        print(f'[SLOW] stage=model_fit_predict seconds={dt_model:.1f}', flush=True)
     pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
     result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
+    print('[HEARTBEAT] execution simulation start', flush=True)
+    t_exec = time.perf_counter()
     result = simulate_execution_classification(result)
+    dt_exec = time.perf_counter() - t_exec
+    print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
+    if dt_exec > 60:
+        print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
     if _OUTER_BURN_IN > 0:
         result = exclude_warmup(result, _OUTER_BURN_IN)
     output_frac = result.height / max(test_df.height, 1)
@@ -812,14 +823,26 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
     if target_col not in train_df.columns or target_col not in test_df.columns:
         raise KeyError(f"Target column '{target_col}' missing")
-    train_X = train_df.select(feature_cols)
     train_y = train_df[target_col]
-    test_X = test_df.select(feature_cols)
-    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    print('[HEARTBEAT] model fit+predict start', flush=True)
+    t_model = time.perf_counter()
+    probs = train_and_predict(train_df, train_y, test_df, feature_cols)
+    dt_model = time.perf_counter() - t_model
+    print(f'[HEARTBEAT] model fit+predict done seconds={dt_model:.1f}', flush=True)
+    if dt_model > 60:
+        print(f'[SLOW] stage=model_fit_predict seconds={dt_model:.1f}', flush=True)
     pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
     result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
     result = result.with_columns(compute_benchmark(result))
+    print('[HEARTBEAT] execution simulation start', flush=True)
+    t_exec = time.perf_counter()
     result = simulate_execution_classification(result)
+    dt_exec = time.perf_counter() - t_exec
+    print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
+    if dt_exec > 60:
+        print(f'[SLOW] stage=execution_simulation seconds={dt_exec:.1f}', flush=True)
+    print('[HEARTBEAT] HMM fit start', flush=True)
+    t_hmm = time.perf_counter()
     hmm_filter = HMMRegimeFilter()
     df_1h_train = _resample_to_1h(train_df)
     if df_1h_train.height >= 60:
@@ -829,6 +852,10 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
         df_5min_base=result, df_1h_train=df_1h_train,
         df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
     )
+    dt_hmm = time.perf_counter() - t_hmm
+    print(f'[HEARTBEAT] HMM fit done seconds={dt_hmm:.1f}', flush=True)
+    if dt_hmm > 60:
+        print(f'[SLOW] stage=hmm_fit seconds={dt_hmm:.1f}', flush=True)
     if _OUTER_BURN_IN > 0:
         result = exclude_warmup(result, _OUTER_BURN_IN)
     output_frac = result.height / max(test_df.height, 1)

@@ -143,6 +143,7 @@ import subprocess
 import logging
 import time
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import polars as pl
@@ -158,6 +159,10 @@ logging.basicConfig(
 logger = logging.getLogger('QuantRunner')
 _VERBOSE = os.environ.get('QUANT_VERBOSE', '0') == '1'
 _MIN_TRAIN_DAYS = 90
+_RUN_START = time.time()
+_RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
+_PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
+_VERIFICATION_TABLE = []  # rows for the verification table printed per split
 
 def get_files(data_dir: str, config: RootConfig) -> list[Path]:
     files = list(Path(data_dir).rglob('*.parquet'))
@@ -283,7 +288,7 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
 
             if train_files and test_files:
                 splits.append((sorted(train_files), sorted(test_files),
-                               test_start, test_end))
+                               train_start, train_end, test_start, test_end))
                 logger.debug(
                     'Split %d: train=%s→%s (%d files) | test=%s→%s (%d files)',
                     len(splits),
@@ -433,7 +438,37 @@ def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout
 
 _log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
 
+def _print_verification_table():
+    if not _VERIFICATION_TABLE:
+        return
+    print('\n' + '=' * 140)
+    print(' VERIFICATION TABLE — each row must have unique path, ts_min, pnl_cs')
+    print('=' * 140)
+    print(f'{"split":>5} {"sym":>4} {"path":>55} {"mtime":>12} {"run_id":>8} {"rows":>6} {"ts_min":>26} {"ts_max":>26} {"pnl_cs":>8} {"sharpe":>7} {"pnl":>12} {"trades":>6}')
+    print('-' * 140)
+    for row in _VERIFICATION_TABLE:
+        path_short = row['path'][-55:] if len(row['path']) > 55 else row['path']
+        print(f'{row["split"]:>5} {row["symbol"]:>4} {path_short:>55} {row["mtime"]:>12.0f} {row["run_id"]:>8} {row["rows"]:>6} {str(row["ts_min"]):>26} {str(row["ts_max"]):>26} {row["pnl_cs"]:>8} {row["sharpe"]:>+7.3f} {row["pnl"]:>+12.2f} {row["trades"]:>6}')
+    print('=' * 140)
+    # Verify: no duplicate pnl_cs per symbol
+    seen = {}
+    for row in _VERIFICATION_TABLE:
+        key = (row['symbol'], row['pnl_cs'])
+        if row['pnl_cs'] not in ('missing', 'all_nan'):
+            if key in seen:
+                print(f'\n*** IDENTICAL PNL OUTPUT DETECTED: {row["symbol"]} split={row["split"]} matches split={seen[key]["split"]} pnl_cs={row["pnl_cs"]} ***\n', flush=True)
+            seen[key] = row
+    # Verify: no duplicate paths
+    paths_seen = set()
+    for row in _VERIFICATION_TABLE:
+        if row['path'] in paths_seen:
+            print(f'\n*** DUPLICATE RESULT PATH: {row["path"]} split={row["split"]} ***\n', flush=True)
+        paths_seen.add(row['path'])
+    print(flush=True)
+
+
 def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
+    _print_verification_table()
     if not per_symbol:
         return
     h = '\u2500'
@@ -454,6 +489,58 @@ def _print_split_dashboard(split_idx: int, total: int, per_symbol: dict):
     status = f'{check} Success' if combined_sharpe > 0 else f'{warn} Mixed'
     print(f'{v} {"":>24s}Combined Sharpe: {combined_sharpe:+.3f}  Status: {status}{v}')
     print(f'{bl}{h * 52}{br}\n', flush=True)
+
+
+def _hash_column(df: pl.DataFrame, col: str) -> str:
+    if col not in df.columns:
+        return 'missing'
+    vals = df[col].to_numpy()
+    mask = np.isfinite(vals)
+    if mask.sum() == 0:
+        return 'all_nan'
+    h = hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+    return h
+
+
+def _print_symbol_diagnostics(bt: pl.DataFrame, symbol: str, split_idx: int) -> None:
+    probs = bt['prediction_prob'].to_numpy().astype(np.float64) if 'prediction_prob' in bt.columns else None
+    pmean = float(probs.mean()) if probs is not None else float('nan')
+    pstd = float(probs.std()) if probs is not None else float('nan')
+    gt055 = float((probs > 0.55).mean()) if probs is not None else float('nan')
+    lt045 = float((probs < 0.45).mean()) if probs is not None else float('nan')
+    bar_sqrt = np.sqrt(252)
+    gross_sharpe = 'missing'
+    net_sharpe = 'missing'
+    cost_drag = 'missing'
+    if 'gross_pnl' in bt.columns:
+        gp = bt['gross_pnl'].to_numpy().astype(np.float64)
+        if gp.std() > 1e-12:
+            gross_sharpe = f'{float(gp.mean() / gp.std() * bar_sqrt):.3f}'
+    if 'pnl' in bt.columns:
+        np_ = bt['pnl'].to_numpy().astype(np.float64)
+        if np_.std() > 1e-12:
+            net_sharpe = f'{float(np_.mean() / np_.std() * bar_sqrt):.3f}'
+        if 'gross_pnl' in bt.columns:
+            cost_drag = f'{float(np_.sum() - gp.sum()):+.2f}'
+    turnover = 'missing'
+    if 'pos_change' in bt.columns:
+        turnover = f'{float(bt["pos_change"].sum()):.1f}'
+    trades = 'missing'
+    if 'position' in bt.columns:
+        pos = bt['position'].to_numpy().astype(np.float64)
+        shifts = np.abs(np.diff(pos, prepend=pos[0]))
+        trades = f'{int(np.sum(shifts > 1e-9))}'
+    pred_cs = _hash_column(bt, 'prediction_prob')
+    pnl_cs = _hash_column(bt, 'pnl')
+    sig_cs = _hash_column(bt, 'raw_signal') if 'raw_signal' in bt.columns else _hash_column(bt, 'target_exec')
+    logger.info(
+        '[DIAG] symbol=%s split=%d prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
+        'gross_sharpe=%s net_sharpe=%s cost_drag=%s turnover=%s trades=%s '
+        'pred_cs=%s pnl_cs=%s sig_cs=%s',
+        symbol, split_idx, pmean, pstd, gt055, lt045,
+        gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+        pred_cs, pnl_cs, sig_cs,
+    )
 
 
 def _validate_backtest_output(out_dir: Path, symbol: str) -> None:
@@ -515,10 +602,14 @@ def load_all_splits_for_year(year: int) -> list:
 
 
 def process_split(train_years: list[int], test_years: list[int], files: list[Path],
-                  config: RootConfig, split_idx: int, total_splits: int,
-                  test_start=None, test_end=None) -> None:
+                   config: RootConfig, split_idx: int, total_splits: int,
+                   train_start=None, train_end=None, test_start=None, test_end=None) -> None:
     train_files = [f for f in files if int(f.stem) in train_years]
     test_files = [f for f in files if int(f.stem) in test_years]
+    print(f'[SPLIT {split_idx}/{total_splits}] test_window=[{test_start}, {test_end}) run_id={_RUN_ID}',
+          f'cwd={os.getcwd()} run_py_mtime={Path("run.py").stat().st_mtime:.0f}',
+          f'cli_py_mtime={Path("pipeline/cli.py").stat().st_mtime:.0f}',
+          flush=True)
     if not train_files or not test_files:
         logger.warning('Empty train/test split — skipping')
         return
@@ -569,10 +660,24 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Purge stale backtest files from previous runs
+        for _stale_name in ('backtest_results_hmm.parquet', 'backtest_results.parquet'):
+            _stale_path = out_dir / _stale_name
+            if _stale_path.exists() and _stale_path.stat().st_mtime < _RUN_START:
+                logger.warning('[STALE] Removing pre-existing file: %s (mtime=%.0f < run_start=%.0f)',
+                               _stale_path, _stale_path.stat().st_mtime, _RUN_START)
+                _stale_path.unlink()
         cmd = [sys.executable, '-m', 'pipeline.cli', 'run-hmm', '--data', str(f),
                '--manifest', str(manifest_path), '--out', str(out_dir)]
+        if train_start and train_end:
+            cmd.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        logger.info('[SUBPROCESS] split=%d symbol=%s start=%s end=%s cmd=%s',
+                    split_idx, symbol,
+                    test_start.isoformat() if test_start else 'None',
+                    test_end.isoformat() if test_end else 'None',
+                    ' '.join(cmd))
         try:
             subprocess.run(cmd, **kw)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -593,6 +698,8 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
             cmd_fb = [sys.executable, '-m', 'pipeline.cli', 'run', '--data', str(f),
                        '--manifest', str(manifest_path), '--out', str(out_dir)]
+            if train_start and train_end:
+                cmd_fb.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
             if test_start and test_end:
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
@@ -613,11 +720,56 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         if not bt_path.exists():
             bt_path = out_dir / 'backtest_results.parquet'
         if bt_path.exists():
+            _bt_mtime = bt_path.stat().st_mtime
+            assert _bt_mtime >= _RUN_START, (
+                f'STALE RESULT: {bt_path} mtime={_bt_mtime:.0f} < run_start={_RUN_START:.0f}. '
+                f'Subprocess may have failed silently and an old file was read.'
+            )
+            print(f'[BACKTEST] {symbol} path={bt_path} mtime={_bt_mtime:.0f} run_id={_RUN_ID}', flush=True)
             try:
                 bt = pl.read_parquet(bt_path)
+                t_min = str(bt['ts_event'].min()) if 'ts_event' in bt.columns else 'missing'
+                t_max = str(bt['ts_event'].max()) if 'ts_event' in bt.columns else 'missing'
+                print(f'[BACKTEST] {symbol} rows={bt.height} ts_min={t_min} ts_max={t_max}', flush=True)
+                # Assert timestamps are within the test window
+                if test_start and test_end and 'ts_event' in bt.columns:
+                    from datetime import datetime as _dt, timezone
+                    ts_start = _dt.fromisoformat(test_start.isoformat()).replace(tzinfo=timezone.utc)
+                    ts_end = _dt.fromisoformat(test_end.isoformat()).replace(tzinfo=timezone.utc)
+                    bt_t_min = bt['ts_event'].min()
+                    bt_t_max = bt['ts_event'].max()
+                    assert bt_t_min >= ts_start, (
+                        f'BOUNDARY VIOLATION: {symbol} split={split_idx} bt_t_min={bt_t_min} < test_start={ts_start}'
+                    )
+                    assert bt_t_max < ts_end, (
+                        f'BOUNDARY VIOLATION: {symbol} split={split_idx} bt_t_max={bt_t_max} >= test_end={ts_end}'
+                    )
+                pnl_cs = _hash_column(bt, 'pnl')
+                pred_cs = _hash_column(bt, 'prediction_prob')
                 pnl = bt['pnl'].sum()
                 sharpe = float(bt['pnl'].mean() / max(bt['pnl'].std(), 1e-9) * np.sqrt(252))
                 hit = float((bt['pnl'] > 0).mean()) if 'pnl' in bt.columns else 0
+                print(f'[VERIFY] {symbol} split={split_idx} pnl_cs={pnl_cs} pred_cs={pred_cs} sharpe={sharpe:.3f} pnl={pnl:.2f}', flush=True)
+                if symbol not in _PER_SYMBOL_PNL_CS:
+                    _PER_SYMBOL_PNL_CS[symbol] = {}
+                if pnl_cs != 'missing' and pnl_cs != 'all_nan':
+                    for prior_split, prior_cs in _PER_SYMBOL_PNL_CS[symbol].items():
+                        assert prior_cs != pnl_cs, (
+                            f'IDENTICAL PNL OUTPUT: {symbol} split={split_idx} pnl_cs={pnl_cs} '
+                            f'matches split={prior_split}. Stale cache or file reuse detected.'
+                        )
+                    _PER_SYMBOL_PNL_CS[symbol][split_idx] = pnl_cs
+                # Collect for verification table
+                trades = 0
+                if 'position' in bt.columns:
+                    pos = bt['position'].to_numpy().astype(np.float64)
+                    trades = int(np.sum(np.abs(np.diff(pos, prepend=pos[0])) > 1e-9))
+                _VERIFICATION_TABLE.append({
+                    'split': split_idx, 'symbol': symbol, 'path': str(bt_path),
+                    'mtime': _bt_mtime, 'run_id': _RUN_ID, 'rows': bt.height,
+                    'ts_min': str(t_min), 'ts_max': str(t_max),
+                    'pnl_cs': pnl_cs, 'pnl': pnl, 'sharpe': sharpe, 'trades': trades,
+                })
                 # HMM delta: compare with raw (non-HMM) baseline if available
                 hmm_delta = 0.0
                 raw_path = out_dir / 'backtest_results.parquet'
@@ -629,6 +781,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     except Exception:
                         hmm_delta = 0.0
                 per_symbol[symbol] = (sharpe, pnl, hit, hmm_delta)
+                _print_symbol_diagnostics(bt, symbol, split_idx)
             except Exception:
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
     # ---- Master dashboard ----
@@ -647,9 +800,11 @@ if __name__ == '__main__':
         logging.getLogger('quant').setLevel(logging.WARNING)
     for i, split_data in enumerate(splits, 1):
         train, test = split_data[0], split_data[1]
-        test_start = split_data[2] if len(split_data) > 2 else None
-        test_end = split_data[3] if len(split_data) > 3 else None
-        process_split(train, test, files, config, i, total, test_start, test_end)
+        train_start = split_data[2] if len(split_data) > 2 else None
+        train_end   = split_data[3] if len(split_data) > 3 else None
+        test_start  = split_data[4] if len(split_data) > 4 else None
+        test_end    = split_data[5] if len(split_data) > 5 else None
+        process_split(train, test, files, config, i, total, train_start, train_end, test_start, test_end)
     logging.getLogger().setLevel(logging.INFO)
     logger.info('Done')
 --- END OF FILE: run.py ---
@@ -1457,6 +1612,7 @@ class WalkforwardConfig(BaseModel):
     burn_in_bars: int = 500
     enable_meta_labeling: bool = False
     meta_threshold: float = 0.5
+    mode: str = ""  # "" = inner bar-fold walkforward, "outer_split" = single train→test pass
 
 
 class ExecutionConfig(BaseModel):
@@ -1690,6 +1846,7 @@ def _populate_simple_namespace(cfg: RootConfig) -> None:
     config.BURN_IN_BARS = c.walkforward.burn_in_bars
     config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
     config.META_THRESHOLD = c.walkforward.meta_threshold
+    config.WF_MODE = c.walkforward.mode
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at
@@ -2127,7 +2284,7 @@ from core.config import config, load_config
 from _legacy.ingest import load_and_clean_data
 from pipeline.features.engine import generate_features
 from pipeline.features.discovery import run_feature_discovery
-from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm
+from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm, run_outer_train_test_eval, run_outer_train_test_eval_with_hmm
 from core.io.canonical import write_canonical_parquet
 from pipeline.analytics.aggregate import calculate_metrics, run_aggregation
 logger = logging.getLogger(__name__)
@@ -2150,9 +2307,30 @@ def prune_features_by_manifest(df, manifest_path, target_col):
     keep = list(dict.fromkeys(keep))
     return df.select(keep)
 
-def _stable_data_tag(data_arg: str) -> str:
-    h = hashlib.sha256(data_arg.encode()).hexdigest()[:12]
+def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
+    key = data_arg
+    if start:
+        key += '|' + start
+    if end:
+        key += '|' + end
+    h = hashlib.sha256(key.encode()).hexdigest()[:12]
     return h
+
+
+def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) -> pl.DataFrame:
+    from datetime import datetime as _dt, timezone
+    if not start_str or not end_str:
+        raise RuntimeError(f'MISSING BOUNDARY: {label} start/end required for outer_split mode')
+    start_dt = _dt.fromisoformat(start_str).replace(tzinfo=timezone.utc)
+    end_dt = _dt.fromisoformat(end_str).replace(tzinfo=timezone.utc)
+    before = df.height
+    result = df.filter((pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt))
+    ts_min = result['ts_event'].min() if result.height > 0 else None
+    ts_max = result['ts_event'].max() if result.height > 0 else None
+    print(f'[OUTER-TRUE] {label} filter ({start_str} -> {end_str}): {before} -> {result.height} rows, ts=[{ts_min}, {ts_max})', flush=True)
+    if result.height == 0:
+        raise RuntimeError(f'EMPTY WINDOW: {label} [{start_str}, {end_str}) returned 0 rows')
+    return result
 
 def main():
     parser = argparse.ArgumentParser()
@@ -2166,12 +2344,16 @@ def main():
     run_parser.add_argument('--out', required=True)
     run_parser.add_argument('--start', default=None, help='Start date (ISO format)')
     run_parser.add_argument('--end', default=None, help='End date (ISO format)')
+    run_parser.add_argument('--train-start', default=None, help='Train window start date (ISO)')
+    run_parser.add_argument('--train-end', default=None, help='Train window end date (ISO)')
     run_hmm_parser = subparsers.add_parser('run-hmm')
     run_hmm_parser.add_argument('--data', required=True)
     run_hmm_parser.add_argument('--manifest', default='output/manifests/manifest.json')
     run_hmm_parser.add_argument('--out', required=True)
     run_hmm_parser.add_argument('--start', default=None, help='Start date (ISO format)')
     run_hmm_parser.add_argument('--end', default=None, help='End date (ISO format)')
+    run_hmm_parser.add_argument('--train-start', default=None, help='Train window start date (ISO)')
+    run_hmm_parser.add_argument('--train-end', default=None, help='Train window end date (ISO)')
     run_hmm_parser.add_argument('--retrain-interval', type=int, default=5,
                                 help='Retrain HMM every N folds (default: 5).')
     aggregate_parser = subparsers.add_parser('aggregate')
@@ -2208,11 +2390,13 @@ def main():
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[CLI] Loading aligned data...', flush=True)
         df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -2224,29 +2408,45 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
-            print('[CLI] Discovery disabled -- skipping manifest pruning, using baseline features only.', flush=True)
+            print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
-        # Per-split date window filtering (for single-year walkforward isolation)
-        if getattr(args, 'start', None) and getattr(args, 'end', None):
-            from datetime import datetime as _dt, timezone
-            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-            before = df_pruned.height
-            df_pruned = df_pruned.filter(
-                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+        print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols (target={"included" if target_col in df_pruned.columns else "MISSING"})', flush=True)
+        # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
+        if getattr(config, 'WF_MODE', '') != 'outer_split':
+            if getattr(args, 'start', None) and getattr(args, 'end', None):
+                from datetime import datetime as _dt, timezone
+                start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+                end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+                before = df_pruned.height
+                df_pruned = df_pruned.filter(
+                    (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+                )
+                print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+                if df_pruned.height == 0:
+                    print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
+                    os.makedirs(args.out, exist_ok=True)
+                    placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                    placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
+                    print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                    return
+            # Assertion: all rows must be within the requested date window
+            t_min = df_pruned['ts_event'].min()
+            t_max = df_pruned['ts_event'].max()
+            assert t_min >= start_dt, (
+                f'SPLIT BOUNDARY VIOLATION: ts_event min={t_min} < start={start_dt}. '
+                f'Upstream data or cache may have stale full-year data.'
             )
-            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
-            if df_pruned.height == 0:
-                print('[CLI] Empty date window -- writing placeholder output and exiting', flush=True)
-                os.makedirs(args.out, exist_ok=True)
-                placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
-                placeholder.write_parquet(os.path.join(args.out, 'backtest_results.parquet'))
-                print(f'[CLI] Empty backtest written to {args.out}', flush=True)
-                return
+            assert t_max < end_dt, (
+                f'SPLIT BOUNDARY VIOLATION: ts_event max={t_max} >= end={end_dt}. '
+                f'Upstream data or cache may have stale full-year data.'
+            )
+            logger.info('[SPLIT] run: %d rows ts_event range [%s, %s) within [%s, %s)',
+                df_pruned.height, t_min, t_max, start_dt, end_dt)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -2260,7 +2460,13 @@ def main():
         _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
         feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
-        result_df = run_walkforward(X, y, feature_cols, target_col)
+        if getattr(config, 'WF_MODE', '') == 'outer_split':
+            train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            result_df = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
+        else:
+            result_df = run_walkforward(X, y, feature_cols, target_col)
+        print(f'[CLI] Walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results.parquet')
         atomic_write_parquet(result_df, out_path)
@@ -2277,14 +2483,16 @@ def main():
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data)
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
+        print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[CLI] Loading aligned data...', flush=True)
         df_aligned = load_and_clean_data(
             args.data,
             cache_path=str(aligned_cache) if aligned_cache.exists() else None,
         )
+        print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
         if feature_cache.exists():
             print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
             df_features = pl.read_parquet(feature_cache)
@@ -2296,21 +2504,38 @@ def main():
         else:
             print('[CLI] Generating feature matrix (no cache)...', flush=True)
             df_features = generate_features(df_aligned)
+        print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
         print('[CLI] Applying manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
             df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
         else:
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
-        if getattr(args, 'start', None) and getattr(args, 'end', None):
-            from datetime import datetime as _dt, timezone
-            start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-            end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-            before = df_pruned.height
-            df_pruned = df_pruned.filter(
-                (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
-            )
-            print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+        print(f'[CLI] After manifest: {df_pruned.height} rows, {len(df_pruned.columns)} cols', flush=True)
+        # Per-split date window filtering (skipped in outer_split — _slice_window handles dual slicing)
+        if getattr(config, 'WF_MODE', '') != 'outer_split':
+            if getattr(args, 'start', None) and getattr(args, 'end', None):
+                from datetime import datetime as _dt, timezone
+                start_dt = _dt.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+                end_dt = _dt.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+                before = df_pruned.height
+                df_pruned = df_pruned.filter(
+                    (pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt)
+                )
+                print(f'[CLI] Date filter ({args.start} -> {args.end}): {before} -> {df_pruned.height} rows', flush=True)
+                if df_pruned.height == 0:
+                    print('[CLI] Empty date window — writing placeholder output and exiting', flush=True)
+                    os.makedirs(args.out, exist_ok=True)
+                    placeholder = pl.DataFrame(schema={'pnl': pl.Float32})
+                    placeholder.write_parquet(os.path.join(args.out, 'backtest_results_hmm.parquet'))
+                    print(f'[CLI] Empty backtest written to {args.out}', flush=True)
+                    return
+            t_min = df_pruned['ts_event'].min()
+            t_max = df_pruned['ts_event'].max()
+            assert t_min >= start_dt, f'SPLIT BOUNDARY VIOLATION: min={t_min} < start={start_dt}'
+            assert t_max < end_dt, f'SPLIT BOUNDARY VIOLATION: max={t_max} >= end={end_dt}'
+            logger.info('[SPLIT] run-hmm: %d rows ts_event [%s, %s) within [%s, %s)',
+                df_pruned.height, t_min, t_max, start_dt, end_dt)
         if target_col not in df_pruned.columns:
             raise KeyError(f"Target column '{target_col}' missing!")
         y = df_pruned[target_col]
@@ -2338,10 +2563,18 @@ def main():
             f'(HMM retrain every {args.retrain_interval} folds)...',
             flush=True,
         )
-        result_df, validation = run_walkforward_with_hmm(
-            X, y, feature_cols, target_col,
-            hmm_retrain_interval=args.retrain_interval,
-        )
+        if getattr(config, 'WF_MODE', '') == 'outer_split':
+            train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            result_df, validation = run_outer_train_test_eval_with_hmm(
+                train_df, test_df, feature_cols, target_col,
+            )
+        else:
+            result_df, validation = run_walkforward_with_hmm(
+                X, y, feature_cols, target_col,
+                hmm_retrain_interval=args.retrain_interval,
+            )
+        print(f'[CLI] HMM walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
         atomic_write_parquet(result_df, out_path)
@@ -2882,9 +3115,10 @@ def load_all_backtests(artifacts_root='output') -> dict:
     root = Path(artifacts_root)
     results = {}
 
-    # Search for backtest_results.parquet nested two levels deep:
-    #   <root>/<market>/<year>/backtest_results.parquet
-    for f in root.glob('*/*/backtest_results.parquet'):
+    # Search for backtest_results*.parquet in split-aware directories:
+    #   <root>/<market>/<year>_split_<idx>/backtest_results_hmm.parquet
+    #   <root>/<market>/<year>_split_<idx>/backtest_results.parquet
+    for f in sorted(root.glob('*/*_split_*/backtest_results*.parquet')):
         try:
             # Projection: read only columns we'll actually use downstream.
             # Polars will read the parquet footer to discover which of the
@@ -2903,7 +3137,9 @@ def load_all_backtests(artifacts_root='output') -> dict:
                     keep.append(col)
             df = df.select(keep).sort('ts_event')
             market = f.parent.parent.name
-            year = f.parent.name
+            year_dir = f.parent.name  # e.g. "2024_split_1" or "2024"
+            year = year_dir.split('_')[0] if '_split_' in year_dir else year_dir
+            split_tag = year_dir if '_split_' in year_dir else None
             results.setdefault(market, []).append((year, df))
         except Exception:
             continue
@@ -4114,11 +4350,17 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     # ------------------------------------------------------------------------
     entry_price = pl.col('open')
 
+    gross_pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl.fill_nan(0.0)
+    pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    gross_pnl = gross_pnl.clip(-pnl_clip, pnl_clip)
+    df = df.with_columns(gross_pnl.alias('gross_pnl'))
+
     pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
     pnl = pnl.fill_nan(0.0)
-    pnl_clip = pl.lit(0.05, dtype=pl.Float32) * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
 
@@ -8802,6 +9044,7 @@ import logging
 import importlib
 import json
 import os
+import hashlib
 from typing import Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -8936,6 +9179,94 @@ def exclude_warmup(df: pl.DataFrame, burn_in_bars: int) -> pl.DataFrame:
     return df.slice(trim)
 
 
+def _safe_corr(a, b):
+    """Safe rank correlation: handles constant arrays, NaN, and short samples."""
+    import numpy as np
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    mask = np.isfinite(a) & np.isfinite(b)
+    n = mask.sum()
+    if n < 5:
+        return float('nan')
+    a_m = a[mask]
+    b_m = b[mask]
+    sd_a, sd_b = np.std(a_m), np.std(b_m)
+    if sd_a < 1e-15 or sd_b < 1e-15:
+        return float('nan')
+    return float(np.corrcoef(a_m, b_m)[0, 1])
+
+
+def _hash_col(df, col):
+    if col not in df.columns:
+        return 'missing'
+    vals = df[col].to_numpy()
+    mask = np.isfinite(vals)
+    if mask.sum() == 0:
+        return 'all_nan'
+    return hashlib.sha256(vals[mask].tobytes()).hexdigest()[:8]
+
+
+def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fold_idx: int, prefix: str = ''):
+    """Log prediction distribution, IC, gross/net Sharpe, turnover, trade count."""
+    import numpy as np
+    if result.height == 0:
+        logger.warning('[DIAG] skip fold=%d%s — empty result', fold_idx, prefix)
+        return
+    probs = result['prediction_prob'].to_numpy() if 'prediction_prob' in result.columns else None
+    if probs is None:
+        logger.warning('[DIAG] skip fold=%d%s — no prediction_prob', fold_idx, prefix)
+        return
+    pmean = float(np.mean(probs))
+    pstd = float(np.std(probs))
+    gt055 = float(np.mean(probs > 0.55))
+    lt045 = float(np.mean(probs < 0.45))
+    pmin = float(np.min(probs))
+    pmax = float(np.max(probs))
+    ic = 'missing'
+    for tcol in ('target_4h', 'target_5m', 'target_1h', 'target_tb'):
+        if tcol in test_original.columns:
+            ic_val = _safe_corr(probs, test_original[tcol].to_numpy())
+            if not np.isnan(ic_val):
+                ic = f'{ic_val:.4f}'
+                break
+    bar_sqrt = 252 ** 0.5
+    gross_sharpe = 'missing'
+    net_sharpe = 'missing'
+    cost_drag = 'missing'
+    if 'gross_pnl' in result.columns:
+        gp = result['gross_pnl'].to_numpy().astype(np.float64)
+        if gp.std() > 1e-12:
+            gross_sharpe = f'{float(gp.mean() / gp.std() * bar_sqrt):.3f}'
+    if 'pnl' in result.columns:
+        np_ = result['pnl'].to_numpy().astype(np.float64)
+        if np_.std() > 1e-12:
+            net_sharpe = f'{float(np_.mean() / np_.std() * bar_sqrt):.3f}'
+        if 'gross_pnl' in result.columns:
+            gp_tot = float(gp.sum())
+            np_tot = float(np_.sum())
+            cost_drag = f'{np_tot - gp_tot:+.2f}'
+    turnover = 'missing'
+    if 'pos_change' in result.columns:
+        pc = result['pos_change'].to_numpy().astype(np.float64)
+        turnover = f'{float(pc.sum()):.1f}'
+    trades = 'missing'
+    if 'position' in result.columns:
+        pos = result['position'].to_numpy().astype(np.float64)
+        shifts = np.abs(np.diff(pos.astype(np.float64), prepend=pos[0].astype(np.float64)))
+        trades = f'{int(np.sum(shifts > 1e-9))}'
+    pred_cs = _hash_col(result, 'prediction_prob')
+    pnl_cs = _hash_col(result, 'pnl')
+    sig_cs = _hash_col(result, 'raw_signal') if 'raw_signal' in result.columns else _hash_col(result, 'target_exec')
+    logger.info(
+        '[DIAG] fold=%d%s prob_mean=%.4f prob_std=%.4f gt055=%.3f lt045=%.3f '
+        'min=%.3f max=%.3f ic=%s gross_sharpe=%s net_sharpe=%s cost_drag=%s '
+        'turnover=%s trades=%s pred_cs=%s pnl_cs=%s sig_cs=%s',
+        fold_idx, prefix, pmean, pstd, gt055, lt045, pmin, pmax,
+        ic, gross_sharpe, net_sharpe, cost_drag, turnover, trades,
+        pred_cs, pnl_cs, sig_cs,
+    )
+
+
 def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.DataFrame, feature_cols: list) -> pl.DataFrame:
     import psutil
     if train_X.height == 0 or len(train_y) == 0:
@@ -9011,6 +9342,7 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
         result = apply_meta_gate(result, meta_model, test_X_np, meta_threshold=meta_threshold)
         result = _recompute_pnl_after_gate(result)
 
+    _log_fold_diagnostics(result, test_original, fold_idx=-1)
     return exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
 
 # ============================================================================
@@ -9138,6 +9470,7 @@ def process_fold_with_hmm(
         # and proportional PnL clip — so the HMM PnL is directly comparable to the base PnL.
         result = _recompute_pnl_after_gate(result)
 
+    _log_fold_diagnostics(result, test_original, fold_idx=fold_idx, prefix='_hmm')
     result = exclude_warmup(result, getattr(config, 'BURN_IN_BARS', 500))
     return result, hmm_filter
 
@@ -9304,6 +9637,8 @@ def run_walkforward_with_hmm(
     if not fold_indices:
         logger.warning('No folds produced for HMM -- returning empty result.')
         return pl.DataFrame(), {}
+    test_bars_per_fold = [i3 - i2 for _, _, i2, i3 in fold_indices]
+    print(f'[WALKFORWARD-HMM] {len(fold_indices)} folds, test_bars_per_fold={test_bars_per_fold}, total_input={df.height} rows', flush=True)
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
@@ -9361,6 +9696,7 @@ def run_walkforward_with_hmm(
     # Concatenate results
     df_base = pl.concat(results_base).sort(['session_id', 'ts_event'])
     df_hmm = pl.concat(results_hmm).sort(['session_id', 'ts_event'])
+    print(f'[WALKFORWARD-HMM] {len(results_hmm)} folds concatenated: {df_hmm.height} rows before warmup', flush=True)
 
     # Validation
     report = compare_strategies(
@@ -9381,6 +9717,7 @@ def run_walkforward_with_hmm(
     validation_dict['n_folds'] = len(folds)
 
     df_hmm = exclude_warmup(df_hmm, getattr(config, 'BURN_IN_BARS', 500))
+    print(f'[WALKFORWARD-HMM] After exclude_warmup({getattr(config, "BURN_IN_BARS", 500)}): {df_hmm.height} rows, ts_min={df_hmm["ts_event"].min()} ts_max={df_hmm["ts_event"].max()}', flush=True)
     return df_hmm, validation_dict
 
 
@@ -9403,6 +9740,8 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
     if not fold_indices:
         logger.warning('No folds produced -- returning empty result.')
         return pl.DataFrame()
+    test_bars_per_fold = [i3 - i2 for _, _, i2, i3 in fold_indices]
+    print(f'[WALKFORWARD] {len(fold_indices)} folds, test_bars_per_fold={test_bars_per_fold}, total_input={df.height} rows, pruned_features={len(feature_cols)}', flush=True)
 
     # Correlation pruning on first training window
     first_train_df = df.slice(fold_indices[0][0], fold_indices[0][1] - fold_indices[0][0])
@@ -9427,8 +9766,128 @@ def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target
         results = Parallel(n_jobs=config.WF_PARALLEL_FOLDS, backend='loky')((delayed(process_fold)(train_X, train_y, test_original, feat_cols) for train_X, train_y, test_original, feat_cols in folds))
     final = pl.concat(results)
     final = final.sort(['session_id', 'ts_event'])
+    print(f'[WALKFORWARD] {len(results)} folds concatenated: {final.height} rows before warmup', flush=True)
     final = exclude_warmup(final, getattr(config, 'BURN_IN_BARS', 500))
+    print(f'[WALKFORWARD] After exclude_warmup({getattr(config, "BURN_IN_BARS", 500)}): {final.height} rows, ts_min={final["ts_event"].min()} ts_max={final["ts_event"].max()}', flush=True)
     return final
+
+
+# ============================================================================
+# True Outer-Split Evaluation Mode
+# ============================================================================
+#
+# Differs from bar-based inner-walkforward:
+#   1. Receives separate train_df and test_df already sliced by run.py via
+#      --train-start/--train-end and --start/--end in cli.py.
+#   2. Trains a single model on train_df, predicts on all of test_df in one pass.
+#   3. No inner folds, no 60/40 splitting of the test window.
+#   4. Minimal warmup only for position carry-over.
+#
+# This ensures the 180d training window is fully used and the 30d test
+# window is fully evaluated.
+
+_OUTER_BURN_IN = 50  # minimal warmup for position carry-over only
+
+
+def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
+                              feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
+    if train_df.height == 0:
+        raise RuntimeError('OUTER-TRUE FAILURE: empty train_df')
+    if test_df.height == 0:
+        raise RuntimeError('OUTER-TRUE FAILURE: empty test_df')
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
+    test_ts_min = test_df['ts_event'].min()
+    test_ts_max = test_df['ts_event'].max()
+    assert train_ts_max < test_ts_min, (
+        f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
+    )
+    print(f'[OUTER-TRUE] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
+    print(f'[OUTER-TRUE] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
+    print(f'[OUTER-TRUE] feature_cols={len(feature_cols)}', flush=True)
+    if target_col not in train_df.columns or target_col not in test_df.columns:
+        raise KeyError(f"Target column '{target_col}' missing from train/test")
+    train_X = train_df.select(feature_cols)
+    train_y = train_df[target_col]
+    test_X = test_df.select(feature_cols)
+    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
+    result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
+    result = result.with_columns(compute_benchmark(result))
+    result = simulate_execution_classification(result)
+    if _OUTER_BURN_IN > 0:
+        result = exclude_warmup(result, _OUTER_BURN_IN)
+    output_frac = result.height / max(test_df.height, 1)
+    assert output_frac >= 0.90, (
+        f'OUTER-TRUE ROW COLLAPSE: output={result.height} test={test_df.height} '
+        f'fraction={output_frac:.2%} < 90%'
+    )
+    ts_out_min = result['ts_event'].min()
+    ts_out_max = result['ts_event'].max()
+    pnl_cs = _hash_col(result, 'pnl') if 'pnl' in result.columns else 'missing'
+    print(f'[OUTER-TRUE] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
+    print(f'[OUTER-TRUE] result_rows={result.height} fraction={output_frac:.1%} '
+          f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    return result
+
+
+def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataFrame,
+                                       feature_cols: list, target_col: str = 'target_sign'
+                                       ) -> Tuple[pl.DataFrame, dict]:
+    if TYPE_CHECKING:
+        from pipeline.regime.hmm_filter import HMMRegimeFilter
+    else:
+        from pipeline.regime.hmm_filter import HMMRegimeFilter
+    if train_df.height == 0:
+        raise RuntimeError('OUTER-TRUE HMM FAILURE: empty train_df')
+    if test_df.height == 0:
+        raise RuntimeError('OUTER-TRUE HMM FAILURE: empty test_df')
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
+    test_ts_min = test_df['ts_event'].min()
+    test_ts_max = test_df['ts_event'].max()
+    assert train_ts_max < test_ts_min, (
+        f'TRAIN/TEST OVERLAP: train max={train_ts_max} >= test min={test_ts_min}'
+    )
+    print(f'[OUTER-TRUE-HMM] train_rows={train_df.height} train_ts=[{train_ts_min}, {train_ts_max})', flush=True)
+    print(f'[OUTER-TRUE-HMM] test_rows={test_df.height} test_ts=[{test_ts_min}, {test_ts_max})', flush=True)
+    print(f'[OUTER-TRUE-HMM] feature_cols={len(feature_cols)}', flush=True)
+    if target_col not in train_df.columns or target_col not in test_df.columns:
+        raise KeyError(f"Target column '{target_col}' missing")
+    train_X = train_df.select(feature_cols)
+    train_y = train_df[target_col]
+    test_X = test_df.select(feature_cols)
+    probs = train_and_predict(train_X, train_y, test_X, feature_cols)
+    pred_cs = hashlib.sha256(probs.tobytes()).hexdigest()[:8]
+    result = test_df.with_columns(pl.Series('prediction_prob', probs).cast(pl.Float32))
+    result = result.with_columns(compute_benchmark(result))
+    result = simulate_execution_classification(result)
+    hmm_filter = HMMRegimeFilter()
+    df_1h_train = _resample_to_1h(train_df)
+    if df_1h_train.height >= 60:
+        hmm_filter.initialize(df_1h_train)
+    df_1h_test = _resample_to_1h(test_df)
+    result, hmm_filter = apply_hmm_filter(
+        df_5min_base=result, df_1h_train=df_1h_train,
+        df_1h_test=df_1h_test, hmm_filter=hmm_filter, retrain=False,
+    )
+    if _OUTER_BURN_IN > 0:
+        result = exclude_warmup(result, _OUTER_BURN_IN)
+    output_frac = result.height / max(test_df.height, 1)
+    assert output_frac >= 0.90, (
+        f'OUTER-TRUE HMM ROW COLLAPSE: output={result.height} test={test_df.height} '
+        f'fraction={output_frac:.2%} < 90%'
+    )
+    ts_out_min = result['ts_event'].min()
+    ts_out_max = result['ts_event'].max()
+    pnl_cs = _hash_col(result, 'pnl') if 'pnl' in result.columns else 'missing'
+    print(f'[OUTER-TRUE-HMM] pred_cs={pred_cs} pnl_cs={pnl_cs}', flush=True)
+    print(f'[OUTER-TRUE-HMM] result_rows={result.height} fraction={output_frac:.1%} '
+          f'result_ts=[{ts_out_min}, {ts_out_max})', flush=True)
+    validation = {'n_folds': 1, 'outer_split': True, 'mode': 'outer_split',
+                  'train_rows': train_df.height, 'test_rows': test_df.height,
+                  'output_rows': result.height, 'hmm_active': hmm_filter.is_active}
+    return result, validation
 --- END OF FILE: pipeline\walkforward\walkforward.py ---
 
 --- START OF FILE: tests\test_alignment.py ---

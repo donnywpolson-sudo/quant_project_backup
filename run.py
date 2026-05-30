@@ -12,6 +12,7 @@ import logging
 import time
 import json
 import hashlib
+import threading
 from pathlib import Path
 import shutil
 import polars as pl
@@ -304,6 +305,84 @@ def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout
         f.write(f'--- STDOUT ---\n{stdout_text}\n--- STDERR ---\n{stderr_text}\n')
 
 
+def _run_subprocess_streaming(cmd: list, env: dict, timeout_idle: int = 120) -> tuple:
+    """Run subprocess with real-time stdout/stderr streaming and idle timeout.
+
+    Returns (returncode, stdout_text, stderr_text).
+    On idle timeout (no output for *timeout_idle* seconds): terminates child,
+    prints diagnostics, and returns (-1, stdout, stderr).
+    """
+    env_out = env.copy()
+    env_out['PYTHONUNBUFFERED'] = '1'
+    full_cmd = [sys.executable, '-u'] + cmd[1:] if cmd[0] == sys.executable else cmd
+    proc = subprocess.Popen(
+        full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1, env=env_out,
+    )
+    stdout_lines = []
+    stderr_lines = []
+    last_output = time.time()
+    lock = threading.Lock()
+    done = threading.Event()
+
+    def _read_stream(stream, lines_list, prefix):
+        nonlocal last_output
+        try:
+            for line in iter(stream.readline, ''):
+                line = line.rstrip('\n\r')
+                with lock:
+                    lines_list.append(line)
+                    last_output = time.time()
+                print(f'[{prefix}] {line}', flush=True)
+        except Exception:
+            pass
+
+    t_stdout = threading.Thread(target=_read_stream, args=(proc.stdout, stdout_lines, 'CHILD-OUT'), daemon=True)
+    t_stderr = threading.Thread(target=_read_stream, args=(proc.stderr, stderr_lines, 'CHILD-ERR'), daemon=True)
+    t_stdout.start()
+    t_stderr.start()
+
+    # Idle timeout watchdog
+    def _watchdog():
+        while not done.is_set():
+            time.sleep(1)
+            with lock:
+                idle = time.time() - last_output
+            if idle > timeout_idle and not done.is_set():
+                print(f'\n[TIMEOUT] No output for {timeout_idle}s — terminating child', flush=True)
+                print(f'[TIMEOUT] cmd={" ".join(full_cmd)}', flush=True)
+                print(f'[TIMEOUT] cwd={os.getcwd()}', flush=True)
+                print(f'[TIMEOUT] env={os.environ.get("QUANT_ENV", "default")}', flush=True)
+                with lock:
+                    if stdout_lines:
+                        print(f'[TIMEOUT] last stdout lines: {stdout_lines[-5:]}', flush=True)
+                    if stderr_lines:
+                        print(f'[TIMEOUT] last stderr lines: {stderr_lines[-5:]}', flush=True)
+                proc.kill()
+                done.set()
+                break
+
+    t_watch = threading.Thread(target=_watchdog, daemon=True)
+    t_watch.start()
+
+    try:
+        ret = proc.wait(timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        ret = -1
+    done.set()
+    t_stdout.join(timeout=5)
+    t_stderr.join(timeout=5)
+    t_watch.join(timeout=5)
+    stdout_text = '\n'.join(stdout_lines)
+    stderr_text = '\n'.join(stderr_lines)
+    if ret == -1:
+        raise subprocess.CalledProcessError(-1, full_cmd, stdout_text, stderr_text)
+    if ret != 0:
+        raise subprocess.CalledProcessError(ret, full_cmd, stdout_text, stderr_text)
+    return ret, stdout_text, stderr_text
+
+
 _log_failures = os.environ.get('QUANT_LOG_FAILURES', '1') == '1'
 
 def _print_verification_table():
@@ -505,14 +584,12 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         shutil.copy2(f, dst)
     train_glob = str(train_dir / '*.parquet')
     manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}.json"
-    # Silence subprocess output unless verbose mode
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
-    kw = {'check': True, 'env': env, 'stderr': subprocess.PIPE, 'stdout': subprocess.PIPE, 'timeout': 300}
     if config.pipeline.enable_discovery:
-        subprocess.run([sys.executable, '-m', 'pipeline.cli', 'discover',
-                        '--data', train_glob, '--out', str(manifest_path)], **kw)
+        _run_subprocess_streaming([sys.executable, '-m', 'pipeline.cli', 'discover',
+                        '--data', train_glob, '--out', str(manifest_path)], env)
         time.sleep(0.2)
     else:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -541,26 +618,35 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             cmd.extend(['--train-start', train_start.isoformat(), '--train-end', train_end.isoformat()])
         if test_start and test_end:
             cmd.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
+        wf_mode = getattr(config, 'WF_MODE', '')
+        if wf_mode == 'outer_split':
+            assert train_start and train_end, 'outer_split mode but train_start/train_end not set'
+            assert '--train-start' in cmd and '--train-end' in cmd, '--train-start/--train-end missing from subprocess command'
+        print(f'[SUBPROCESS-CMD] {" ".join(cmd)}', flush=True)
         logger.info('[SUBPROCESS] split=%d symbol=%s start=%s end=%s cmd=%s',
                     split_idx, symbol,
                     test_start.isoformat() if test_start else 'None',
                     test_end.isoformat() if test_end else 'None',
                     ' '.join(cmd))
         try:
-            subprocess.run(cmd, **kw)
+            _run_subprocess_streaming(cmd, env)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr_text = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else str(e.stderr or '')
-            stdout_text = e.stdout.decode(errors='replace') if isinstance(e.stdout, bytes) else str(e.stdout or '')
-            err_lines = stderr_text.strip().split('\n')
+            stderr_text = e.stderr if hasattr(e, 'stderr') else ''
+            stdout_text = e.stdout if hasattr(e, 'stdout') else ''
+            if isinstance(stderr_text, bytes):
+                stderr_text = stderr_text.decode(errors='replace')
+            if isinstance(stdout_text, bytes):
+                stdout_text = stdout_text.decode(errors='replace')
+            err_lines = stderr_text.strip().split('\n') if stderr_text else ['(no stderr)']
             print(f'[WARNING] HMM failed on split {split_idx} ({symbol}). Last 3 lines of stderr:')
             for line in err_lines[-3:]:
                 print(f'  > {line}')
             if _log_failures:
-                _log_subprocess_failure(cmd, e.returncode, stderr_text, stdout_text,
+                _log_subprocess_failure(cmd, getattr(e, 'returncode', -1), stderr_text, stdout_text,
                                         Path('output') / 'logs', symbol, split_idx, 'hmm')
             logger.warning(
                 'run-hmm failed for %s split=%d (rc=%d)',
-                symbol, split_idx, e.returncode,
+                symbol, split_idx, getattr(e, 'returncode', -1),
             )
             # Safe fallback: retry with plain run (no HMM)
             logger.info('Falling back to non-HMM run for %s split=%d', symbol, split_idx)
@@ -571,16 +657,20 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             if test_start and test_end:
                 cmd_fb.extend(['--start', test_start.isoformat(), '--end', test_end.isoformat()])
             try:
-                subprocess.run(cmd_fb, **kw)
+                _run_subprocess_streaming(cmd_fb, env)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
-                stderr2 = e2.stderr.decode(errors='replace') if isinstance(e2.stderr, bytes) else str(e2.stderr or '')
-                stdout2 = e2.stdout.decode(errors='replace') if isinstance(e2.stdout, bytes) else str(e2.stdout or '')
-                err2_lines = stderr2.strip().split('\n')
+                stderr2 = e2.stderr if hasattr(e2, 'stderr') else ''
+                stdout2 = e2.stdout if hasattr(e2, 'stdout') else ''
+                if isinstance(stderr2, bytes):
+                    stderr2 = stderr2.decode(errors='replace')
+                if isinstance(stdout2, bytes):
+                    stdout2 = stdout2.decode(errors='replace')
+                err2_lines = stderr2.strip().split('\n') if stderr2 else ['(no stderr)']
                 print(f'[ERROR] Fallback also failed on split {split_idx} ({symbol}). Last 3 lines:')
                 for line in err2_lines[-3:]:
                     print(f'  > {line}')
                 if _log_failures:
-                    _log_subprocess_failure(cmd_fb, e2.returncode, stderr2, stdout2,
+                    _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
         time.sleep(0.2)
