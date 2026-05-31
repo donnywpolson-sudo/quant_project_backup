@@ -9,16 +9,8 @@ profiles:
       start: "16:00"
       end: "17:00"
 
-    # Generated inside audit_L0_ohlcv_1m.py:
-    # Good Friday early close;
-    # New Year's Day and Christmas late opens;
-    # MLK, Presidents, Memorial, Juneteenth, Independence Day,
-    # Labor, Thanksgiving, day-after-Thanksgiving, Christmas Eve,
-    # New Year's Eve early-close/late-reopen halts.
     holiday_calendar: cme_globex_us_futures
 
-    # Manual overrides only. Keep these for exchange notices, outages,
-    # one-off closures, or product-specific deviations.
     closed_dates: []
     early_closes: {}
     late_opens: {}
@@ -27,8 +19,6 @@ markets:
   CL:
     <<: *cme_globex_23h
   ES:
-    <<: *cme_globex_23h
-  MES:
     <<: *cme_globex_23h
   GC:
     <<: *cme_globex_23h
@@ -49,10 +39,8 @@ markets:
   ZN:
     <<: *cme_globex_23h
 
-  # Corn has product-specific CBOT agricultural hours. This profile is a
-  # broad Globex approximation for audit coverage; use manual overrides if
-  # exact ZC session completeness is required.
   ZC:
     <<: *cme_globex_23h
     session_calendar_accuracy: approximate
     approximate_reason: "CBOT corn has product-specific agricultural hours; cme_globex_23h is not exact."
+``
