@@ -31,9 +31,13 @@ profiles:
 markets:
   CL:
     <<: *cme_globex_energy
+    early_closes:
+      "2024-11-29": "13:45"
 
   NG:
     <<: *cme_globex_energy
+    early_closes:
+      "2024-11-29": "13:45"
 
   ES:
     <<: *cme_globex_23h
