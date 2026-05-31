@@ -5,7 +5,7 @@ All expanding intraday boundaries use shift(1).cum_max/min over date groups.
 No look-ahead into current incomplete daily bars.
 """
 import polars as pl
-from core.config import config
+from pipeline.common.config import config
 
 
 def _session_prior_close_table(df: pl.DataFrame) -> pl.DataFrame:

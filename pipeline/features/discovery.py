@@ -10,7 +10,7 @@ import hashlib
 from datetime import datetime, timedelta
 import pytz
 from sklearn.ensemble import ExtraTreesRegressor
-from core.config import config, clamp_to_single_threaded
+from pipeline.common.config import config, clamp_to_single_threaded
 from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
@@ -420,8 +420,14 @@ def run_feature_discovery(
     ]
     feature_cols = [
         c for c in feature_cols
-        if df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+        if _is_selectable_feature_name(c)
+        and df_features[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
     ]
+    if not feature_cols:
+        raise RuntimeError(
+            'DISCOVERY FAILURE: no selectable feature columns after excluding '
+            'targets, OHLCV, and continuous-contract metadata.'
+        )
 
     logger.info(f'Discovery using {df_features.height} rows, {len(feature_cols)} features.')
     logger.info('[DIAG] post-date-filter rows=%d feature_cols=%d', df_features.height, len(feature_cols))

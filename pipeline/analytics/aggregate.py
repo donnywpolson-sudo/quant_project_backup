@@ -3,7 +3,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 from scipy.stats import spearmanr
-from core.config import config
+from pipeline.common.config import config
 
 # Number of 5-minute bars in a trading year (~23h * 12 bars/h * 252 trading days)
 # Overridable via config.ANNUAL_FACTOR if set before aggregate import.

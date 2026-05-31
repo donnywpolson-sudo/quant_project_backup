@@ -6,7 +6,7 @@
 
 ```text
 configs/              profile and market configuration
-core/                 config, market metadata, atomic/canonical IO helpers
+pipeline/common/      config, market metadata, atomic/canonical IO helpers
 data/                 local data utilities and session calendars
 pipeline/             feature, target, walk-forward, execution, analytics code
 run.py                top-level pipeline runner

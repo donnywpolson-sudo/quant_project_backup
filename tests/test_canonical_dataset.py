@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 import polars as pl
 
-from core.config import config
+from pipeline.common.config import config
 from pipeline.ingest import ingest
 
 

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import polars as pl
 import pytest
 
-from core.config import config
+from pipeline.common.config import config
 from pipeline.risk.risk import RiskGateError, run_risk_gates
 
 

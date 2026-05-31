@@ -17,17 +17,17 @@ Architecture (profile-based, primary):
 
 Usage:
     # Structured (Pydantic) — run.py
-    from core.config import load_config, RootConfig
+    from pipeline.common.config import load_config, RootConfig
     cfg: RootConfig = load_config()
     print(cfg.discovery.bootstrap_folds)
 
     # Flat (SimpleNamespace) — all quant modules
-    from core.config import config
+    from pipeline.common.config import config
     print(config.BOOTSTRAP_FOLDS)
     print(config.ACTIVE_PROFILE)
 
     # Idempotent — safe to call multiple times
-    from core.config import load_config
+    from pipeline.common.config import load_config
     load_config()  # no-op after first call
 """
 
@@ -491,7 +491,7 @@ def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config
 # ============================================================================
 # Config resolution — locations for YAML files
 # ============================================================================
-_CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
+_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
 
 
 # ============================================================================

@@ -2,8 +2,8 @@ pass
 import pyarrow as pa
 import pyarrow.parquet as pq
 import polars as pl
-from core.config import config
-from core.io.atomic import atomic_write_canonical_parquet
+from pipeline.common.config import config
+from pipeline.common.io.atomic import atomic_write_canonical_parquet
 import logging
 logger = logging.getLogger(__name__)
 

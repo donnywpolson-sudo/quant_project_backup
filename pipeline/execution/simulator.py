@@ -12,7 +12,7 @@ Realistic execution simulator with economic friction.
 import numpy as np
 import numba
 import polars as pl
-from core.config import config
+from pipeline.common.config import config
 
 # Fixed contract size multiplier for position sizing
 FIXED_CONTRACT_SIZE = 1.0
@@ -333,8 +333,8 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     #     when the command is invoked. Fails fast if unset — no silent
     #     fallback to ES because wrong multiplier silently corrupts PnL.
     # ------------------------------------------------------------------------
-    from core.config import config as _cfg
-    from core.market import get_contract_multiplier
+    from pipeline.common.config import config as _cfg
+    from pipeline.common.market import get_contract_multiplier
 
     symbol = getattr(_cfg, 'CURRENT_SYMBOL', None)
     if not symbol:

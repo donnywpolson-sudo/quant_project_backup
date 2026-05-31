@@ -19,7 +19,7 @@ import polars as pl
 import json
 import hashlib
 import time
-from core.io.atomic import atomic_write_parquet, atomic_write_json
+from pipeline.common.io.atomic import atomic_write_parquet, atomic_write_json
 
 _MODEL_METADATA_EXCLUDE_EXACT = {
     'continuous_price',
@@ -70,12 +70,12 @@ def _diag(df, stage):
     if 'ts_event' in df.columns and df.height > 0:
         t = df.select([pl.col('ts_event').min().alias('lo'), pl.col('ts_event').max().alias('hi')])
         print(f'[DIAG]   ts_event min={t["lo"][0]} max={t["hi"][0]}', flush=True)
-from core.config import config, load_config
+from pipeline.common.config import config, load_config
 from pipeline.ingest.ingest import load_and_clean_data
 from pipeline.features.engine import load_or_build_feature_target_matrix
 from pipeline.features.discovery import apply_frozen_feature_manifest, run_train_only_feature_discovery
 from pipeline.walkforward.walkforward import build_oos_prediction_frame, run_walkforward, run_walkforward_with_hmm, run_walkforward_modeling, run_walkforward_modeling_with_hmm
-from core.io.canonical import write_canonical_parquet
+from pipeline.common.io.canonical import write_canonical_parquet
 from pipeline.analytics.aggregate import build_metrics_report, calculate_metrics, run_aggregation
 from pipeline.risk.risk import run_risk_gates
 logger = logging.getLogger(__name__)
@@ -199,7 +199,7 @@ def main():
     np.random.seed(config.SEED)
     check_memory_safety()
     if args.command in ('discover', 'run', 'run-hmm'):
-        from core.market import detect_symbol_from_path, load_market_config
+        from pipeline.common.market import detect_symbol_from_path, load_market_config
         symbol = detect_symbol_from_path(args.data)
         load_market_config(symbol)
         config.CURRENT_SYMBOL = symbol

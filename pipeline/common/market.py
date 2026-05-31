@@ -2,7 +2,7 @@ import yaml
 import logging
 import math
 from pathlib import Path
-from core.config import config
+from pipeline.common.config import config
 logger = logging.getLogger(__name__)
 
 def detect_symbol_from_path(data_path: str) -> str:

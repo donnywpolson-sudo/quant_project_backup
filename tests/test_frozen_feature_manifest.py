@@ -4,7 +4,11 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from pipeline.features.discovery import apply_frozen_feature_manifest, load_frozen_feature_manifest
+from pipeline.features.discovery import (
+    _is_selectable_feature_name,
+    apply_frozen_feature_manifest,
+    load_frozen_feature_manifest,
+)
 
 
 def _write_manifest(path: Path, feature_names: list[str]) -> None:
@@ -68,3 +72,16 @@ def test_frozen_manifest_rejects_target_as_feature(tmp_path):
 
     with pytest.raises(RuntimeError, match="invalid selected features"):
         load_frozen_feature_manifest(str(manifest))
+
+
+def test_discovery_feature_filter_rejects_continuous_metadata():
+    rejected = [
+        "continuous_price",
+        "continuous_open",
+        "continuous_high",
+        "continuous_low",
+        "continuous_close",
+        "cumulative_factor",
+    ]
+    assert all(not _is_selectable_feature_name(c) for c in rejected)
+    assert _is_selectable_feature_name("feature_ret_1")

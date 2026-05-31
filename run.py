@@ -19,8 +19,8 @@ from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from core.config import load_config, RootConfig, config as _ns_cfg
-from core.market import get_contract_multiplier
+from pipeline.common.config import load_config, RootConfig, config as _ns_cfg
+from pipeline.common.market import get_contract_multiplier
 from pipeline.data_gate.manifest import DatasetGateError, validate_dataset_gate
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
@@ -39,29 +39,30 @@ logger = logging.getLogger('QuantRunner')
 _MIN_TRAIN_DAYS = 90
 _RUN_START = time.time()
 _RUN_DT = datetime.now()
-_RUN_TS = _RUN_DT.strftime('%Y%m%d_%H%M%S')
-_RUN_LOG_TIME = _RUN_DT.strftime('%H%M%S')
-_RUN_LOG_DATE = _RUN_DT.strftime('%d-%m-%Y')  # Windows-safe DD/MM/YYYY equivalent
+_RUN_FILE_TS = _RUN_DT.strftime('%Y-%m-%d_%H-%M-%S')
 _RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
 _PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
 _VERIFICATION_TABLE = []  # rows for the verification table printed per split
 
 
 class PipelineProgressLogger:
+    # Per-split runtime diagnostics. This intentionally tracks what the runner
+    # can observe from subprocess logs; it is close to, but not a strict copy of,
+    # quant_flowchart.md / project_layout.md.
     STAGES = {
         1: 'RAW DATA',
-        2: 'INGESTION',
+        2: 'INGEST / CANONICAL',
         3: 'CONTINUOUS CONTRACTS',
         4: 'SESSION NORMALIZATION',
         5: 'ALIGNMENT',
-        6: 'FEATURES',
-        7: 'TARGETS',
-        8: 'REGIME',
+        6: 'FEATURES / MANIFEST',
+        7: 'TARGET CONTRACT',
+        8: 'REGIME / HMM',
         9: 'META LABEL',
         10: 'EXECUTION',
-        11: 'WALKFORWARD',
-        12: 'ANALYTICS',
-        13: 'TRACKING',
+        11: 'WALKFORWARD / OOS',
+        12: 'METRICS',
+        13: 'ARTIFACTS',
     }
     ERROR_PATTERNS = (
         'Traceback', 'RuntimeError', 'ValueError', 'Exception',
@@ -75,7 +76,7 @@ class PipelineProgressLogger:
         self.stage_state = {}
         self.flushed = False
         self.stage_start = time.time()
-        self.log_path = Path('output') / 'logs' / f'run_{_RUN_TS}_unknown_unknown_{run_id}.log'
+        self.log_path = Path('output') / 'logs' / f'{_RUN_FILE_TS}_UNKNOWN_{run_id}.log'
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.log_path, 'a', encoding='utf-8')
 
@@ -86,7 +87,8 @@ class PipelineProgressLogger:
 
     def rename_for_config(self, profile: str, symbols: list[str]) -> None:
         symbols_safe = '-'.join(self._safe_name(s).upper() for s in symbols) if symbols else 'unknown'
-        dest = self.log_path.parent / f'{_RUN_LOG_TIME}_{_RUN_LOG_DATE}_{symbols_safe}.log'
+        profile_safe = self._safe_name(profile)
+        dest = self.log_path.parent / f'{_RUN_FILE_TS}_{symbols_safe}_{profile_safe}_{self.run_id}.log'
         if dest == self.log_path:
             return
         if dest.exists():
@@ -563,8 +565,8 @@ def _log_subprocess_failure(cmd: list, returncode: int, stderr_text: str, stdout
     """Persist full subprocess failure output to a deterministic log file."""
     import datetime as dt
     log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = dt.datetime.utcnow().strftime('%Y%m%dT%H%M%S')
-    log_path = log_dir / f'fail_{symbol}_split{split_idx}_{stage}_{timestamp}.log'
+    timestamp = dt.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    log_path = log_dir / f'{timestamp}_{symbol}_split{split_idx}_{stage}_FAIL.log'
     with open(log_path, 'w', encoding='utf-8') as f:
         f.write(f'command: {" ".join(cmd)}\n')
         f.write(f'returncode: {returncode}\n')
@@ -774,13 +776,45 @@ def _print_split_result(row: dict) -> None:
     print(f"status={row.get('status', 'OK')}", flush=True)
 
 
+def _print_clean_split_result(row: dict) -> None:
+    status = row.get('status', 'OK')
+    symbol = row.get('symbol', 'NA')
+    split = row.get('split', 'NA')
+    if status != 'OK':
+        error = row.get('error') or 'see raw log'
+        print(f'[FAILED] {symbol} split={split} {error}', flush=True)
+        return
+    print(
+        f"[RESULT] {symbol} split={split} "
+        f"sharpe_ann={row.get('sharpe_annualized', row.get('sharpe', 0.0)):+.3f} "
+        f"pnl={row.get('pnl', 0.0):+.2f} "
+        f"ic={row.get('ic', 'NA')} "
+        f"hit_active={row.get('bar_hit_rate_active_bars', row.get('hit_rate', 0.0)):.2%} "
+        f"turnover={row.get('position_turnover', row.get('turnover', 0.0)):.6g} "
+        f"trades={row.get('position_change_events', row.get('trades', 0))} "
+        f"pred_cs={row.get('pred_cs', 'missing')} "
+        f"pnl_cs={row.get('pnl_cs', 'missing')}",
+        flush=True,
+    )
+
+
 def _record_split_result(row: dict) -> None:
     _VERIFICATION_TABLE.append(row)
-    _PROGRESS.flush_stages()
-    _print_split_result(row)
+    if _PROGRESS.verbose:
+        _PROGRESS.flush_stages()
+        _print_split_result(row)
+    else:
+        _print_clean_split_result(row)
 
 
-def _failed_result_row(split_idx: int, symbol: str, path: Path | str, *, mtime: float = 0.0) -> dict:
+def _failed_result_row(
+    split_idx: int,
+    symbol: str,
+    path: Path | str,
+    *,
+    mtime: float = 0.0,
+    error: str | None = None,
+) -> dict:
     return {
         'split': split_idx, 'symbol': symbol, 'path': str(path),
         'mtime': mtime, 'run_id': _RUN_ID, 'rows': 0,
@@ -793,6 +827,7 @@ def _failed_result_row(split_idx: int, symbol: str, path: Path | str, *, mtime: 
         'bar_hit_rate_active_bars': 0.0, 'bar_hit_rate_active_bars_n': 0,
         'trade_hit_rate': 'NA', 'trade_hit_rate_n': 0,
         'position_change_events': 0, 'position_turnover': 0.0,
+        'error': error,
     }
 
 
@@ -1012,7 +1047,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
         if not _validate_symbol_data(f, config):
             _stage(13, 'FAILED invalid_or_empty_raw_data')
             _record_split_result(_failed_result_row(
-                split_idx, symbol, f, mtime=f.stat().st_mtime if f.exists() else 0.0
+                split_idx, symbol, f,
+                mtime=f.stat().st_mtime if f.exists() else 0.0,
+                error='invalid_or_empty_raw_data',
             ))
             continue
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}'
@@ -1066,7 +1103,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                                             Path('output') / 'logs', symbol, split_idx, 'run')
                 logger.error('run failed for %s split=%d (rc=%d)',
                              symbol, split_idx, getattr(e, 'returncode', -1))
-                _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
+                _record_split_result(_failed_result_row(
+                    split_idx, symbol, out_dir, error=run_error
+                ))
                 subprocess_failed = True
                 continue
             if _DEBUG:
@@ -1123,7 +1162,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     _log_subprocess_failure(cmd_fb, getattr(e2, 'returncode', -1), stderr2, stdout2,
                                             Path('output') / 'logs', symbol, split_idx, 'fallback')
                 logger.error('Fallback run also failed for %s split=%d', symbol, split_idx)
-                _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
+                _record_split_result(_failed_result_row(
+                    split_idx, symbol, out_dir, error=fallback_error
+                ))
                 subprocess_failed = True
         if subprocess_failed:
             continue
@@ -1224,11 +1265,16 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     import traceback
                     traceback.print_exc()
                 per_symbol[symbol] = (0.0, 0.0, 0.0, 0.0)
-                _stage(13, _tracking_summary(failed=f'FAILED\n{_extract_error_summary(str(e))}'))
-                _record_split_result(_failed_result_row(split_idx, symbol, bt_path, mtime=_bt_mtime))
+                result_error = _extract_error_summary(str(e))
+                _stage(13, _tracking_summary(failed=f'FAILED\n{result_error}'))
+                _record_split_result(_failed_result_row(
+                    split_idx, symbol, bt_path, mtime=_bt_mtime, error=result_error
+                ))
         else:
             _stage(13, _tracking_summary(failed=f'missing_output={out_dir} status=FAILED'))
-            _record_split_result(_failed_result_row(split_idx, symbol, out_dir))
+            _record_split_result(_failed_result_row(
+                split_idx, symbol, out_dir, error='missing_output'
+            ))
     # ---- Master dashboard ----
     _print_split_dashboard(split_idx, total_splits, per_symbol)
 if __name__ == '__main__':

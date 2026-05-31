@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.linear_model import Ridge
-from core.config import config
+from pipeline.common.config import config
 
 
 def train_meta_model(

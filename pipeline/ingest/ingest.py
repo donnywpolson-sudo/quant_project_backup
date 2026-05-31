@@ -2,12 +2,12 @@ import polars as pl
 import logging
 import psutil
 from pathlib import Path
-from core.config import config
+from pipeline.common.config import config
 from pipeline.session.session import load_all_streams_chunked
 from pipeline.align.align import align_htf_streams
 from pipeline.contracts.continuous import build_continuous_series
-from core.market import detect_symbol_from_path, load_market_config, get_contract_multiplier
-from core.io.canonical import write_canonical_parquet
+from pipeline.common.market import detect_symbol_from_path, load_market_config, get_contract_multiplier
+from pipeline.common.io.canonical import write_canonical_parquet
 
 logger = logging.getLogger(__name__)
 

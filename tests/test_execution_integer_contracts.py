@@ -1,7 +1,7 @@
 import polars as pl
 import pytest
 
-from core.config import config
+from pipeline.common.config import config
 from pipeline.execution.simulator import (
     _compute_pnl_from_target_exec,
     validate_execution_simulation_result,

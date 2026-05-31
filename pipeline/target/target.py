@@ -1,6 +1,6 @@
 import polars as pl
 import logging
-from core.config import config
+from pipeline.common.config import config
 
 logger = logging.getLogger(__name__)
 

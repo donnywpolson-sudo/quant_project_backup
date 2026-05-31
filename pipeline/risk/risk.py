@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-from core.config import config
+from pipeline.common.config import config
 
 
 class RiskGateError(RuntimeError):

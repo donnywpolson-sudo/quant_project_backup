@@ -55,9 +55,20 @@ def existing_git_add_paths() -> list[str]:
         if any(ch in raw for ch in "*?[]"):
             matches = sorted(glob.glob(str(REPO_ROOT / raw)))
             paths.extend(str(Path(m).relative_to(REPO_ROOT)).replace("\\", "/") for m in matches)
-        elif (REPO_ROOT / raw).exists():
+        elif (REPO_ROOT / raw).exists() or has_tracked_path(raw):
             paths.append(raw)
     return paths
+
+
+def has_tracked_path(pathspec: str) -> bool:
+    result = subprocess.run(
+        ["git", "ls-files", "--", pathspec],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return bool(result.stdout.strip())
 
 def git_commit_and_push(commit_message=None):
     if INDEX_LOCK.exists():

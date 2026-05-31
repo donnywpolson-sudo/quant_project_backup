@@ -3,8 +3,8 @@ import logging
 import numpy as np
 from datetime import timedelta
 from pathlib import Path
-from core.config import config
-from core.io.canonical import write_canonical_parquet
+from pipeline.common.config import config
+from pipeline.common.io.canonical import write_canonical_parquet
 
 from pipeline.features.baseline import compute_baseline_features, load_baseline_feature_names
 from pipeline.features.expansion import expand_features, add_cross_timeframe_interactions
