@@ -48,7 +48,7 @@ _VERIFICATION_TABLE = []  # rows for the verification table printed per split
 class PipelineProgressLogger:
     # Per-split runtime diagnostics. This intentionally tracks what the runner
     # can observe from subprocess logs; it is close to, but not a strict copy of,
-    # quant_flowchart.md / project_layout.md.
+    # project_layout.md.
     STAGES = {
         1: 'RAW DATA',
         2: 'INGEST / CANONICAL',
@@ -1290,7 +1290,7 @@ if __name__ == '__main__':
             validate_dataset_gate(
                 files,
                 symbols=config.symbols,
-                manifest_path=os.environ.get('QUANT_AUDIT_MANIFEST', 'reports/data_audit/audit_manifest.json'),
+                manifest_path=os.environ.get('QUANT_AUDIT_MANIFEST', 'output/reports/data_audit/audit_manifest.json'),
                 required=os.environ.get('QUANT_REQUIRE_DATASET_GATE', '0') == '1',
                 check_hash=os.environ.get('QUANT_DATASET_GATE_HASH', '0') == '1',
             )

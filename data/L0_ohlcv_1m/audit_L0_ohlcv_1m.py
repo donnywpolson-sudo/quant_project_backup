@@ -679,7 +679,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(SCRIPT_DIR))
     ap.add_argument("--config", default=str(PROJECT_ROOT / "data" / "market_sessions.yaml"))
-    ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "audits" / "L0_ohlcv_1m_audit"))
+    ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "reports" / "L0_ohlcv_1m_audit"))
     ap.add_argument("--markets", nargs="*", help="Optional market filter, e.g. --markets ES NQ CL")
     ap.add_argument("--years", nargs="*", type=int, help="Optional year filter, e.g. --years 2024 2025")
     ap.add_argument("--core-only", action="store_true")

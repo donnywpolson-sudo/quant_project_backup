@@ -12,18 +12,17 @@ GIT_ADD_PATHS = [
     ".gitignore",
     "README.md",
     "git_sync.py",
+    "requirements.txt",
     "run.py",
-    "quant_flowchart.md",
-    "audit",
+    "project_layout.md",
+    "code_to_text.py",
+    "codex_custom_instructions.md",
     "configs",
-    "core",
     "pipeline",
     "tests",
     "data/L0_ohlcv_1m/*.py",
     "data/L1_mbp1/*.py",
     "data/market_sessions.yaml",
-    "_legacy",
-    "tools",
 ]
 
 

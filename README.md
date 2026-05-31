@@ -1,4 +1,4 @@
-# Deterministic Intraday Futures ML Backtester
+﻿# Deterministic Intraday Futures ML Backtester
 
 `run.py` is the main entrypoint for the full walk-forward pipeline.
 
@@ -7,30 +7,27 @@
 ```text
 configs/              profile and market configuration
 pipeline/common/      config, market metadata, atomic/canonical IO helpers
-data/                 local data utilities and session calendars
-pipeline/             feature, target, walk-forward, execution, analytics code
+pipeline/             ingest, features, targets, walk-forward, execution, analytics
+data/                 local data utilities, calendars, raw/vendor data
 run.py                top-level pipeline runner
 requirements.txt      Python dependencies
 ```
 
-Runtime outputs are written under `output/` and are intentionally git-ignored.
+Runtime artifacts are written under `output/` and are intentionally git-ignored.
+Reports now live under `output/reports/`; do not use a separate root `reports/` folder.
 
-Expected local data layout:
+Expected core data layout:
 
 ```text
 data/
-  ohlcv_1m/{market}/{year}.parquet
-  l1_mbp1/
-    raw_dbn/{market}/...
-    parquet/{market}/...
-    features/{market}/...
-    manifests/
+  L0_ohlcv_1m/{market}/{year}.parquet
+  L1_mbp1/{market}/*.dbn.zst
 ```
 
 Example:
 
 ```text
-data/ohlcv_1m/ES/2024.parquet
+data/L0_ohlcv_1m/ES/2024.parquet
 ```
 
 ## Setup
@@ -60,35 +57,34 @@ $env:LOG_MODE="debug"    # maximum diagnostics
 Main logs are written to:
 
 ```text
-output/logs/run_YYYYMMDD_HHMMSS_{profile}_{symbols}_{run_id}.log
+output/logs/YYYY-MM-DD_HH-MM-SS_MARKET_PROFILE_RUNID.log
 ```
 
 ## Data audits
 
 ```powershell
-python data/audit_core_data.py --root data --out output/audits/data_audit
-python data/audit_sessions.py --root data --config data/market_sessions.yaml --out output/audits/session_audit
+python data/L0_ohlcv_1m/audit_L0_ohlcv_1m.py --root data/L0_ohlcv_1m --out output/reports/data_audit
+python -m pipeline.data_gate.manifest build --root data/L0_ohlcv_1m --audit-dir output/reports/data_audit --out output/reports/data_audit/audit_manifest.json
 ```
 
-Audit commands may exit nonzero when they detect real data or calendar issues, but they still write CSV reports before exiting.
+Audit commands may exit nonzero when they detect real data/calendar issues, but they still write CSV reports before exiting.
 
 ## L1 Databento helper
 
 ```powershell
-python data/download_databento_L1_mbp1.py --dry-run-cost
-python data/download_databento_L1_mbp1.py
+python data/L1_mbp1/download_L1_mbp1_dbn.py --market ES --dry-run-cost
+python data/L1_mbp1/download_L1_mbp1_dbn.py --market ES
+python data/L1_mbp1/audit_L1_mbp1_parquet.py --out output/reports/L1_mbp1_parquet_audit
 ```
 
 Raw Databento `.dbn.zst` is already losslessly compressed. Keep it immutable under
-`data/l1_mbp1/raw_dbn/`; store derived/reduced Parquet under `data/l1_mbp1/parquet/`
-or features under `data/l1_mbp1/features/`.
+`data/L1_mbp1/{market}/`; store derived monthly Parquet separately from raw DBN files.
 
 Do not commit API keys. Use environment variables or a local `.env` file.
 
 ## Validation
 
 ```powershell
-python -m py_compile run.py
-python -m py_compile data/audit_core_data.py data/audit_sessions.py
+python -m py_compile run.py pipeline/data_gate/manifest.py code_to_text.py git_sync.py
 python -m pytest -q
 ```

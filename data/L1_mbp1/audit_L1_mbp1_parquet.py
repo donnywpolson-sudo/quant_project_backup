@@ -286,7 +286,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(Path(__file__).resolve().parent))
     ap.add_argument("--config", default=str(Path(__file__).resolve().parents[1] / "market_sessions.yaml"))
-    ap.add_argument("--out", default="output/audits/L1_mbp1_parquet_audit")
+    ap.add_argument("--out", default="output/reports/L1_mbp1_parquet_audit")
     ap.add_argument("--markets", nargs="*", default=None)
     ap.add_argument("--max-files", type=int, default=0)
     args = ap.parse_args()

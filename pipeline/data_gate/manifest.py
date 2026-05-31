@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-DEFAULT_MANIFEST_PATH = Path("reports/data_audit/audit_manifest.json")
+DEFAULT_MANIFEST_PATH = Path("output/reports/data_audit/audit_manifest.json")
 
 
 class DatasetGateError(RuntimeError):
