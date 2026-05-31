@@ -18,8 +18,10 @@ profiles:
 
   cme_globex_energy: &cme_globex_energy
     <<: *cme_globex_23h
+    week_start_time: "16:59"
+    week_end_time: "16:16"
     daily_break:
-      start: "16:15"
+      start: "16:16"
       end: "17:00"
     holiday_early_close_time: "13:30"
 
@@ -33,11 +35,13 @@ markets:
     <<: *cme_globex_energy
     early_closes:
       "2024-11-29": "13:45"
+      "2025-11-28": "13:45"
 
   NG:
     <<: *cme_globex_energy
     early_closes:
       "2024-11-29": "13:45"
+      "2025-11-28": "13:45"
 
   ES:
     <<: *cme_globex_23h

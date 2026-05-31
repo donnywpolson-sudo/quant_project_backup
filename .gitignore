@@ -12,7 +12,7 @@ env/
 
 # Runtime artifacts
 output/
-reports/                 # legacy location; use output/reports/
+reports/
 logs/
 cache/
 models/
@@ -26,13 +26,17 @@ audit/full_code.txt
 full_code.md
 
 # Local market data / vendor data
-data/ohlcv_1m/**/*.parquet
-data/L0_ohlcv_1m/**/*.parquet
+data/raw/**
+data/validated/**
+data/normalized/**
+data/continuous/**
+data/features/**
+data/ohlcv_1m/**
+data/L0_ohlcv_1m/**
+data/L1_mbp1/**
 data/l1_mbp1/raw_dbn/**
 data/l1_mbp1/parquet/**
 data/l1_mbp1/features/**
-data/L1_mbp1/**/*.parquet
-data/L1_mbp1/**/*.dbn.zst
 data_l1_mbp1/
 futures/
 *.parquet
