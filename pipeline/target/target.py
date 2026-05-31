@@ -1,37 +1,71 @@
-import polars as pl
 import logging
+
+import polars as pl
+
 from pipeline.common.config import config
 
 logger = logging.getLogger(__name__)
 
-from pipeline.target.triple_barrier import add_triple_barrier_target
-from pipeline.meta.meta_label import add_meta_label_target
 
-def add_target_5m(df: pl.DataFrame) -> pl.DataFrame:
-    horizon = config.TARGET_5M_HORIZON
-    # Full-horizon, execution-aligned target:
-    # signal at t enters at open[t+1] and exits
-    # at close[t+horizon]. For horizon=1 this is exactly next-bar open->close.
-    # Previously used close-to-close log return, which included the
-    # un-capturable close[t] -> open[t+1] gap — a structural mismatch
-    # between what the model predicted and what the execution engine traded.
-    exit_close = pl.col('close').shift(-horizon)
-    entry_open = pl.col('open').shift(-1)
-    forward_ret_raw = (exit_close - entry_open) / entry_open.clip(config.EPS, None)
-    df = df.with_columns([
-        (forward_ret_raw * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_5m'),
-        (forward_ret_raw > 0).cast(pl.Int8).alias('target_sign')
-    ])
-    return df
+def add_target_15m(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Primary supervised label.
+
+    On 1-minute bars, signal at bar t enters at open[t+1] and exits at
+    close[t+15].
+    That makes the label executable under execute_at=open[t+1] and avoids
+    close[t] -> open[t+1] gap leakage.
+    """
+    horizon = int(getattr(config, "TARGET_15M_HORIZON", 15))
+    eps = getattr(config, "EPS", 1e-9)
+    scale = getattr(config, "TARGET_SCALE_FACTOR", 100.0)
+    clip_min = getattr(config, "CLIP_MIN", -10.0)
+    clip_max = getattr(config, "CLIP_MAX", 10.0)
+    exit_close = pl.col("close").shift(-horizon)
+    entry_open = pl.col("open").shift(-1)
+    forward_ret_raw = (exit_close - entry_open) / entry_open.clip(eps, None)
+    return df.with_columns(
+        [
+            (forward_ret_raw * scale)
+            .clip(clip_min, clip_max)
+            .alias("target_15m_return"),
+            (forward_ret_raw > 0).cast(pl.Int8).alias("target_sign_15m"),
+        ]
+    )
+
+
+def add_target_daily_regime(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Daily context/filter column, not the model label.
+
+    Uses existing causal HTF daily trend if present. If HTF expansion is off,
+    emit neutral regime so downstream schemas stay stable.
+    """
+    if "htf_daily_trend_slope_10" in df.columns:
+        regime = (
+            pl.when(pl.col("htf_daily_trend_slope_10") > 0)
+            .then(1)
+            .when(pl.col("htf_daily_trend_slope_10") < 0)
+            .then(-1)
+            .otherwise(0)
+        )
+    else:
+        regime = pl.lit(0)
+    return df.with_columns(regime.cast(pl.Int8).alias("target_daily_regime"))
+
 
 def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
     filter_expr = None
-    for target_col in ('target_5m', 'target_4h', 'target_1h', 'target_tb'):
+    for target_col in ("target_15m_return", "target_sign_15m"):
         if target_col in df.columns:
             null_count = df[target_col].null_count()
             if null_count == df.height:
-                logger.warning('[TARGET] %s is entirely null (%d/%d rows) — skipping',
-                               target_col, null_count, df.height)
+                logger.warning(
+                    "[TARGET] %s is entirely null (%d/%d rows) - skipping",
+                    target_col,
+                    null_count,
+                    df.height,
+                )
                 continue
             col_filter = pl.col(target_col).is_not_null()
             filter_expr = col_filter if filter_expr is None else filter_expr & col_filter
@@ -39,39 +73,9 @@ def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
         return df
     before = df.height
     df = df.filter(filter_expr)
-    after = df.height
-    if after == 0 and before > 0:
+    if df.height == 0 and before > 0:
         raise RuntimeError(
-            'DROPNULL KILL: drop_incomplete_target collapsed %d rows to 0. '
-            'Check target columns for full-null cascade.' % before
+            "DROPNULL KILL: drop_incomplete_target collapsed %d rows to 0. "
+            "Check target columns for full-null cascade." % before
         )
-    return df
-
-def add_target_1h(df: pl.DataFrame) -> pl.DataFrame:
-    if '1h_ts_event' not in df.columns or '1h_close' not in df.columns:
-        return df
-    null_count = df['1h_ts_event'].null_count()
-    if null_count == df.height:
-        logger.warning('[TARGET] 1h_ts_event fully null (%d rows) — skipping target_1h', df.height)
-        return df
-    one_h = df.select(['1h_ts_event', '1h_close']).drop_nulls('1h_ts_event').unique(subset=['1h_ts_event']).sort('1h_ts_event')
-    if one_h.height == 0:
-        logger.warning('[TARGET] no valid 1h rows after drop_nulls — skipping target_1h')
-        return df
-    one_h = one_h.with_columns((pl.col('1h_close').shift(-1).log() - pl.col('1h_close').log()).alias('forward_ret_1h_raw'))
-    df = df.join(one_h.select(['1h_ts_event', (pl.col('forward_ret_1h_raw') * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_1h'), (pl.col('forward_ret_1h_raw') > 0).cast(pl.Int8).alias('target_sign_1h')]), on='1h_ts_event', how='left')
-    return df
-
-def add_target_4h(df: pl.DataFrame) -> pl.DataFrame:
-    H_BARS = int(4 * 60 / 5)
-    exit_close = pl.col('close').shift(-H_BARS)
-    entry_open = pl.col('open').shift(-1)
-    forward_ret_raw = (exit_close - entry_open) / entry_open.clip(config.EPS, None)
-    close_to_close_raw = pl.col('close').shift(-H_BARS).log() - pl.col('close').log()
-    df = df.with_columns([
-        (forward_ret_raw * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_4h'),
-        (forward_ret_raw > 0).cast(pl.Int8).alias('target_sign_4h'),
-        (close_to_close_raw * config.TARGET_SCALE_FACTOR).clip(config.CLIP_MIN, config.CLIP_MAX).alias('target_4h_close_to_close'),
-        (close_to_close_raw > 0).cast(pl.Int8).alias('target_sign_4h_close_to_close'),
-    ])
     return df

@@ -10,7 +10,9 @@ from pipeline.common.config import config
 
 
 class RiskGateError(RuntimeError):
-    pass
+    def __init__(self, message: str, report: dict | None = None):
+        super().__init__(message)
+        self.report = report
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -125,7 +127,7 @@ def run_risk_gates(df: pl.DataFrame, *, context: dict | None = None) -> dict:
     }
     if failed:
         sample = "; ".join(f'{g["name"]} value={g["value"]} limit={g["limit"]}' for g in failed)
-        raise RiskGateError(f"RISK FAIL: {sample}")
+        raise RiskGateError(f"RISK FAIL: {sample}", report=report)
     print(
         f'[RISK] PASS rows={df.height} pnl={total_pnl:.2f} '
         f'max_dd={max_drawdown_pct:.4%} min_daily_pnl={min_daily_pnl:.2f} '

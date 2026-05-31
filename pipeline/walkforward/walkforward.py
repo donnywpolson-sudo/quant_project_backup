@@ -188,13 +188,9 @@ def _hash_col(df, col):
 
 
 def _label_horizon_minutes(target_col: str) -> int:
-    if target_col in {'target_4h', 'target_sign_4h'}:
-        return 4 * 60
-    if target_col == 'target_tb':
-        return 64 * 5
-    if target_col in {'target_5m', 'target_sign'}:
-        return int(getattr(config, 'TARGET_5M_HORIZON', 1)) * 5
-    return max(4 * 60, 64 * 5)
+    if target_col in {'target_15m_return', 'target_sign_15m'}:
+        return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
+    return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
 
 
 def _purge_train_tail_for_label_horizon(
@@ -251,7 +247,7 @@ def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fol
     pmin = float(np.min(probs))
     pmax = float(np.max(probs))
     ic = 'missing'
-    for tcol in ('target_4h', 'target_5m', 'target_1h', 'target_tb'):
+    for tcol in ('target_15m_return',):
         if tcol in test_original.columns:
             ic_val = _safe_corr(probs, test_original[tcol].to_numpy())
             if not np.isnan(ic_val):
@@ -600,7 +596,7 @@ def run_walkforward_with_hmm(
     X: pl.DataFrame,
     y: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign',
+    target_col: str = 'target_sign_15m',
     hmm_retrain_interval: int = 5,
 ) -> Tuple[pl.DataFrame, dict]:
     """
@@ -730,7 +726,7 @@ def run_walkforward_with_hmm(
     return df_hmm, validation_dict
 
 
-def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target_col: str='target_sign') -> pl.DataFrame:
+def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target_col: str='target_sign_15m') -> pl.DataFrame:
     df = X.with_columns(y)
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
@@ -1025,7 +1021,7 @@ def run_walkforward_modeling(
     train_df: pl.DataFrame,
     test_df: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign',
+    target_col: str = 'target_sign_15m',
 ) -> pl.DataFrame:
     """Step 7 boundary: train on train window and produce OOS test predictions."""
     validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
@@ -1044,7 +1040,7 @@ def run_walkforward_modeling_with_hmm(
     train_df: pl.DataFrame,
     test_df: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign',
+    target_col: str = 'target_sign_15m',
 ) -> Tuple[pl.DataFrame, dict]:
     validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
     print(
@@ -1061,7 +1057,7 @@ def run_walkforward_modeling_with_hmm(
 
 
 def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                              feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
+                              feature_cols: list, target_col: str = 'target_sign_15m') -> pl.DataFrame:
     if train_df.height == 0:
         raise RuntimeError('OUTER-TRUE FAILURE: empty train_df')
     if test_df.height == 0:
@@ -1117,7 +1113,7 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
 
 
 def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                                       feature_cols: list, target_col: str = 'target_sign'
+                                       feature_cols: list, target_col: str = 'target_sign_15m'
                                        ) -> Tuple[pl.DataFrame, dict]:
     if TYPE_CHECKING:
         from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter

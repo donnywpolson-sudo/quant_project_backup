@@ -112,7 +112,7 @@ class SessionConfig(BaseModel):
 
 
 class FeaturesConfig(BaseModel):
-    resample_frequencies: list[str] = Field(default_factory=lambda: ["5m", "1h", "1d"])
+    resample_frequencies: list[str] = Field(default_factory=lambda: ["1m"])
     drop_incomplete_rows: bool = True
     roll_windows: list[int] = Field(default_factory=lambda: [5, 10, 20, 50])
     roll_windows_1h: list[int] = Field(default_factory=lambda: [2, 4, 6, 12])
@@ -141,7 +141,7 @@ class FeaturesConfig(BaseModel):
 
 
 class TargetConfig(BaseModel):
-    target_5m_horizon: int = 1
+    target_15m_horizon: int = 15
     target_scale_factor: float = 100.0
 
 
@@ -185,7 +185,8 @@ class WalkforwardConfig(BaseModel):
     enable_meta_labeling: bool = False
     meta_threshold: float = 0.5
     mode: str = ""  # "" = inner bar-fold walkforward, "outer_split" = single train→test pass
-    discovery_target: str = "target_sign_4h"
+    discovery_target: str = "target_sign_15m"
+    walkforward_target: str = "target_sign_15m"
 
 
 class ExecutionConfig(BaseModel):
@@ -233,6 +234,7 @@ class PipelineConfig(BaseModel):
 
 
 class DataSectionConfig(BaseModel):
+    root: str = "data/L0_ohlcv_1m"
     data_glob: str = "data/futures/*.parquet"
     manifest_path: str = "output/manifest.json"
     baseline_features_file: str = "configs/baseline_features.yaml"
@@ -356,6 +358,7 @@ def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config
     c = cfg  # shorthand
 
     # -- data paths ----------------------------------------------------------
+    config.DATA_ROOT = c.data.root
     config.DATA_GLOB = c.data.data_glob
     config.MANIFEST_PATH = c.data.manifest_path
     config.BASELINE_FEATURES_FILE = c.data.baseline_features_file
@@ -398,7 +401,7 @@ def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config
     config.REGIME_MISSING_DEFAULT = c.features.regime_missing_default
 
     # -- target --------------------------------------------------------------
-    config.TARGET_5M_HORIZON = c.target.target_5m_horizon
+    config.TARGET_15M_HORIZON = c.target.target_15m_horizon
     config.TARGET_SCALE_FACTOR = c.target.target_scale_factor
 
     # -- discovery -----------------------------------------------------------
@@ -424,7 +427,8 @@ def _populate_simple_namespace(cfg: RootConfig, active_profile: str = "", config
     config.ENABLE_META_LABELING = c.walkforward.enable_meta_labeling
     config.META_THRESHOLD = c.walkforward.meta_threshold
     config.WF_MODE = c.walkforward.mode
-    config.DISCOVERY_TARGET = getattr(c.walkforward, 'discovery_target', 'target_sign_4h')
+    config.DISCOVERY_TARGET = getattr(c.walkforward, 'discovery_target', 'target_sign_15m')
+    config.WALKFORWARD_TARGET = getattr(c.walkforward, 'walkforward_target', c.walkforward.discovery_target)
 
     # -- execution -----------------------------------------------------------
     config.EXECUTE_AT = c.execution.execute_at

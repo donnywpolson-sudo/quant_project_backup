@@ -16,7 +16,7 @@ def _result() -> pl.DataFrame:
             "ts_event": [start + timedelta(minutes=5 * i) for i in range(3)],
             "prediction_prob": [0.40, 0.50, 0.60],
             "raw_signal": [-1.0, 0.0, 1.0],
-            "target_sign_4h": [0, 1, 1],
+            "target_sign_15m": [0, 1, 1],
             "pnl": [1.0, -1.0, 0.5],
             "position": [0.0, -1.0, 0.0],
         }
@@ -28,9 +28,9 @@ def _result() -> pl.DataFrame:
 
 
 def test_build_oos_prediction_frame_projects_prediction_columns_only():
-    out = build_oos_prediction_frame(_result(), target_col="target_sign_4h")
+    out = build_oos_prediction_frame(_result(), target_col="target_sign_15m")
 
-    assert out.columns == ["ts_event", "prediction_prob", "raw_signal", "target_sign_4h"]
+    assert out.columns == ["ts_event", "prediction_prob", "raw_signal", "target_sign_15m"]
     assert out.height == 3
 
 

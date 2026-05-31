@@ -14,7 +14,7 @@ import json
 import hashlib
 import threading
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
 import polars as pl
@@ -1010,25 +1010,9 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
             except Exception:
                 pass
         shutil.copy2(f, dst)
-    train_glob = str(train_dir / '*.parquet')
-    manifest_path = Path('output') / f"manifest_{'_'.join(map(str, train_years))}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}.json"
     env = os.environ.copy()
     env['TQDM_DISABLE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
-    if config.pipeline.enable_discovery:
-        discover_cmd = [sys.executable, '-m', 'pipeline.cli', 'discover',
-                        '--data', train_glob, '--out', str(manifest_path)]
-        if train_start and train_end:
-            discover_cmd.extend(['--start', train_start.isoformat(), '--end', train_end.isoformat()])
-        _run_subprocess_streaming(discover_cmd, env)
-        time.sleep(0.2)
-    else:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = str(manifest_path) + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump({'version': '1.0', 'feature_names': [], 'selection_seed': config.preprocessing.seed,
-                       'selection_date': 'placeholder', 'discovery_status': 'disabled'}, f)
-        os.replace(tmp, str(manifest_path))
     per_symbol = {}
     for f in test_files:
         symbol = f.parent.name
@@ -1052,6 +1036,29 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 error='invalid_or_empty_raw_data',
             ))
             continue
+        train_glob = str(train_dir / f'{symbol}_*.parquet')
+        manifest_path = Path('output') / f"manifest_{symbol}_{'_'.join(map(str, train_years))}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}.json"
+        if config.pipeline.enable_discovery:
+            symbol_train_files = sorted(train_dir.glob(f'{symbol}_*.parquet'))
+            if not symbol_train_files:
+                raise RuntimeError(
+                    f'MULTI-SYMBOL DISCOVERY FAIL: no train files for symbol={symbol} '
+                    f'in {train_dir}. Refusing to use a cross-symbol manifest.'
+                )
+            discover_cmd = [sys.executable, '-m', 'pipeline.cli', 'discover',
+                            '--data', train_glob, '--out', str(manifest_path)]
+            if train_start and train_end:
+                discover_cmd.extend(['--start', train_start.isoformat(), '--end', train_end.isoformat()])
+            _raw_log(f'[DISCOVERY-CMD] symbol={symbol} {" ".join(discover_cmd)}')
+            _run_subprocess_streaming(discover_cmd, env)
+            time.sleep(0.2)
+        else:
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(manifest_path) + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({'version': '1.0', 'feature_names': [], 'selection_seed': config.preprocessing.seed,
+                           'selection_date': 'placeholder', 'discovery_status': 'disabled'}, f)
+            os.replace(tmp, str(manifest_path))
         out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}'
         out_dir.mkdir(parents=True, exist_ok=True)
         # Purge stale backtest files from previous runs
@@ -1197,6 +1204,13 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                     assert bt_t_max < ts_end, (
                         f'BOUNDARY VIOLATION: {symbol} split={split_idx} bt_t_max={bt_t_max} >= test_end={ts_end}'
                     )
+                    horizon_min = int(getattr(_ns_cfg, 'TARGET_15M_HORIZON', 15)) * 5
+                    safe_label_end = ts_end - timedelta(minutes=horizon_min)
+                    assert bt_t_max < safe_label_end, (
+                        f'TARGET BOUNDARY VIOLATION: {symbol} split={split_idx} '
+                        f'bt_t_max={bt_t_max} >= test_end-horizon={safe_label_end}. '
+                        f'Test labels would require data beyond the exclusive test_end.'
+                    )
                 pnl_cs = _hash_column(bt, 'pnl')
                 pred_cs = _hash_column(bt, 'prediction_prob')
                 from pipeline.analytics.aggregate import compute_backtest_metrics
@@ -1280,7 +1294,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
 if __name__ == '__main__':
     config = load_config(os.environ.get('CONFIG_ENV') or os.environ.get('QUANT_ENV'))
     _PROGRESS.rename_for_config(_ns_cfg.ACTIVE_PROFILE, config.symbols)
-    data_dir = 'data'
+    data_dir = getattr(_ns_cfg, 'DATA_ROOT', 'data/L0_ohlcv_1m')
     files = get_files(data_dir, config)
     if not files:
         logger.warning('No files found after filtering')
@@ -1291,8 +1305,8 @@ if __name__ == '__main__':
                 files,
                 symbols=config.symbols,
                 manifest_path=os.environ.get('QUANT_AUDIT_MANIFEST', 'output/reports/data_audit/audit_manifest.json'),
-                required=os.environ.get('QUANT_REQUIRE_DATASET_GATE', '0') == '1',
-                check_hash=os.environ.get('QUANT_DATASET_GATE_HASH', '0') == '1',
+                required=os.environ.get('QUANT_REQUIRE_DATASET_GATE', '1') == '1',
+                check_hash=os.environ.get('QUANT_DATASET_GATE_HASH', '1') == '1',
             )
         except DatasetGateError as exc:
             raise SystemExit(str(exc)) from exc

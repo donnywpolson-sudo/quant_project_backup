@@ -12,7 +12,7 @@ def _df() -> pl.DataFrame:
         {
             "ts_event": [start + timedelta(days=i) for i in range(5)],
             "feature_ret_1": [0.1, 0.2, 0.3, 0.4, 0.5],
-            "target_sign_4h": [1, 0, 1, 0, 1],
+            "target_sign_15m": [1, 0, 1, 0, 1],
         }
     ).with_columns(
         pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC"))

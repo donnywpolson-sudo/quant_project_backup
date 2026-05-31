@@ -12,6 +12,6 @@ def test_load_market_config_applies_nested_risk_overrides(monkeypatch):
     load_market_config("ES")
 
     assert config.MAX_LEVERAGE == 3.0
-    assert config.SLIPPAGE_K == 0.0005
-    assert config.VOL_PENALTY == 0.002
     assert config.MAX_POSITION_SIZE == 50
+    assert config.SLIPPAGE_K == 0.0
+    assert config.VOL_PENALTY == 0.0

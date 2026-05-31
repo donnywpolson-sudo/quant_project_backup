@@ -39,7 +39,10 @@ def load_market_config(symbol: str):
     def _cfg_value(key: str):
         return market_cfg.get(key, risk_cfg.get(key))
 
-    overrides = {'ROLL_WINDOWS': market_cfg.get('roll_windows'), 'ROLL_WINDOWS_1H': market_cfg.get('roll_windows_1h'), 'ROLL_WINDOWS_DAILY': market_cfg.get('roll_windows_daily'), 'REGIME_HIGH_THRESH': market_cfg.get('regime_high_thresh'), 'REGIME_LOW_THRESH': market_cfg.get('regime_low_thresh'), 'HTF_TREND_WINDOWS': market_cfg.get('htf_trend_windows'), 'HTF_VOLATILITY_WINDOWS': market_cfg.get('htf_volatility_windows'), 'SLIPPAGE_K': _cfg_value('slippage_k'), 'VOL_PENALTY': _cfg_value('vol_penalty'), 'COMMISSION_PER_TRADE': _cfg_value('commission_per_trade'), 'MAX_LEVERAGE': _cfg_value('max_leverage'), 'TARGET_VOL': _cfg_value('target_vol'), 'MAX_POSITION_SIZE': _cfg_value('max_position_size')}
+    # Market YAML risk fields define instrument limits.  Execution-cost
+    # assumptions stay profile-controlled so alpha_0 remains a zero-cost
+    # signal-quality baseline; use an explicit cost profile for net testing.
+    overrides = {'ROLL_WINDOWS': market_cfg.get('roll_windows'), 'ROLL_WINDOWS_1H': market_cfg.get('roll_windows_1h'), 'ROLL_WINDOWS_DAILY': market_cfg.get('roll_windows_daily'), 'REGIME_HIGH_THRESH': market_cfg.get('regime_high_thresh'), 'REGIME_LOW_THRESH': market_cfg.get('regime_low_thresh'), 'HTF_TREND_WINDOWS': market_cfg.get('htf_trend_windows'), 'HTF_VOLATILITY_WINDOWS': market_cfg.get('htf_volatility_windows'), 'MAX_LEVERAGE': _cfg_value('max_leverage'), 'MAX_POSITION_SIZE': _cfg_value('max_position_size')}
     for attr, value in overrides.items():
         if value is not None:
             setattr(config, attr, value)

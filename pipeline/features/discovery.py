@@ -383,31 +383,12 @@ def run_feature_discovery(
         ).drop('_row')
 
     # --- Feature column selection ---
-    # Use same target as walkforward (configurable, defaults to target_sign_4h for
-    # consistency with the 4h-direction model). Previously hardcoded target_tb which
-    # was fully null in this dataset, causing 0-sample discovery.
-    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_sign_4h')
+    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_sign_15m')
     if target_col not in df_features.columns:
-        logger.warning(
-            'Discovery target "%s" not found in feature matrix — falling back to target_tb',
-            target_col,
+        raise ValueError(
+            f'DISCOVERY FAILURE: configured target {target_col!r} not found. '
+            'This pipeline expects one primary discovery target: target_sign_15m.'
         )
-        target_col = 'target_tb'
-        if target_col not in df_features.columns:
-            raise ValueError(f'No valid target column found (tried {getattr(config, "DISCOVERY_TARGET", "target_sign_4h")!r} and target_tb).')
-    # Hard-fail if the fallback target (target_tb) is fully null —
-    # a silent empty manifest causes downstream signal collapse.
-    if target_col == 'target_tb':
-        y_check = df_features.select(target_col).to_numpy().ravel()
-        nn_check = np.sum(~np.isnan(y_check))
-        if nn_check == 0:
-            raise RuntimeError(
-                f'DISCOVERY FAILURE: fallback target "{target_col}" is entirely NaN '
-                f'(0 non-null out of {len(y_check)} rows). The configured target '
-                f'"{getattr(config, "DISCOVERY_TARGET", "target_sign_4h")}" was not found '
-                f'in the feature matrix. Add the target column to feature generation or '
-                f'set walkforward.discovery_target to an available column.'
-            )
 
     exclude_cols = {
         'ts_event', 'open', 'high', 'low', 'close', 'volume',

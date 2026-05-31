@@ -37,8 +37,8 @@ def _matrix() -> pl.DataFrame:
             "close": [10.5, 11.5],
             "volume": [100, 101],
             "session_id": ["a", "a"],
-            "target_sign_4h": [1, 0],
-            "target_4h": [0.1, -0.1],
+            "target_sign_15m": [1, 0],
+            "target_15m_return": [0.1, -0.1],
             "feature_ret_1": [0.01, 0.02],
             "ratio_x": [1.0, 2.0],
             "continuous_price": [10.5, 11.5],
@@ -50,11 +50,11 @@ def test_apply_frozen_feature_manifest_keeps_only_selected_features(tmp_path):
     manifest = tmp_path / "manifest.json"
     _write_manifest(manifest, ["feature_ret_1"])
 
-    out = apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_4h")
+    out = apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_15m")
 
     assert "feature_ret_1" in out.columns
     assert "ratio_x" not in out.columns
-    assert "target_sign_4h" in out.columns
+    assert "target_sign_15m" in out.columns
     assert "continuous_price" not in out.columns
 
 
@@ -63,12 +63,12 @@ def test_frozen_manifest_rejects_missing_selected_feature(tmp_path):
     _write_manifest(manifest, ["feature_missing"])
 
     with pytest.raises(RuntimeError, match="selected features missing"):
-        apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_4h")
+        apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_15m")
 
 
 def test_frozen_manifest_rejects_target_as_feature(tmp_path):
     manifest = tmp_path / "manifest.json"
-    _write_manifest(manifest, ["target_4h"])
+    _write_manifest(manifest, ["target_15m_return"])
 
     with pytest.raises(RuntimeError, match="invalid selected features"):
         load_frozen_feature_manifest(str(manifest))

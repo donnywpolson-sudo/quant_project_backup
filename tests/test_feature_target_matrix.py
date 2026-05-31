@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from pipeline.features import engine
+from pipeline.target.target import add_target_15m, add_target_daily_regime
 
 
 def _feature_target_df() -> pl.DataFrame:
@@ -12,12 +13,12 @@ def _feature_target_df() -> pl.DataFrame:
         {
             "ts_event": [start + timedelta(minutes=5 * i) for i in range(3)],
             "feature_ret_1": [0.1, 0.2, 0.3],
-            "target_sign_4h": [1, 0, 1],
+            "target_sign_15m": [1, 0, 1],
         }
     ).with_columns(
         pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC")),
         pl.col("feature_ret_1").cast(pl.Float32),
-        pl.col("target_sign_4h").cast(pl.Int8),
+        pl.col("target_sign_15m").cast(pl.Int8),
     )
 
 
@@ -34,7 +35,7 @@ def test_feature_target_matrix_cache_roundtrip(tmp_path, monkeypatch):
     built = engine.load_or_build_feature_target_matrix(
         pl.DataFrame({"dummy": [1]}),
         cache_path=cache_path,
-        target_col="target_sign_4h",
+        target_col="target_sign_15m",
     )
 
     assert calls["n"] == 1
@@ -48,7 +49,7 @@ def test_feature_target_matrix_cache_roundtrip(tmp_path, monkeypatch):
     loaded = engine.load_or_build_feature_target_matrix(
         pl.DataFrame({"dummy": [1]}),
         cache_path=cache_path,
-        target_col="target_sign_4h",
+        target_col="target_sign_15m",
     )
 
     assert loaded.height == 3
@@ -56,7 +57,38 @@ def test_feature_target_matrix_cache_roundtrip(tmp_path, monkeypatch):
 
 def test_feature_target_matrix_rejects_null_target():
     bad = _feature_target_df().with_columns(
-        pl.Series("target_sign_4h", [1, None, 0], dtype=pl.Int8)
+        pl.Series("target_sign_15m", [1, None, 0], dtype=pl.Int8)
     )
-    with pytest.raises(RuntimeError, match="null values in target_sign_4h"):
-        engine.validate_feature_target_matrix(bad, target_col="target_sign_4h")
+    with pytest.raises(RuntimeError, match="null values in target_sign_15m"):
+        engine.validate_feature_target_matrix(bad, target_col="target_sign_15m")
+
+
+def test_target_15m_is_execution_aligned():
+    start = datetime(2024, 1, 2, 14, 30, tzinfo=timezone.utc)
+    n = 20
+    df = pl.DataFrame(
+        {
+            "ts_event": [start + timedelta(minutes=i) for i in range(n)],
+            "open": [100.0 + i for i in range(n)],
+            "high": [101.0 + i for i in range(n)],
+            "low": [99.0 + i for i in range(n)],
+            "close": [100.5 + i for i in range(n)],
+        }
+    ).with_columns(pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC")))
+
+    out = add_target_15m(df)
+
+    expected = (115.5 - 101.0) / 101.0 * 100.0
+    assert expected > 10.0
+    assert out["target_15m_return"][0] == pytest.approx(10.0)
+    assert out["target_sign_15m"][0] == 1
+    assert out["target_15m_return"].null_count() == 15
+
+
+def test_daily_regime_is_not_primary_label():
+    df = _feature_target_df().with_columns(
+        pl.Series("htf_daily_trend_slope_10", [-0.1, 0.0, 0.2], dtype=pl.Float32)
+    )
+    out = add_target_daily_regime(df)
+
+    assert out["target_daily_regime"].to_list() == [-1, 0, 1]

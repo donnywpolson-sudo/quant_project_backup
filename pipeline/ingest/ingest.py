@@ -88,8 +88,18 @@ def _canonical_cache_file(base_path: str | Path, freq: str) -> Path:
 
 
 def _canonical_cache_files(base_path: str | Path) -> dict[str, Path]:
-    freqs = list(getattr(config, 'RESAMPLE_FREQUENCIES', ['5m']))
+    freqs = list(getattr(config, 'RESAMPLE_FREQUENCIES', ['1m']))
     return {freq: _canonical_cache_file(base_path, freq) for freq in freqs}
+
+
+def _primary_bar_freq(streams: dict[str, pl.DataFrame]) -> str:
+    for freq in ('1m', '5m'):
+        if freq in streams:
+            return freq
+    raise ValueError(
+        f'CANONICAL FAIL: no executable bar stream found. '
+        f'Need 1m preferred or 5m fallback; available={sorted(streams)}'
+    )
 
 
 def load_or_build_canonical_streams(
@@ -100,7 +110,7 @@ def load_or_build_canonical_streams(
     Step 2 artifact boundary: schema/session-normalized canonical streams.
 
     Produces one parquet per configured frequency:
-      canonical_data_<tag>_5m.parquet
+      canonical_data_<tag>_1m.parquet
       canonical_data_<tag>_1h.parquet
       canonical_data_<tag>_1d.parquet
 
@@ -118,8 +128,8 @@ def load_or_build_canonical_streams(
     streams = load_all_streams_chunked(data_glob)
 
     from pipeline.session.gap_filter import filter_gaps
-    if '5m' in streams:
-        streams['5m'] = filter_gaps(streams['5m'], max_gap_minutes=30)
+    primary_freq = _primary_bar_freq(streams)
+    streams[primary_freq] = filter_gaps(streams[primary_freq], max_gap_minutes=30)
 
     for freq, df in list(streams.items()):
         streams[freq] = validate_canonical_stream(df, freq)
@@ -152,6 +162,26 @@ def validate_aligned_continuous(df: pl.DataFrame) -> pl.DataFrame:
         raise ValueError('ALIGNED/CONTINUOUS FAIL: non-positive contract_multiplier')
     if (df['continuous_price'] <= 0).any():
         raise ValueError('ALIGNED/CONTINUOUS FAIL: non-positive continuous_price')
+    if 'cumulative_factor' in df.columns:
+        max_err = (
+            df.select(
+                ((pl.col('continuous_price') - (pl.col('close') * pl.col('cumulative_factor'))).abs())
+                .max()
+                .alias('max_err')
+            )['max_err'][0]
+        )
+        if max_err is not None and max_err > 1e-3:
+            raise ValueError(
+                f'ALIGNED/CONTINUOUS FAIL: continuous_price != close*cumulative_factor '
+                f'(max_err={max_err})'
+            )
+    for c in ('continuous_open', 'continuous_high', 'continuous_low'):
+        if (df[c] <= 0).any():
+            raise ValueError(f'ALIGNED/CONTINUOUS FAIL: non-positive {c}')
+    if 'front_contract' in df.columns and 'back_contract' in df.columns:
+        # If raw contract identifiers exist, roll metadata must not be fully null.
+        if df['front_contract'].null_count() == df.height and df['back_contract'].null_count() == df.height:
+            raise ValueError('ALIGNED/CONTINUOUS FAIL: raw roll contract metadata is fully null')
     return df
 
 
@@ -174,12 +204,13 @@ def load_or_build_aligned_continuous_data(
 
     print('[ALIGNED] Building aligned/continuous data from canonical streams.', flush=True)
     streams = load_or_build_canonical_streams(data_glob, cache_path=canonical_cache_path)
-    df_5min = streams['5m']
+    primary_freq = _primary_bar_freq(streams)
+    df_primary = streams[primary_freq]
     df_1h = streams.get('1h')
     df_daily = streams.get('1d')
 
     print('[ALIGNED] Aligning HTF streams...', flush=True)
-    df_aligned = align_htf_streams(df_5min, df_1h, df_daily)
+    df_aligned = align_htf_streams(df_primary, df_1h, df_daily)
     validate_memory_and_integrity(df_aligned)
 
     symbol = detect_symbol_from_path(data_glob)
@@ -211,17 +242,18 @@ def _load_cross_asset_feature(secondary_symbol: str, primary_path: Path) -> pl.D
     )
     try:
         streams = load_all_streams_chunked(secondary_glob)
-        df_5min = streams['5m']
-        df_5min = df_5min.with_columns(
+        primary_freq = _primary_bar_freq(streams)
+        df_primary = streams[primary_freq]
+        df_primary = df_primary.with_columns(
             (pl.col('close') / pl.col('close').shift(1)).log().alias(
                 f'{secondary_symbol}_ret_1'
             )
         )
-        df_5min = df_5min.select(['ts_event', f'{secondary_symbol}_ret_1'])
+        df_primary = df_primary.select(['ts_event', f'{secondary_symbol}_ret_1'])
         logger.info(
-            f'Loaded cross-asset features for {secondary_symbol}, {df_5min.height} rows'
+            f'Loaded cross-asset features for {secondary_symbol}, {df_primary.height} rows'
         )
-        return df_5min
+        return df_primary
     except Exception as e:
         logger.warning(
             f'Could not load cross-asset features for {secondary_symbol}: {e}'

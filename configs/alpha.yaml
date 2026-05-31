@@ -10,6 +10,9 @@ base:
   time_zone: "America/New_York"
   log_level: "INFO"
 
+  data:
+    root: "data/L0_ohlcv_1m"
+
   session:
     timezone: "America/New_York"
     session_start_local: "18:00"
@@ -18,7 +21,7 @@ base:
     session_break_end_local: "18:00"
 
   features:
-    resample_frequencies: ["5m"]
+    resample_frequencies: ["1m"]
     drop_incomplete_rows: true
     roll_windows: [5, 10, 20]
     roll_window_min_rows: 20
@@ -33,7 +36,7 @@ base:
     regime_missing_default: 0.0
 
   target:
-    target_5m_horizon: 48
+    target_15m_horizon: 15
     target_scale_factor: 100.0
 
   discovery:
@@ -68,6 +71,8 @@ base:
     wf_parallel_folds: 1
     enable_meta_labeling: false
     meta_threshold: 0.5
+    discovery_target: "target_sign_15m"
+    walkforward_target: "target_sign_15m"
 
   execution:
     execute_at: "open[t+1]"

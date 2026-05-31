@@ -10,9 +10,7 @@ from pipeline.features.baseline import compute_baseline_features, load_baseline_
 from pipeline.features.expansion import expand_features, add_cross_timeframe_interactions
 from pipeline.features.htf_context import add_htf_context_features
 from pipeline.features.volume_profile import add_volume_profile_features
-from pipeline.target.target import add_target_5m, add_target_1h, add_target_4h
-from pipeline.target.triple_barrier import add_triple_barrier_target
-from pipeline.meta.meta_label import add_meta_label_target
+from pipeline.target.target import add_target_15m, add_target_daily_regime
 logger = logging.getLogger(__name__)
 
 _FEATURE_PREFIXES = ('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_')
@@ -130,22 +128,19 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
                 df.height, df['ts_event'].min(), df['ts_event'].max())
 
     # Hard-gate BEFORE any target computation — validate data sufficiency + time integrity.
-    # Triple-barrier uses 64-bar horizon, target_4h uses 48 bars; validate against max.
-    validate_target_feasibility(df, horizon=64)
+    validate_target_feasibility(df, horizon=int(getattr(config, 'TARGET_15M_HORIZON', 15)))
 
     # Forward-fill missing intraday bars (60-480 min gaps: data feed outages).
     # Gaps > 480 min (weekends, holidays) are left as genuine closures.
     df = _stage(df, 'fill_intraday_gaps', fill_intraday_gaps)
 
-    # ---- STEP 2: HTF context (columns needed by target_1h) ----
+    # ---- STEP 2: optional HTF context used as features/filters, not labels ----
     if config.ENABLE_EXPANSION:
         df = _stage(df, 'htf_context', add_htf_context_features)
 
     # ---- STEP 3: TARGETS (computed FIRST, before features) ----
-    df = _stage(df, 'target_5m', add_target_5m)
-    df = _stage(df, 'target_1h', add_target_1h)
-    df = _stage(df, 'target_4h', add_target_4h)
-    df = _stage(df, 'triple_barrier', add_triple_barrier_target)
+    df = _stage(df, 'target_15m', add_target_15m)
+    df = _stage(df, 'daily_regime_filter', add_target_daily_regime)
     logger.info('[CANONICAL] Step 3 targets computed: %d rows', df.height)
 
     # ---- STEP 4: FEATURES (derived AFTER targets exist) ----
@@ -164,9 +159,7 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 
     # ---- STEP 5: FILTER (explicit mask on target NaNs) ----
     # Build mask from all target columns BEFORE filtering — preserves alignment.
-    # Skip target columns that are entirely NaN (e.g., target_1h when HTF data
-    # is unavailable) to avoid a single null column collapsing the whole dataset.
-    filter_cols = [c for c in ('target_5m', 'target_4h', 'target_1h', 'target_tb') if c in df.columns]
+    filter_cols = [c for c in ('target_15m_return', 'target_sign_15m') if c in df.columns]
     before = df.height
     mask = None
     full_nan_cols = []
@@ -207,7 +200,7 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 
 def validate_feature_target_matrix(
     df: pl.DataFrame,
-    target_col: str = 'target_sign_4h',
+    target_col: str = 'target_sign_15m',
 ) -> pl.DataFrame:
     if df.is_empty():
         raise RuntimeError('FEATURE/TARGET FAIL: matrix is empty')
@@ -238,7 +231,7 @@ def validate_feature_target_matrix(
 def load_or_build_feature_target_matrix(
     df_aligned: pl.DataFrame,
     cache_path: str | Path | None = None,
-    target_col: str = 'target_sign_4h',
+    target_col: str = 'target_sign_15m',
 ) -> pl.DataFrame:
     """
     Step 4 artifact boundary: feature + target matrix.

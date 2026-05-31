@@ -84,19 +84,23 @@ def resample_to_frequency(df: pl.DataFrame, freq: str) -> pl.DataFrame:
     agg = agg.sort(['session_id', 'ts_event'])
     if freq == '1d':
         agg = agg.with_columns(pl.col('close').log().alias('log_close'))
-        # Daily data is already one row per session — shift(1) over session_id
-        # is correct here because each row is a separate session.
-        agg = agg.with_columns((pl.col('log_close') - pl.col('log_close').shift(1).over('session_id')).alias('daily_log_return'))
-        agg = agg.with_columns(pl.col('daily_log_return').rolling_std(window_size=5).alias('daily_vol_5'))
+        # One row per session. Do not shift over session_id: each group has one
+        # row, so that makes every daily return null.
+        agg = agg.with_columns(
+            (pl.col('log_close') - pl.col('log_close').shift(1)).alias('daily_log_return')
+        )
+        agg = agg.with_columns(
+            pl.col('daily_log_return')
+            .rolling_std(window_size=5, min_periods=2)
+            .alias('daily_vol_5')
+        )
         agg = agg.with_columns(
             pl.col('daily_vol_5')
             .fill_null(strategy='forward')
-            .over('session_id')
             .fill_null(strategy='backward')
-            .over('session_id')
             .fill_null(0.0)
         )
-        agg = agg.drop(['log_close', 'daily_log_return'])
+        agg = agg.drop(['log_close'])
     agg = agg.with_columns(pl.col('ts_event').dt.convert_time_zone('UTC').alias('ts_event'))
     agg = agg.with_columns([
         pl.col('open').cast(pl.Float32),

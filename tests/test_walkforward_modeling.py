@@ -14,12 +14,12 @@ def _df(start: datetime, n: int) -> pl.DataFrame:
         {
             "ts_event": [start + timedelta(minutes=5 * i) for i in range(n)],
             "feature_ret_1": [float(i) for i in range(n)],
-            "target_sign": [i % 2 for i in range(n)],
+            "target_sign_15m": [i % 2 for i in range(n)],
         }
     ).with_columns(
         pl.col("ts_event").cast(pl.Datetime(time_unit="us", time_zone="UTC")),
         pl.col("feature_ret_1").cast(pl.Float32),
-        pl.col("target_sign").cast(pl.Int8),
+        pl.col("target_sign_15m").cast(pl.Int8),
     )
 
 
@@ -27,7 +27,7 @@ def test_walkforward_train_test_validation_passes():
     train = _df(datetime(2024, 1, 1, tzinfo=timezone.utc), 20)
     test = _df(datetime(2024, 1, 2, tzinfo=timezone.utc), 5)
 
-    out = validate_walkforward_train_test(train, test, ["feature_ret_1"], "target_sign")
+    out = validate_walkforward_train_test(train, test, ["feature_ret_1"], "target_sign_15m")
 
     assert out["train_rows"] == 20
     assert out["test_rows"] == 5
@@ -39,7 +39,7 @@ def test_walkforward_rejects_overlap():
     test = _df(datetime(2024, 1, 1, 1, tzinfo=timezone.utc), 5)
 
     with pytest.raises(RuntimeError, match="train/test overlap"):
-        validate_walkforward_train_test(train, test, ["feature_ret_1"], "target_sign")
+        validate_walkforward_train_test(train, test, ["feature_ret_1"], "target_sign_15m")
 
 
 def test_walkforward_rejects_missing_feature():
@@ -47,7 +47,7 @@ def test_walkforward_rejects_missing_feature():
     test = _df(datetime(2024, 1, 2, tzinfo=timezone.utc), 5)
 
     with pytest.raises(RuntimeError, match="missing features"):
-        validate_walkforward_train_test(train, test, ["feature_missing"], "target_sign")
+        validate_walkforward_train_test(train, test, ["feature_missing"], "target_sign_15m")
 
 
 def test_oos_prediction_validation_rejects_outside_test_window():

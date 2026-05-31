@@ -77,7 +77,7 @@ from pipeline.features.discovery import apply_frozen_feature_manifest, run_train
 from pipeline.walkforward.walkforward import build_oos_prediction_frame, run_walkforward, run_walkforward_with_hmm, run_walkforward_modeling, run_walkforward_modeling_with_hmm
 from pipeline.common.io.canonical import write_canonical_parquet
 from pipeline.analytics.aggregate import build_metrics_report, calculate_metrics, run_aggregation
-from pipeline.risk.risk import run_risk_gates
+from pipeline.risk.risk import RiskGateError, run_risk_gates
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
@@ -110,10 +110,10 @@ def _file_sha256(path: str | None) -> str | None:
 def _cache_config_fingerprint(manifest_path: str | None = None) -> str:
     names = [
         'ACTIVE_PROFILE', 'CONFIG_SOURCE', 'CURRENT_SYMBOL',
-        'TARGET_5M_HORIZON', 'TARGET_SCALE_FACTOR',
+        'TARGET_15M_HORIZON', 'TARGET_SCALE_FACTOR',
         'ENABLE_EXPANSION', 'ENABLE_DISCOVERY',
         'MODEL_TYPE', 'RIDGE_PARAMS', 'PROBABILITY_SMOOTHING_ALPHA',
-        'CORR_THRESHOLD', 'WF_MODE', 'DISCOVERY_TARGET',
+        'CORR_THRESHOLD', 'WF_MODE', 'DISCOVERY_TARGET', 'WALKFORWARD_TARGET',
         'EXECUTE_AT', 'SLIPPAGE_K', 'TX_COST_PER_ROUNDTURN',
         'COMMISSION_PER_CONTRACT', 'MAX_LEVERAGE',
         'HTF_TREND_ALIGNMENT', 'HTF_VOL_SCALING',
@@ -145,17 +145,27 @@ def _slice_optional_window(df: pl.DataFrame, start_str: str | None, end_str: str
     return _slice_window(df, start_str, end_str, label)
 
 
-def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str) -> pl.DataFrame:
-    from datetime import datetime as _dt, timezone
+def _target_horizon_minutes(target_col: str | None) -> int:
+    if target_col in {'target_15m_return', 'target_sign_15m'}:
+        return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
+    return 0
+
+
+def _slice_window(df: pl.DataFrame, start_str: str, end_str: str, label: str, target_col: str | None = None) -> pl.DataFrame:
+    from datetime import datetime as _dt, timezone, timedelta
     if not start_str or not end_str:
         raise RuntimeError(f'MISSING BOUNDARY: {label} start/end required for outer_split mode')
     start_dt = _dt.fromisoformat(start_str).replace(tzinfo=timezone.utc)
     end_dt = _dt.fromisoformat(end_str).replace(tzinfo=timezone.utc)
     before = df.height
-    result = df.filter((pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < end_dt))
+    effective_end = end_dt
+    horizon_minutes = _target_horizon_minutes(target_col) if label == 'test' else 0
+    if horizon_minutes > 0:
+        effective_end = end_dt - timedelta(minutes=horizon_minutes)
+    result = df.filter((pl.col('ts_event') >= start_dt) & (pl.col('ts_event') < effective_end))
     ts_min = result['ts_event'].min() if result.height > 0 else None
     ts_max = result['ts_event'].max() if result.height > 0 else None
-    print(f'[OUTER-TRUE] {label} filter ({start_str} -> {end_str}): {before} -> {result.height} rows, ts=[{ts_min}, {ts_max})', flush=True)
+    print(f'[OUTER-TRUE] {label} filter ({start_str} -> {end_str}, effective_end={effective_end}): {before} -> {result.height} rows, ts=[{ts_min}, {ts_max})', flush=True)
     if result.height == 0:
         raise RuntimeError(f'EMPTY WINDOW: {label} [{start_str}, {end_str}) returned 0 rows')
     return result
@@ -231,7 +241,7 @@ def main():
         df_features = load_or_build_feature_target_matrix(
             df_aligned,
             cache_path=feature_cache,
-            target_col='target_sign_4h',
+            target_col=getattr(config, 'DISCOVERY_TARGET', 'target_sign_15m'),
         )
         _diag(df_features, 'post-generate-features')
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
@@ -244,7 +254,7 @@ def main():
         )
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
-        target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
+        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_sign_15m')
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
@@ -316,7 +326,7 @@ def main():
             assert getattr(args, 'train_start', None), 'OUTER_SPLIT active but --train-start missing from CLI args'
             assert getattr(args, 'train_end', None), 'OUTER_SPLIT active but --train-end missing from CLI args'
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
-            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test', target_col)
             result_df = run_walkforward_modeling(train_df, test_df, feature_cols, target_col)
         else:
             result_df = run_walkforward(X, y, feature_cols, target_col)
@@ -326,8 +336,17 @@ def main():
         pred_df = build_oos_prediction_frame(result_df, target_col=target_col)
         atomic_write_parquet(pred_df, pred_path)
         print(f'[CLI] OOS predictions saved to {pred_path}', flush=True)
-        risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
         risk_path = os.path.join(args.out, 'risk_report.json')
+        risk_error = None
+        try:
+            risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
+        except RiskGateError as exc:
+            risk_error = exc
+            risk_report = getattr(exc, 'report', None) or {
+                'status': 'FAIL',
+                'context': {'command': args.command, 'out': args.out},
+                'error': str(exc),
+            }
         atomic_write_json(risk_report, risk_path)
         print(f'[CLI] Risk report saved to {risk_path}', flush=True)
         metrics_report = build_metrics_report(
@@ -340,6 +359,8 @@ def main():
         out_path = os.path.join(args.out, 'backtest_results.parquet')
         atomic_write_parquet(result_df, out_path)
         print(f'[CLI] Results saved to {out_path}', flush=True)
+        if risk_error is not None:
+            raise risk_error
         print('\n================ METRICS ================')
         calculate_metrics(out_path)
         print('========================================\n')
@@ -353,7 +374,7 @@ def main():
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
         print('[HEARTBEAT] cli entered run-hmm', flush=True)
         print(f'[HEARTBEAT] config loaded WF_MODE={getattr(config, "WF_MODE", "")!r}', flush=True)
-        target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
+        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_sign_15m')
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
@@ -441,7 +462,7 @@ def main():
             print('[HEARTBEAT] slicing train/test start', flush=True)
             t_slice = time.perf_counter()
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
-            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
+            test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test', target_col)
             dt_slice = time.perf_counter() - t_slice
             print(f'[HEARTBEAT] train rows={train_df.height} test rows={test_df.height} seconds={dt_slice:.1f}', flush=True)
             if dt_slice > 60:
@@ -466,8 +487,17 @@ def main():
         pred_df = build_oos_prediction_frame(result_df, target_col=target_col)
         atomic_write_parquet(pred_df, pred_path)
         print(f'[CLI] HMM OOS predictions saved to {pred_path}', flush=True)
-        risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
         risk_path = os.path.join(args.out, 'risk_report_hmm.json')
+        risk_error = None
+        try:
+            risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
+        except RiskGateError as exc:
+            risk_error = exc
+            risk_report = getattr(exc, 'report', None) or {
+                'status': 'FAIL',
+                'context': {'command': args.command, 'out': args.out},
+                'error': str(exc),
+            }
         atomic_write_json(risk_report, risk_path)
         print(f'[CLI] HMM risk report saved to {risk_path}', flush=True)
         metrics_report = build_metrics_report(
@@ -513,6 +543,8 @@ def main():
             run_aggregation('output')
         except Exception as e:
             print(f'[CLI] Aggregation skipped: {e}', flush=True)
+        if risk_error is not None:
+            raise risk_error
     elif args.command == 'aggregate':
         print('\n[CLI] === AGGREGATING RESULTS ===', flush=True)
         run_aggregation(args.artifacts)
