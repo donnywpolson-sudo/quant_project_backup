@@ -10,7 +10,7 @@ import hashlib
 from datetime import datetime, timedelta
 import pytz
 from sklearn.ensemble import ExtraTreesRegressor
-from archive.core.config import config, clamp_to_single_threaded
+from core.config import config, clamp_to_single_threaded
 from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)

@@ -19,7 +19,7 @@
         "feature_ret_1": "float32"
     },
     "selection_seed": 42,
-    "selection_date": "2026-05-30T22:00:07.239547Z",
+    "selection_date": "2026-05-31T00:03:29.648800Z",
     "selection_model": "ExtraTreesRegressor",
     "selection_params": {
         "random_state": 42,

@@ -2,7 +2,7 @@ import polars as pl
 import logging
 import numpy as np
 from datetime import timedelta
-from archive.core.config import config
+from core.config import config
 
 from pipeline.features.baseline import compute_baseline_features, load_baseline_feature_names
 from pipeline.features.expansion import expand_features, add_cross_timeframe_interactions

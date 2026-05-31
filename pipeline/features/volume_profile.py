@@ -20,7 +20,7 @@ No future leakage. Fully vectorized with polars. No explicit Python loops over b
 
 import polars as pl
 import numpy as np
-from archive.core.config import config
+from core.config import config
 
 # ---------------------------------------------------------------------------
 # Volume Profile: horizontal volume binning across a lookback window

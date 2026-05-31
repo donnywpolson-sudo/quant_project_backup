@@ -2,7 +2,7 @@ import polars as pl
 import numpy as np
 import logging
 from itertools import combinations
-from archive.core.config import config
+from core.config import config
 logger = logging.getLogger(__name__)
 
 

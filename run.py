@@ -19,8 +19,8 @@ from pathlib import Path
 import shutil
 import polars as pl
 import numpy as np
-from archive.core.config import load_config, RootConfig, config as _ns_cfg
-from archive.core.market import get_contract_multiplier
+from core.config import load_config, RootConfig, config as _ns_cfg
+from core.market import get_contract_multiplier
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
 if _LOG_MODE not in {'clean', 'verbose', 'debug'}:
@@ -37,7 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger('QuantRunner')
 _MIN_TRAIN_DAYS = 90
 _RUN_START = time.time()
-_RUN_TS = datetime.now().strftime('%Y%m%d_%H%M%S')
+_RUN_DT = datetime.now()
+_RUN_TS = _RUN_DT.strftime('%Y%m%d_%H%M%S')
+_RUN_LOG_TIME = _RUN_DT.strftime('%H%M%S')
+_RUN_LOG_DATE = _RUN_DT.strftime('%d-%m-%Y')  # Windows-safe DD/MM/YYYY equivalent
 _RUN_ID = hashlib.sha256(str(_RUN_START).encode()).hexdigest()[:8]
 _PER_SYMBOL_PNL_CS = {}  # {symbol: {split_id: pnl_cs}}
 _VERIFICATION_TABLE = []  # rows for the verification table printed per split
@@ -81,13 +84,17 @@ class PipelineProgressLogger:
         return cleaned.strip('._-') or 'unknown'
 
     def rename_for_config(self, profile: str, symbols: list[str]) -> None:
-        profile_safe = self._safe_name(profile)
         symbols_safe = '-'.join(self._safe_name(s).upper() for s in symbols) if symbols else 'unknown'
-        dest = self.log_path.parent / f'run_{_RUN_TS}_{profile_safe}_{symbols_safe}_{self.run_id}.log'
+        dest = self.log_path.parent / f'{_RUN_LOG_TIME}_{_RUN_LOG_DATE}_{symbols_safe}.log'
         if dest == self.log_path:
             return
         if dest.exists():
-            self.raw(f'[LOG] desired_log_path_exists={dest}; keeping={self.log_path}')
+            self._fh.close()
+            with open(self.log_path, 'r', encoding='utf-8', errors='replace') as src, open(dest, 'a', encoding='utf-8') as out:
+                out.write(src.read())
+            self.log_path.unlink(missing_ok=True)
+            self.log_path = dest
+            self._fh = open(self.log_path, 'a', encoding='utf-8')
             return
         old_path = self.log_path
         try:

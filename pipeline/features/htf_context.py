@@ -5,7 +5,7 @@ All expanding intraday boundaries use shift(1).cum_max/min over date groups.
 No look-ahead into current incomplete daily bars.
 """
 import polars as pl
-from archive.core.config import config
+from core.config import config
 
 
 def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:

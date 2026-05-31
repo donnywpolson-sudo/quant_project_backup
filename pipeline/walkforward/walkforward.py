@@ -14,7 +14,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import brier_score_loss, roc_auc_score
 from scipy.special import expit
 from joblib import Parallel, delayed
-from archive.core.config import config
+from core.config import config
 
 from pipeline.execution.simulator import simulate_execution_classification
 from pipeline.features.corr_prune import correlation_prune
@@ -508,7 +508,7 @@ def _recompute_pnl_after_gate(df: pl.DataFrame) -> pl.DataFrame:
 
     Preserves all HMM columns (hmm_regime_*, hmm_trade_gate).
     """
-    from archive.core.market import get_contract_multiplier
+    from core.market import get_contract_multiplier
     _compute_pnl_from_target_exec = importlib.import_module(
         "pipeline.execution.simulator"
     )._compute_pnl_from_target_exec
