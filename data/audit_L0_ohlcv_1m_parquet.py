@@ -13,19 +13,36 @@ PRICE_COLS = ["open", "high", "low", "close"]
 NUM_COLS = PRICE_COLS + ["volume"]
 DAY_TO_NUM = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Intended location: quant_project_backup/data/audit_L0_ohlcv_1m_parquet.py
 PROJECT_ROOT = SCRIPT_DIR.parent
 STALE_PRICE_RUN_MINUTES = 240
 TICK_SIZE = {
-    "CL": 0.01, "ES": 0.25, "GC": 0.10, "HG": 0.0005, "NG": 0.001,
-    "NQ": 0.25, "RTY": 0.10, "SI": 0.005, "YM": 1.0,
-    "ZB": 1.0 / 32.0, "ZC": 0.25, "ZN": 1.0 / 64.0,
+    "CL": 0.01,
+    "ES": 0.25,
+    "GC": 0.10,
+    "HG": 0.0005,
+    "NG": 0.001,
+    "NQ": 0.25,
+    "RTY": 0.10,
+    "SI": 0.005,
+    "YM": 1.0,
+    "ZB": 1.0 / 32.0,
+    "ZC": 0.25,
+    "ZN": 1.0 / 64.0,
 }
 
 
 def issue(rows, severity, market, year, check, detail, n=None, sample=None):
-    rows.append({"severity": severity, "market": market, "year": year, "check": check,
-                 "detail": detail, "n": n, "sample": sample})
+    rows.append(
+        {
+            "severity": severity,
+            "market": market,
+            "year": year,
+            "check": check,
+            "detail": detail,
+            "n": n,
+            "sample": sample,
+        }
+    )
 
 
 def sample_rows(df: pd.DataFrame, n=5) -> str:
@@ -93,8 +110,7 @@ def audit_core_file(path: Path, market: str, year: int):
     valid_ts = df["ts_event"].notna()
     not_minute_aligned = valid_ts & (df["ts_event"] != df["ts_event"].dt.floor("min"))
     if not_minute_aligned.any():
-        issue(issues, "FAIL", market, year, "timestamp_not_minute_aligned",
-              "ts_event not aligned to 1-minute boundary", int(not_minute_aligned.sum()), sample_rows(df[not_minute_aligned]))
+        issue(issues, "FAIL", market, year, "timestamp_not_minute_aligned", "ts_event not aligned to 1-minute boundary", int(not_minute_aligned.sum()), sample_rows(df[not_minute_aligned]))
 
     parsed_ts = df["ts_event"].dropna()
     if not parsed_ts.is_monotonic_increasing:
@@ -103,13 +119,11 @@ def audit_core_file(path: Path, market: str, year: int):
     bad_num = df[NUM_COLS].isna()
     for c in NUM_COLS:
         if bad_num[c].any():
-            issue(issues, "FAIL", market, year, f"bad_numeric_{c}", "null or non-numeric",
-                  int(bad_num[c].sum()), sample_rows(df[bad_num[c]]))
+            issue(issues, "FAIL", market, year, f"bad_numeric_{c}", "null or non-numeric", int(bad_num[c].sum()), sample_rows(df[bad_num[c]]))
 
     finite_mask = np.isfinite(df[NUM_COLS]).all(axis=1)
     if (~finite_mask).any():
-        issue(issues, "FAIL", market, year, "non_finite_numeric", "inf/-inf detected",
-              int((~finite_mask).sum()), sample_rows(df[~finite_mask]))
+        issue(issues, "FAIL", market, year, "non_finite_numeric", "inf/-inf detected", int((~finite_mask).sum()), sample_rows(df[~finite_mask]))
 
     df = df.dropna(subset=["ts_event"]).sort_values("ts_event").reset_index(drop=True)
     valid_numeric = np.isfinite(df[NUM_COLS]).all(axis=1) & df[NUM_COLS].notna().all(axis=1)
@@ -122,8 +136,7 @@ def audit_core_file(path: Path, market: str, year: int):
     non_integer_volume = (df["volume"].dropna() % 1) != 0
     if non_integer_volume.any():
         idx = non_integer_volume[non_integer_volume].index
-        issue(issues, "WARN", market, year, "non_integer_volume", "volume is not integer-valued",
-              int(non_integer_volume.sum()), sample_rows(df.loc[idx]))
+        issue(issues, "WARN", market, year, "non_integer_volume", "volume is not integer-valued", int(non_integer_volume.sum()), sample_rows(df.loc[idx]))
 
     dup = df["ts_event"].duplicated(keep=False)
     if dup.any():
@@ -131,16 +144,19 @@ def audit_core_file(path: Path, market: str, year: int):
 
     wrong_year = df["ts_event"].dt.year != year
     if wrong_year.any():
-        issue(issues, "WARN", market, year, "timestamp_outside_file_year",
-              f"ts_event UTC year != filename year {year}; verify partition convention",
-              int(wrong_year.sum()), sample_rows(df[wrong_year]))
+        issue(issues, "WARN", market, year, "timestamp_outside_file_year", f"ts_event UTC year != filename year {year}; verify partition convention", int(wrong_year.sum()), sample_rows(df[wrong_year]))
 
     checks = {
-        "high_lt_low": df["high"] < df["low"], "high_lt_open": df["high"] < df["open"],
-        "high_lt_close": df["high"] < df["close"], "low_gt_open": df["low"] > df["open"],
-        "low_gt_close": df["low"] > df["close"], "nonpositive_open": df["open"] <= 0,
-        "nonpositive_high": df["high"] <= 0, "nonpositive_low": df["low"] <= 0,
-        "nonpositive_close": df["close"] <= 0, "negative_volume": df["volume"] < 0,
+        "high_lt_low": df["high"] < df["low"],
+        "high_lt_open": df["high"] < df["open"],
+        "high_lt_close": df["high"] < df["close"],
+        "low_gt_open": df["low"] > df["open"],
+        "low_gt_close": df["low"] > df["close"],
+        "nonpositive_open": df["open"] <= 0,
+        "nonpositive_high": df["high"] <= 0,
+        "nonpositive_low": df["low"] <= 0,
+        "nonpositive_close": df["close"] <= 0,
+        "negative_volume": df["volume"] < 0,
     }
     for name, mask in checks.items():
         if mask.any():
@@ -152,8 +168,7 @@ def audit_core_file(path: Path, market: str, year: int):
         for c in PRICE_COLS:
             off_tick |= off_tick_mask(df[c], tick)
         if off_tick.any():
-            issue(issues, "WARN", market, year, "price_off_tick_grid",
-                  f"one or more OHLC prices not aligned to expected tick={tick}", int(off_tick.sum()), sample_rows(df[off_tick]))
+            issue(issues, "WARN", market, year, "price_off_tick_grid", f"one or more OHLC prices not aligned to expected tick={tick}", int(off_tick.sum()), sample_rows(df[off_tick]))
 
     zero_vol = df["volume"] == 0
     if zero_vol.any():
@@ -167,8 +182,7 @@ def audit_core_file(path: Path, market: str, year: int):
     stale_close = df_nodup["close"].eq(df_nodup["close"].shift(1))
     stale_run = max_true_run(stale_close)
     if stale_run >= STALE_PRICE_RUN_MINUTES:
-        issue(issues, "WARN", market, year, "stale_close_run",
-              f"close unchanged for >= {STALE_PRICE_RUN_MINUTES} consecutive minutes", stale_run)
+        issue(issues, "WARN", market, year, "stale_close_run", f"close unchanged for >= {STALE_PRICE_RUN_MINUTES} consecutive minutes", stale_run)
 
     ts = df["ts_event"]
     delta_min = ts.diff().dt.total_seconds().div(60)
@@ -180,61 +194,76 @@ def audit_core_file(path: Path, market: str, year: int):
         g["market"] = market
         g["year"] = year
         gaps.append(g[["market", "year", "prev_ts", "ts_event", "gap_minutes"]])
-        issue(issues, "WARN", market, year, "timestamp_gaps_gt_1min",
-              "raw timestamp gaps detected; validate against session calendar before treating as missing data",
-              int(gap_mask.sum()), g.head(5).to_json(orient="records", date_format="iso"))
+        issue(issues, "WARN", market, year, "timestamp_gaps_gt_1min", "raw timestamp gaps detected; validate against session calendar before treating as missing data", int(gap_mask.sum()), g.head(5).to_json(orient="records", date_format="iso"))
 
     reverse_or_same = delta_min <= 0
     if reverse_or_same.any():
-        issue(issues, "FAIL", market, year, "non_increasing_timestamps", "timestamp diff <= 0",
-              int(reverse_or_same.sum()), sample_rows(df[reverse_or_same]))
+        issue(issues, "FAIL", market, year, "non_increasing_timestamps", "timestamp diff <= 0", int(reverse_or_same.sum()), sample_rows(df[reverse_or_same]))
 
     close = df["close"]
     ret = close.pct_change()
     big_ret = ret.abs() > 0.02
     if big_ret.any():
         tmp = df.loc[big_ret, REQ_COLS].copy()
-        tmp["market"], tmp["year"], tmp["ret"], tmp["check"] = market, year, ret.loc[big_ret].values, "abs_close_return_gt_2pct"
+        tmp["market"] = market
+        tmp["year"] = year
+        tmp["ret"] = ret.loc[big_ret].values
+        tmp["check"] = "abs_close_return_gt_2pct"
         outliers.append(tmp)
-        issue(issues, "WARN", market, year, "abs_close_return_gt_2pct", "large 1-minute close-to-close move",
-              int(big_ret.sum()), sample_rows(df[big_ret]))
+        issue(issues, "WARN", market, year, "abs_close_return_gt_2pct", "large 1-minute close-to-close move", int(big_ret.sum()), sample_rows(df[big_ret]))
 
     hl_range = (df["high"] - df["low"]) / df["close"]
     big_range = hl_range > 0.02
     if big_range.any():
         tmp = df.loc[big_range, REQ_COLS].copy()
-        tmp["market"], tmp["year"], tmp["range_pct"], tmp["check"] = market, year, hl_range.loc[big_range].values, "hl_range_gt_2pct"
+        tmp["market"] = market
+        tmp["year"] = year
+        tmp["range_pct"] = hl_range.loc[big_range].values
+        tmp["check"] = "hl_range_gt_2pct"
         outliers.append(tmp)
-        issue(issues, "WARN", market, year, "hl_range_gt_2pct", "large 1-minute high-low range",
-              int(big_range.sum()), sample_rows(df[big_range]))
+        issue(issues, "WARN", market, year, "hl_range_gt_2pct", "large 1-minute high-low range", int(big_range.sum()), sample_rows(df[big_range]))
 
     vol_z = mad_z(df["volume"])
     vol_spike = vol_z.abs() > 25
     if vol_spike.any():
         tmp = df.loc[vol_spike, REQ_COLS].copy()
-        tmp["market"], tmp["year"], tmp["volume_mad_z"], tmp["check"] = market, year, vol_z.loc[vol_spike].values, "volume_mad_z_gt_25"
+        tmp["market"] = market
+        tmp["year"] = year
+        tmp["volume_mad_z"] = vol_z.loc[vol_spike].values
+        tmp["check"] = "volume_mad_z_gt_25"
         outliers.append(tmp)
-        issue(issues, "WARN", market, year, "volume_mad_z_gt_25", "extreme volume spike",
-              int(vol_spike.sum()), sample_rows(df[vol_spike]))
+        issue(issues, "WARN", market, year, "volume_mad_z_gt_25", "extreme volume spike", int(vol_spike.sum()), sample_rows(df[vol_spike]))
 
     dollar_volume = df["close"] * df["volume"]
     dv_z = mad_z(dollar_volume)
     dv_spike = dv_z.abs() > 25
     if dv_spike.any():
         tmp = df.loc[dv_spike, REQ_COLS].copy()
-        tmp["market"], tmp["year"], tmp["dollar_volume_mad_z"], tmp["check"] = market, year, dv_z.loc[dv_spike].values, "dollar_volume_mad_z_gt_25"
+        tmp["market"] = market
+        tmp["year"] = year
+        tmp["dollar_volume_mad_z"] = dv_z.loc[dv_spike].values
+        tmp["check"] = "dollar_volume_mad_z_gt_25"
         outliers.append(tmp)
-        issue(issues, "WARN", market, year, "dollar_volume_mad_z_gt_25", "extreme price*volume spike",
-              int(dv_spike.sum()), sample_rows(df[dv_spike]))
+        issue(issues, "WARN", market, year, "dollar_volume_mad_z_gt_25", "extreme price*volume spike", int(dv_spike.sum()), sample_rows(df[dv_spike]))
 
-    summary.append({
-        "market": market, "year": year, "path": str(path), "rows": n,
-        "first_ts": df["ts_event"].min(), "last_ts": df["ts_event"].max(),
-        "duplicate_ts": int(dup.sum()), "gap_count_gt_1min": int(gap_mask.sum()),
-        "zero_volume": int(zero_vol.sum()), "zero_range": int(zero_range.sum()),
-        "stale_close_run_max": stale_run, "close_min": float(df["close"].min()),
-        "close_max": float(df["close"].max()), "volume_sum": float(df["volume"].sum()),
-    })
+    summary.append(
+        {
+            "market": market,
+            "year": year,
+            "path": str(path),
+            "rows": n,
+            "first_ts": df["ts_event"].min(),
+            "last_ts": df["ts_event"].max(),
+            "duplicate_ts": int(dup.sum()),
+            "gap_count_gt_1min": int(gap_mask.sum()),
+            "zero_volume": int(zero_vol.sum()),
+            "zero_range": int(zero_range.sum()),
+            "stale_close_run_max": stale_run,
+            "close_min": float(df["close"].min()),
+            "close_max": float(df["close"].max()),
+            "volume_sum": float(df["volume"].sum()),
+        }
+    )
     return issues, gaps, outliers, summary, df[REQ_COLS]
 
 
@@ -243,19 +272,21 @@ def audit_cross_year(bounds_by_market):
     for market, items in bounds_by_market.items():
         items = sorted(items, key=lambda x: x[0])
         for (year_a, first_a, last_a), (year_b, first_b, last_b) in zip(items, items[1:]):
-            rows.append({
-                "severity": "FAIL" if first_b <= last_a else "INFO",
-                "market": market,
-                "check": "cross_year_overlap" if first_b <= last_a else "cross_year_gap",
-                "year_a": year_a,
-                "year_b": year_b,
-                "first_ts_a": first_a,
-                "last_ts_a": last_a,
-                "first_ts_b": first_b,
-                "last_ts_b": last_b,
-                "gap_minutes": (first_b - last_a).total_seconds() / 60,
-                "detail": "next year starts before or at prior year end" if first_b <= last_a else "cross-year gap; validate against session calendar",
-            })
+            rows.append(
+                {
+                    "severity": "FAIL" if first_b <= last_a else "INFO",
+                    "market": market,
+                    "check": "cross_year_overlap" if first_b <= last_a else "cross_year_gap",
+                    "year_a": year_a,
+                    "year_b": year_b,
+                    "first_ts_a": first_a,
+                    "last_ts_a": last_a,
+                    "first_ts_b": first_b,
+                    "last_ts_b": last_b,
+                    "gap_minutes": (first_b - last_a).total_seconds() / 60,
+                    "detail": "next year starts before or at prior year end" if first_b <= last_a else "cross-year gap; validate against session calendar",
+                }
+            )
     return rows
 
 
@@ -304,11 +335,9 @@ def validate_market_config(market: str, cfg: dict) -> dict | None:
             if key not in cfg["daily_break"]:
                 missing.append(f"daily_break.{key}")
     if missing:
-        return {"severity": "FAIL", "market": market, "year": "", "check": "invalid_market_config",
-                "detail": f"Missing required session config keys: {','.join(sorted(missing))}"}
+        return {"severity": "FAIL", "market": market, "year": "", "check": "invalid_market_config", "detail": f"Missing required session config keys: {','.join(sorted(missing))}"}
     if not cfg.get("closed_dates") and not cfg.get("early_closes") and not cfg.get("holiday_calendar") and not cfg.get("allow_empty_holiday_calendar", False):
-        return {"severity": "FAIL", "market": market, "year": "", "check": "incomplete_session_calendar",
-                "detail": "closed_dates and early_closes are empty; expected-minute counts may be false positives"}
+        return {"severity": "FAIL", "market": market, "year": "", "check": "incomplete_session_calendar", "detail": "closed_dates and early_closes are empty; expected-minute counts may be false positives"}
     return None
 
 
@@ -317,11 +346,16 @@ def is_approximate_session_calendar(cfg: dict) -> bool:
 
 
 def easter_date(year: int) -> date:
-    a, b, c = year % 19, year // 100, year % 100
-    d, e = b // 4, b % 4
-    f, g = (b + 8) // 25, (b - ((b + 8) // 25) + 1) // 3
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
     h = (19 * a + b - d - g + 15) % 30
-    i, k = c // 4, c % 4
+    i = c // 4
+    k = c % 4
     l = (32 + 2 * e + 2 * i - h - k) % 7
     m = (a + 11 * h + 22 * l) // 451
     month = (h + l - 7 * m + 114) // 31
@@ -350,7 +384,10 @@ def observed_fixed(year: int, month: int, day: int) -> date:
     return d
 
 
-def generated_cme_globex_us_futures_holidays(years: set[int]) -> tuple[set[str], dict[str, str], dict[str, str]]:
+def generated_cme_globex_us_futures_holidays(
+    years: set[int],
+    early_close_time: str = "12:15",
+) -> tuple[set[str], dict[str, str], dict[str, str]]:
     closed_dates, early_closes, late_opens = set(), {}, {}
     for year in sorted(years):
         new_years = observed_fixed(year, 1, 1)
@@ -360,15 +397,20 @@ def generated_cme_globex_us_futures_holidays(years: set[int]) -> tuple[set[str],
         late_opens[new_years.isoformat()] = "17:00"
         late_opens[christmas.isoformat()] = "17:00"
         early_candidates = [
-            nth_weekday(year, 1, 0, 3), nth_weekday(year, 2, 0, 3), last_weekday(year, 5, 0),
-            observed_fixed(year, 7, 4), nth_weekday(year, 9, 0, 1), nth_weekday(year, 11, 3, 4),
-            nth_weekday(year, 11, 3, 4) + timedelta(days=1), date(year, 12, 24),
+            nth_weekday(year, 1, 0, 3),
+            nth_weekday(year, 2, 0, 3),
+            last_weekday(year, 5, 0),
+            observed_fixed(year, 7, 4),
+            nth_weekday(year, 9, 0, 1),
+            nth_weekday(year, 11, 3, 4),
+            nth_weekday(year, 11, 3, 4) + timedelta(days=1),
+            date(year, 12, 24),
         ]
         if year >= 2022:
             early_candidates.append(observed_fixed(year, 6, 19))
         for d in early_candidates:
             if d.weekday() < 5 and d.isoformat() not in closed_dates:
-                early_closes.setdefault(d.isoformat(), "12:15")
+                early_closes.setdefault(d.isoformat(), early_close_time)
                 if not (d.month == 12 and d.day == 24):
                     late_opens.setdefault(d.isoformat(), "17:00")
     return closed_dates, early_closes, late_opens
@@ -380,7 +422,10 @@ def resolved_holiday_calendar(local_ts: pd.DatetimeIndex, cfg: dict) -> tuple[se
     late_opens = {str(k): str(v) for k, v in (cfg.get("late_opens", {}) or {}).items()}
     if cfg.get("holiday_calendar") == "cme_globex_us_futures":
         years = set(pd.Series(local_ts).dt.year.dropna().astype(int).tolist())
-        gen_closed, gen_early, gen_late = generated_cme_globex_us_futures_holidays(years)
+        gen_closed, gen_early, gen_late = generated_cme_globex_us_futures_holidays(
+            years,
+            str(cfg.get("holiday_early_close_time", "12:15")),
+        )
         closed_dates |= gen_closed
         for k, v in gen_early.items():
             early_closes.setdefault(k, v)
@@ -476,17 +521,27 @@ def audit_session_file(path: Path, market: str, year: int, cfg: dict):
     )
 
     summary = {
-        "severity": severity, "market": market, "year": year, "check": "session_calendar",
-        "actual_rows": raw_rows, "actual_unique_timestamps": len(ts), "duplicate_ts": duplicate_ts,
+        "severity": severity,
+        "market": market,
+        "year": year,
+        "check": "session_calendar",
+        "actual_rows": raw_rows,
+        "actual_unique_timestamps": len(ts),
+        "duplicate_ts": duplicate_ts,
         "full_year_expected_session_minutes": len(full_expected_utc),
-        "expected_session_minutes": len(expected_utc), "missing_expected_minutes": missing_n,
-        "coverage_pct": coverage_pct, "outside_session_rows": outside_n,
-        "partial_file_bounds": partial_bounds, "partial_start": partial_start, "partial_end": partial_end,
+        "expected_session_minutes": len(expected_utc),
+        "missing_expected_minutes": missing_n,
+        "coverage_pct": coverage_pct,
+        "outside_session_rows": outside_n,
+        "partial_file_bounds": partial_bounds,
+        "partial_start": partial_start,
+        "partial_end": partial_end,
         "full_year_expected_first_ts": full_expected_utc.min() if len(full_expected_utc) else pd.NaT,
         "full_year_expected_last_ts": full_expected_utc.max() if len(full_expected_utc) else pd.NaT,
         "expected_first_ts": expected_utc.min() if len(expected_utc) else pd.NaT,
         "expected_last_ts": expected_utc.max() if len(expected_utc) else pd.NaT,
-        "first_ts": first_ts, "last_ts": last_ts,
+        "first_ts": first_ts,
+        "last_ts": last_ts,
     }
     print(f"DONE  session audit {market} {year} | rows={raw_rows:,} unique={len(ts):,} expected={len(expected_utc):,} missing={missing_n:,} outside={outside_n:,} dup={duplicate_ts:,}", flush=True)
     return [summary], missing_df, outside_df
@@ -519,15 +574,12 @@ def audit_market_span_session(files_by_market: dict[str, list[Path]], markets_cf
         duplicate_ts = int(pd.Series(ts_all).duplicated(keep=False).sum())
         ts_unique = ts_all.unique()
         if len(ts_unique) == 0:
-            summaries.append({"severity": "FAIL", "market": market, "check": "market_span_session", "actual_rows": raw_rows,
-                              "actual_unique_timestamps": 0, "detail": "no valid timestamps"})
+            summaries.append({"severity": "FAIL", "market": market, "check": "market_span_session", "actual_rows": raw_rows, "actual_unique_timestamps": 0, "detail": "no valid timestamps"})
             continue
 
         tz = cfg["timezone"]
         local_ts = ts_unique.tz_convert(tz)
-        outside = pd.DataFrame({"market": market, "ts_event": ts_unique, "ts_local": local_ts})[
-            ~is_active_local_index(local_ts, cfg).to_numpy()
-        ]
+        outside = pd.DataFrame({"market": market, "ts_event": ts_unique, "ts_local": local_ts})[~is_active_local_index(local_ts, cfg).to_numpy()]
 
         first_ts = ts_unique.min().floor("min")
         last_ts = ts_unique.max().floor("min")
@@ -541,22 +593,28 @@ def audit_market_span_session(files_by_market: dict[str, list[Path]], markets_cf
         missing_df = pd.DataFrame({"market": market, "missing_ts_event": missing, "missing_ts_local": missing.tz_convert(tz)})
         missing_n, outside_n, expected_n = len(missing_df), len(outside), len(expected_utc)
         coverage_pct = 100.0 * (1.0 - missing_n / expected_n) if expected_n else 0.0
-        severity = (
-            "FAIL" if outside_n > 0 or duplicate_ts > 0
-            else "WARN" if missing_n > 0
-            else "PASS"
-        )
+        severity = "FAIL" if outside_n > 0 or duplicate_ts > 0 else "WARN" if missing_n > 0 else "PASS"
         if is_approximate_session_calendar(cfg) and severity == "FAIL":
             severity = "WARN"
 
-        summaries.append({
-            "severity": severity, "market": market, "check": "market_span_session",
-            "actual_rows": raw_rows, "actual_unique_timestamps": len(ts_unique), "duplicate_ts": duplicate_ts,
-            "first_ts": first_ts, "last_ts": last_ts, "expected_session_minutes": expected_n,
-            "missing_expected_minutes": missing_n, "coverage_pct": coverage_pct, "outside_session_rows": outside_n,
-            "calendar_accuracy": "approximate" if is_approximate_session_calendar(cfg) else "",
-            "approximate_reason": cfg.get("approximate_reason", ""),
-        })
+        summaries.append(
+            {
+                "severity": severity,
+                "market": market,
+                "check": "market_span_session",
+                "actual_rows": raw_rows,
+                "actual_unique_timestamps": len(ts_unique),
+                "duplicate_ts": duplicate_ts,
+                "first_ts": first_ts,
+                "last_ts": last_ts,
+                "expected_session_minutes": expected_n,
+                "missing_expected_minutes": missing_n,
+                "coverage_pct": coverage_pct,
+                "outside_session_rows": outside_n,
+                "calendar_accuracy": "approximate" if is_approximate_session_calendar(cfg) else "",
+                "approximate_reason": cfg.get("approximate_reason", ""),
+            }
+        )
         if not missing_df.empty:
             missing_all.append(missing_df)
         if not outside.empty:
@@ -597,13 +655,15 @@ def run_core_audit(files: list[Path], out: Path) -> tuple[int, int]:
             issue(all_issues, "FAIL", market, path.stem, "bad_filename", "filename stem is not an integer year", sample=str(path))
             continue
         issues, gaps, outliers, summary, df = audit_core_file(path, market, year)
-        all_issues.extend(issues); all_gaps.extend(gaps); all_outliers.extend(outliers); all_summary.extend(summary)
+        all_issues.extend(issues)
+        all_gaps.extend(gaps)
+        all_outliers.extend(outliers)
+        all_summary.extend(summary)
         if df is not None:
             bounds_by_market.setdefault(market, []).append((year, df["ts_event"].min(), df["ts_event"].max()))
 
     issues_df = pd.DataFrame(all_issues)
     cross_year_df = pd.DataFrame(audit_cross_year(bounds_by_market))
-
     pd.DataFrame(all_summary).to_csv(out / "core_summary.csv", index=False)
     issues_df.to_csv(out / "core_issues.csv", index=False)
     (pd.concat(all_gaps, ignore_index=True) if all_gaps else pd.DataFrame()).to_csv(out / "core_gaps.csv", index=False)
@@ -613,7 +673,6 @@ def run_core_audit(files: list[Path], out: Path) -> tuple[int, int]:
     issue_fail = 0 if issues_df.empty else int((issues_df["severity"] == "FAIL").sum())
     issue_warn = 0 if issues_df.empty else int((issues_df["severity"] == "WARN").sum())
     cross_year_fail = 0 if cross_year_df.empty else int((cross_year_df["severity"] == "FAIL").sum())
-
     return issue_fail + cross_year_fail, issue_warn
 
 
@@ -627,16 +686,14 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
     valid_markets = set()
     for market in sorted(files_by_market):
         if market not in markets_cfg:
-            issues.append({"severity": "FAIL", "market": market, "year": "", "check": "missing_market_config",
-                           "detail": f"No session config for market {market}"})
+            issues.append({"severity": "FAIL", "market": market, "year": "", "check": "missing_market_config", "detail": f"No session config for market {market}"})
             continue
         config_issue = validate_market_config(market, markets_cfg[market])
         if config_issue is not None:
             issues.append(config_issue)
             continue
         if is_approximate_session_calendar(markets_cfg[market]):
-            issues.append({"severity": "WARN", "market": market, "year": "", "check": "approximate_session_calendar",
-                           "detail": markets_cfg[market].get("approximate_reason", "session calendar marked approximate; excluded from hard session FAIL gating")})
+            issues.append({"severity": "WARN", "market": market, "year": "", "check": "approximate_session_calendar", "detail": markets_cfg[market].get("approximate_reason", "session calendar marked approximate; excluded from hard session FAIL gating")})
         valid_markets.add(market)
 
     for path in files:
@@ -646,8 +703,7 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
         try:
             year = int(path.stem)
         except ValueError:
-            issues.append({"severity": "FAIL", "market": market, "year": path.stem,
-                           "check": "bad_filename", "detail": "filename stem is not integer year"})
+            issues.append({"severity": "FAIL", "market": market, "year": path.stem, "check": "bad_filename", "detail": "filename stem is not integer year"})
             continue
         summary, missing_df, outside_df = audit_session_file(path, market, year, markets_cfg[market])
         if is_approximate_session_calendar(markets_cfg[market]):
@@ -662,19 +718,14 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
         if not outside_df.empty:
             outside_all.append(outside_df)
 
-    span_summaries, span_missing, span_outside = audit_market_span_session(
-        {m: ps for m, ps in files_by_market.items() if m in valid_markets},
-        markets_cfg,
-    )
+    span_summaries, span_missing, span_outside = audit_market_span_session({m: ps for m, ps in files_by_market.items() if m in valid_markets}, markets_cfg)
 
     issues_df = pd.DataFrame(issues)
     summaries_df = pd.DataFrame(summaries)
     span_df = pd.DataFrame(span_summaries)
-
     summaries_df.to_csv(out / "session_summary.csv", index=False)
     issues_df.to_csv(out / "session_issues.csv", index=False)
     span_df.to_csv(out / "session_market_span_summary.csv", index=False)
-
     (pd.concat(missing_all, ignore_index=True) if missing_all else pd.DataFrame()).to_csv(out / "session_missing_expected_minutes.csv", index=False)
     (pd.concat(outside_all, ignore_index=True) if outside_all else pd.DataFrame()).to_csv(out / "session_outside_rows.csv", index=False)
     (pd.concat(span_missing, ignore_index=True) if span_missing else pd.DataFrame()).to_csv(out / "session_market_span_missing_expected_minutes.csv", index=False)
@@ -694,7 +745,6 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
     else:
         fail_spans = 0 if span_df.empty else int((span_df["severity"] == "FAIL").sum())
     warn_spans = 0 if span_df.empty else int((span_df["severity"] == "WARN").sum())
-
     return fail_issues + fail_summaries + fail_spans, warn_summaries + warn_spans
 
 
@@ -712,15 +762,11 @@ def write_validated_files(files: list[Path], out_root: Path, audit_out: Path) ->
         dst = out_root / market / f"{year}.parquet"
         dst.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(dst, index=False)
-        manifest.append({"market": market, "year": year, "src": str(src), "dst": str(dst),
-                         "rows": len(df), "first_ts": df["ts_event"].min(), "last_ts": df["ts_event"].max()})
+        manifest.append({"market": market, "year": year, "src": str(src), "dst": str(dst), "rows": len(df), "first_ts": df["ts_event"].min(), "last_ts": df["ts_event"].max()})
     pd.DataFrame(manifest).to_csv(out_root / "_manifest.csv", index=False)
 
     audit_frames = []
-    for name in (
-        "core_summary.csv", "core_cross_year.csv", "session_summary.csv", "session_market_span_summary.csv",
-        "core_issues.csv", "session_issues.csv",
-    ):
+    for name in ("core_summary.csv", "core_cross_year.csv", "session_summary.csv", "session_market_span_summary.csv", "core_issues.csv", "session_issues.csv"):
         p = audit_out / name
         if not p.exists() or p.stat().st_size == 0:
             continue
@@ -732,9 +778,7 @@ def write_validated_files(files: list[Path], out_root: Path, audit_out: Path) ->
             continue
         tmp.insert(0, "audit_file", name)
         audit_frames.append(tmp)
-    (pd.concat(audit_frames, ignore_index=True, sort=False) if audit_frames else pd.DataFrame()).to_csv(
-        out_root / "_audit_summary.csv", index=False
-    )
+    (pd.concat(audit_frames, ignore_index=True, sort=False) if audit_frames else pd.DataFrame()).to_csv(out_root / "_audit_summary.csv", index=False)
 
 
 def main() -> None:
@@ -756,7 +800,6 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     core_fail = core_warn = session_fail = session_warn = 0
-
     if not args.sessions_only:
         core_fail, core_warn = run_core_audit(files, out)
     if not args.core_only:
@@ -768,7 +811,6 @@ def main() -> None:
     print(f"Session FAIL/WARN: {session_fail}/{session_warn}")
     if core_fail or session_fail:
         raise SystemExit(1)
-
     if args.core_only or args.sessions_only:
         print("Validated data not written: run both core and session audits without --core-only/--sessions-only.")
         return
