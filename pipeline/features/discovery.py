@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import pytz
 from sklearn.ensemble import ExtraTreesRegressor
 from pipeline.common.config import config, clamp_to_single_threaded
+from pipeline.features.baseline import load_baseline_feature_names
 from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,14 @@ def _is_model_metadata_column(col: str) -> bool:
 
 
 def _is_selectable_feature_name(col: str) -> bool:
-    return col.startswith(_FROZEN_FEATURE_PREFIXES) and not _is_model_metadata_column(col)
+    if _is_model_metadata_column(col):
+        return False
+    if col.startswith(_FROZEN_FEATURE_PREFIXES):
+        return True
+    try:
+        return col in set(load_baseline_feature_names())
+    except Exception:
+        return False
 
 
 def load_frozen_feature_manifest(manifest_path: str) -> dict:
@@ -383,11 +391,11 @@ def run_feature_discovery(
         ).drop('_row')
 
     # --- Feature column selection ---
-    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_sign_15m')
+    target_col = getattr(config, 'DISCOVERY_TARGET', 'target_15m_ret')
     if target_col not in df_features.columns:
         raise ValueError(
             f'DISCOVERY FAILURE: configured target {target_col!r} not found. '
-            'This pipeline expects one primary discovery target: target_sign_15m.'
+            'This pipeline expects one primary discovery target: target_15m_ret.'
         )
 
     exclude_cols = {

@@ -630,9 +630,9 @@ def calculate_metrics(file_path: str):
             pass
 
     corr = 0.0
-    if 'prediction' in df.columns and 'target_15m_return' in df.columns:
+    if 'prediction' in df.columns and 'target_15m_ret' in df.columns:
         pred_old = df['prediction'].to_numpy()
-        target = df['target_15m_return'].to_numpy()
+        target = df['target_15m_ret'].to_numpy()
         mask = ~(np.isnan(pred_old) | np.isnan(target))
         if mask.sum() > 1:
             corr = np.corrcoef(pred_old[mask], target[mask])[0, 1]

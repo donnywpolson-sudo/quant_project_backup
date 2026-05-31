@@ -37,9 +37,9 @@ def _matrix() -> pl.DataFrame:
             "close": [10.5, 11.5],
             "volume": [100, 101],
             "session_id": ["a", "a"],
-            "target_sign_15m": [1, 0],
-            "target_15m_return": [0.1, -0.1],
-            "feature_ret_1": [0.01, 0.02],
+            "target_15m_dir": [1, 0],
+            "target_15m_ret": [0.1, -0.1],
+            "ret_1": [0.01, 0.02],
             "ratio_x": [1.0, 2.0],
             "continuous_price": [10.5, 11.5],
         }
@@ -48,13 +48,13 @@ def _matrix() -> pl.DataFrame:
 
 def test_apply_frozen_feature_manifest_keeps_only_selected_features(tmp_path):
     manifest = tmp_path / "manifest.json"
-    _write_manifest(manifest, ["feature_ret_1"])
+    _write_manifest(manifest, ["ret_1"])
 
-    out = apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_15m")
+    out = apply_frozen_feature_manifest(_matrix(), str(manifest), "target_15m_dir")
 
-    assert "feature_ret_1" in out.columns
+    assert "ret_1" in out.columns
     assert "ratio_x" not in out.columns
-    assert "target_sign_15m" in out.columns
+    assert "target_15m_dir" in out.columns
     assert "continuous_price" not in out.columns
 
 
@@ -63,12 +63,12 @@ def test_frozen_manifest_rejects_missing_selected_feature(tmp_path):
     _write_manifest(manifest, ["feature_missing"])
 
     with pytest.raises(RuntimeError, match="selected features missing"):
-        apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_15m")
+        apply_frozen_feature_manifest(_matrix(), str(manifest), "target_15m_dir")
 
 
 def test_frozen_manifest_rejects_target_as_feature(tmp_path):
     manifest = tmp_path / "manifest.json"
-    _write_manifest(manifest, ["target_15m_return"])
+    _write_manifest(manifest, ["target_15m_ret"])
 
     with pytest.raises(RuntimeError, match="invalid selected features"):
         load_frozen_feature_manifest(str(manifest))
@@ -84,4 +84,4 @@ def test_discovery_feature_filter_rejects_continuous_metadata():
         "cumulative_factor",
     ]
     assert all(not _is_selectable_feature_name(c) for c in rejected)
-    assert _is_selectable_feature_name("feature_ret_1")
+    assert _is_selectable_feature_name("ret_1")

@@ -12,24 +12,36 @@ def add_target_15m(df: pl.DataFrame) -> pl.DataFrame:
     Primary supervised label.
 
     On 1-minute bars, signal at bar t enters at open[t+1] and exits at
-    close[t+15].
+    open[t+16]. The regression label is:
+        log(open[t+16] / open[t+1])
     That makes the label executable under execute_at=open[t+1] and avoids
     close[t] -> open[t+1] gap leakage.
     """
     horizon = int(getattr(config, "TARGET_15M_HORIZON", 15))
     eps = getattr(config, "EPS", 1e-9)
-    scale = getattr(config, "TARGET_SCALE_FACTOR", 100.0)
-    clip_min = getattr(config, "CLIP_MIN", -10.0)
-    clip_max = getattr(config, "CLIP_MAX", 10.0)
-    exit_close = pl.col("close").shift(-horizon)
     entry_open = pl.col("open").shift(-1)
-    forward_ret_raw = (exit_close - entry_open) / entry_open.clip(eps, None)
+    exit_open = pl.col("open").shift(-(horizon + 1))
+    forward_log_ret = (exit_open / entry_open.clip(eps, None)).log()
+
+    multiplier = pl.col("contract_multiplier") if "contract_multiplier" in df.columns else pl.lit(1.0)
+    tx_cost = float(getattr(config, "TX_COST_PER_ROUNDTURN", 0.0) or 0.0)
+    commission = float(getattr(config, "COMMISSION_PER_CONTRACT", 0.0) or 0.0)
+    commission_ret = (2.0 * commission) / (entry_open * multiplier).clip(eps, None)
+    trade_threshold = pl.lit(tx_cost) + commission_ret
+
     return df.with_columns(
         [
-            (forward_ret_raw * scale)
-            .clip(clip_min, clip_max)
-            .alias("target_15m_return"),
-            (forward_ret_raw > 0).cast(pl.Int8).alias("target_sign_15m"),
+            forward_log_ret.alias("target_15m_ret"),
+            (forward_log_ret > 0).cast(pl.Int8).alias("target_15m_dir"),
+            (
+                pl.when(forward_log_ret > trade_threshold)
+                .then(1)
+                .when(forward_log_ret < -trade_threshold)
+                .then(-1)
+                .otherwise(0)
+                .cast(pl.Int8)
+                .alias("target_15m_trade_class")
+            ),
         ]
     )
 
@@ -56,7 +68,7 @@ def add_target_daily_regime(df: pl.DataFrame) -> pl.DataFrame:
 
 def drop_incomplete_target(df: pl.DataFrame) -> pl.DataFrame:
     filter_expr = None
-    for target_col in ("target_15m_return", "target_sign_15m"):
+    for target_col in ("target_15m_ret", "target_15m_dir", "target_15m_trade_class"):
         if target_col in df.columns:
             null_count = df[target_col].null_count()
             if null_count == df.height:

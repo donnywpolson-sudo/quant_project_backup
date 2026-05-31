@@ -90,6 +90,7 @@ def train_and_predict(train_X: pl.DataFrame, train_y: pl.Series, test_X: pl.Data
         model = Ridge(**ridge_params)
         model.fit(X_train, y_train)
         raw_pred = model.predict(X_test)
+        raw_pred = raw_pred * float(getattr(config, 'TARGET_SCALE_FACTOR', 100.0))
         raw_pred = safe_clip(raw_pred, -2.0, 2.0)
         probs = expit(raw_pred).astype(np.float32)
     elif config.MODEL_TYPE == 'LogisticRegression':
@@ -188,7 +189,7 @@ def _hash_col(df, col):
 
 
 def _label_horizon_minutes(target_col: str) -> int:
-    if target_col in {'target_15m_return', 'target_sign_15m'}:
+    if target_col in {'target_15m_ret', 'target_15m_dir', 'target_15m_trade_class'}:
         return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
     return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
 
@@ -247,7 +248,7 @@ def _log_fold_diagnostics(result: pl.DataFrame, test_original: pl.DataFrame, fol
     pmin = float(np.min(probs))
     pmax = float(np.max(probs))
     ic = 'missing'
-    for tcol in ('target_15m_return',):
+    for tcol in ('target_15m_ret',):
         if tcol in test_original.columns:
             ic_val = _safe_corr(probs, test_original[tcol].to_numpy())
             if not np.isnan(ic_val):
@@ -596,7 +597,7 @@ def run_walkforward_with_hmm(
     X: pl.DataFrame,
     y: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign_15m',
+    target_col: str = 'target_15m_ret',
     hmm_retrain_interval: int = 5,
 ) -> Tuple[pl.DataFrame, dict]:
     """
@@ -726,7 +727,7 @@ def run_walkforward_with_hmm(
     return df_hmm, validation_dict
 
 
-def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target_col: str='target_sign_15m') -> pl.DataFrame:
+def run_walkforward(X: pl.DataFrame, y: pl.DataFrame, feature_cols: list, target_col: str='target_15m_ret') -> pl.DataFrame:
     df = X.with_columns(y)
     if target_col not in df.columns:
         raise KeyError(f"Target column '{target_col}' not found.")
@@ -1021,7 +1022,7 @@ def run_walkforward_modeling(
     train_df: pl.DataFrame,
     test_df: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign_15m',
+    target_col: str = 'target_15m_ret',
 ) -> pl.DataFrame:
     """Step 7 boundary: train on train window and produce OOS test predictions."""
     validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
@@ -1040,7 +1041,7 @@ def run_walkforward_modeling_with_hmm(
     train_df: pl.DataFrame,
     test_df: pl.DataFrame,
     feature_cols: list,
-    target_col: str = 'target_sign_15m',
+    target_col: str = 'target_15m_ret',
 ) -> Tuple[pl.DataFrame, dict]:
     validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
     print(
@@ -1057,7 +1058,7 @@ def run_walkforward_modeling_with_hmm(
 
 
 def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                              feature_cols: list, target_col: str = 'target_sign_15m') -> pl.DataFrame:
+                              feature_cols: list, target_col: str = 'target_15m_ret') -> pl.DataFrame:
     if train_df.height == 0:
         raise RuntimeError('OUTER-TRUE FAILURE: empty train_df')
     if test_df.height == 0:
@@ -1113,7 +1114,7 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
 
 
 def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataFrame,
-                                       feature_cols: list, target_col: str = 'target_sign_15m'
+                                       feature_cols: list, target_col: str = 'target_15m_ret'
                                        ) -> Tuple[pl.DataFrame, dict]:
     if TYPE_CHECKING:
         from pipeline.regime.hmm_filter import HMMRegimeFilter, apply_hmm_filter

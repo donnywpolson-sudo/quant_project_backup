@@ -71,8 +71,8 @@ base:
     wf_parallel_folds: 1
     enable_meta_labeling: false
     meta_threshold: 0.5
-    discovery_target: "target_sign_15m"
-    walkforward_target: "target_sign_15m"
+    discovery_target: "target_15m_ret"
+    walkforward_target: "target_15m_ret"
 
   execution:
     execute_at: "open[t+1]"
@@ -125,7 +125,7 @@ profiles:
     start_year: 2024
     end_year: 2024
     walkforward:
-      model_type: "LogisticRegression"
+      model_type: "Ridge"
 
   alpha_0_costs:
     symbols:
@@ -135,7 +135,7 @@ profiles:
     start_year: 2024
     end_year: 2024
     walkforward:
-      model_type: "LogisticRegression"
+      model_type: "Ridge"
     execution:
       tx_cost_per_roundturn: 0.00015
       commission_per_contract: 1.50
@@ -148,7 +148,7 @@ profiles:
     start_year: 2024
     end_year: 2024
     walkforward:
-      model_type: "LogisticRegression"
+      model_type: "Ridge"
     execution:
       tx_cost_per_roundturn: 0.00015
       commission_per_contract: 0.75

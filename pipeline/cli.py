@@ -121,6 +121,7 @@ def _cache_config_fingerprint(manifest_path: str | None = None) -> str:
     ]
     payload = {name: _jsonable(getattr(config, name, None)) for name in names}
     payload['alpha_yaml_sha256'] = _file_sha256('configs/alpha.yaml')
+    payload['baseline_features_sha256'] = _file_sha256(getattr(config, 'BASELINE_FEATURES_FILE', 'configs/baseline_features.yaml'))
     payload['market_config_sha256'] = _file_sha256((getattr(config, 'MARKET_CONFIGS', {}) or {}).get(getattr(config, 'CURRENT_SYMBOL', None)))
     payload['manifest_sha256'] = _file_sha256(manifest_path)
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
@@ -146,7 +147,7 @@ def _slice_optional_window(df: pl.DataFrame, start_str: str | None, end_str: str
 
 
 def _target_horizon_minutes(target_col: str | None) -> int:
-    if target_col in {'target_15m_return', 'target_sign_15m'}:
+    if target_col in {'target_15m_ret', 'target_15m_dir', 'target_15m_trade_class'}:
         return int(getattr(config, 'TARGET_15M_HORIZON', 15)) * 5
     return 0
 
@@ -241,7 +242,7 @@ def main():
         df_features = load_or_build_feature_target_matrix(
             df_aligned,
             cache_path=feature_cache,
-            target_col=getattr(config, 'DISCOVERY_TARGET', 'target_sign_15m'),
+            target_col=getattr(config, 'DISCOVERY_TARGET', 'target_15m_ret'),
         )
         _diag(df_features, 'post-generate-features')
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
@@ -254,7 +255,7 @@ def main():
         )
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
-        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_sign_15m')
+        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_15m_ret')
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
@@ -374,7 +375,7 @@ def main():
         print('\n[CLI] === PHASE 2H: WALKFORWARD + HMM REGIME FILTER ===', flush=True)
         print('[HEARTBEAT] cli entered run-hmm', flush=True)
         print(f'[HEARTBEAT] config loaded WF_MODE={getattr(config, "WF_MODE", "")!r}', flush=True)
-        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_sign_15m')
+        target_col = getattr(config, 'WALKFORWARD_TARGET', 'target_15m_ret')
         cache_dir = Path('output/cache')
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'

@@ -13,7 +13,7 @@ from pipeline.features.volume_profile import add_volume_profile_features
 from pipeline.target.target import add_target_15m, add_target_daily_regime
 logger = logging.getLogger(__name__)
 
-_FEATURE_PREFIXES = ('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_')
+_FEATURE_PREFIXES = ('ratio_', 'pair_', 'zscore', 'cross_', 'htf_')
 
 
 def _stage(df: pl.DataFrame, name: str, fn, *args, **kwargs) -> pl.DataFrame:
@@ -159,7 +159,7 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 
     # ---- STEP 5: FILTER (explicit mask on target NaNs) ----
     # Build mask from all target columns BEFORE filtering — preserves alignment.
-    filter_cols = [c for c in ('target_15m_return', 'target_sign_15m') if c in df.columns]
+    filter_cols = [c for c in ('target_15m_ret', 'target_15m_dir', 'target_15m_trade_class') if c in df.columns]
     before = df.height
     mask = None
     full_nan_cols = []
@@ -190,7 +190,11 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
         raise RuntimeError('FEATURE ENGINE FAILURE: empty output after all stages')
     _check_ts_event(df, 'final', 'output')
 
-    feature_cols = [c for c in df.columns if c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))]
+    baseline_names = set(load_baseline_feature_names())
+    feature_cols = [
+        c for c in df.columns
+        if c in baseline_names or c.startswith(('ratio_', 'pair_', 'zscore', 'cross_', 'htf_'))
+    ]
     df = df.with_columns([pl.col(c).cast(pl.Float32) for c in feature_cols])
     logger.info('[CANONICAL] Final: %d rows, %d features (expansion=%s)',
                 df.height, len(feature_cols),
@@ -200,7 +204,7 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
 
 def validate_feature_target_matrix(
     df: pl.DataFrame,
-    target_col: str = 'target_sign_15m',
+    target_col: str = 'target_15m_ret',
 ) -> pl.DataFrame:
     if df.is_empty():
         raise RuntimeError('FEATURE/TARGET FAIL: matrix is empty')
@@ -222,7 +226,11 @@ def validate_feature_target_matrix(
         raise RuntimeError(
             f'FEATURE/TARGET FAIL: {df[target_col].null_count()} null values in {target_col}'
         )
-    feature_cols = [c for c in df.columns if c.startswith(_FEATURE_PREFIXES)]
+    baseline_names = set(load_baseline_feature_names())
+    feature_cols = [
+        c for c in df.columns
+        if c in baseline_names or c.startswith(_FEATURE_PREFIXES)
+    ]
     if not feature_cols:
         raise RuntimeError('FEATURE/TARGET FAIL: no feature columns generated')
     return df
@@ -231,7 +239,7 @@ def validate_feature_target_matrix(
 def load_or_build_feature_target_matrix(
     df_aligned: pl.DataFrame,
     cache_path: str | Path | None = None,
-    target_col: str = 'target_sign_15m',
+    target_col: str = 'target_15m_ret',
 ) -> pl.DataFrame:
     """
     Step 4 artifact boundary: feature + target matrix.
