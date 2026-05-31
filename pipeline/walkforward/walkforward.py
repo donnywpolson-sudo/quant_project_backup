@@ -16,7 +16,7 @@ from scipy.special import expit
 from joblib import Parallel, delayed
 from core.config import config
 
-from pipeline.execution.simulator import simulate_execution_classification
+from pipeline.execution.simulator import run_execution_simulation
 from pipeline.features.corr_prune import correlation_prune
 from pipeline.features.variance_filter import remove_constant_features
 from pipeline.meta.meta_label import add_meta_label_target
@@ -363,7 +363,7 @@ def process_fold(train_X: pl.DataFrame, train_y: pl.Series, test_original: pl.Da
                 meta_train_X = train_val_X.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
                 meta_model = train_meta_model(meta_train_X, meta_val_pred.astype(np.float32), meta_train_y)
 
-    result = simulate_execution_classification(result)
+    result = run_execution_simulation(result)
 
     if meta_model is not None:
         test_X_np = test_original.select(feature_cols).fill_null(0.0).to_numpy().astype(np.float32)
@@ -460,7 +460,7 @@ def process_fold_with_hmm(
         pl.Series('prediction_prob', probs).cast(pl.Float32)
     )
     result = result.with_columns(compute_benchmark(result))
-    result = simulate_execution_classification(result)
+    result = run_execution_simulation(result)
 
     # --- HMM Regime Gating ---
     if hmm_filter is None:
@@ -883,6 +883,183 @@ def _print_alpha_diagnostics(result: pl.DataFrame, test_df: pl.DataFrame, train_
     print(f'[SPLIT-VERIFY] pred_cs={pred_cs} pos_cs={pos_cs} pnl_cs={pnl_cs}', flush=True)
 
 
+def validate_walkforward_train_test(
+    train_df: pl.DataFrame,
+    test_df: pl.DataFrame,
+    feature_cols: list,
+    target_col: str,
+) -> dict:
+    """Step 7 hard gate: train/test separation and model input validity."""
+    if train_df.height == 0:
+        raise RuntimeError('WALKFORWARD FAIL: empty train_df')
+    if test_df.height == 0:
+        raise RuntimeError('WALKFORWARD FAIL: empty test_df')
+    if not feature_cols:
+        raise RuntimeError('WALKFORWARD FAIL: no feature columns')
+    for name, df in (('train', train_df), ('test', test_df)):
+        if 'ts_event' not in df.columns:
+            raise RuntimeError(f'WALKFORWARD FAIL: {name} missing ts_event')
+        if not df['ts_event'].is_sorted():
+            raise RuntimeError(f'WALKFORWARD FAIL: {name} ts_event not sorted')
+        if df['ts_event'].n_unique() != df.height:
+            raise RuntimeError(f'WALKFORWARD FAIL: {name} duplicate ts_event values')
+        if target_col not in df.columns:
+            raise RuntimeError(f'WALKFORWARD FAIL: {name} missing target {target_col}')
+        if df[target_col].null_count() > 0:
+            raise RuntimeError(f'WALKFORWARD FAIL: {name} null target values in {target_col}')
+    missing_train = [c for c in feature_cols if c not in train_df.columns]
+    missing_test = [c for c in feature_cols if c not in test_df.columns]
+    if missing_train or missing_test:
+        raise RuntimeError(
+            f'WALKFORWARD FAIL: missing features train={missing_train[:10]} test={missing_test[:10]}'
+        )
+    numeric_types = (
+        pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    )
+    non_numeric = [
+        c for c in feature_cols
+        if train_df[c].dtype not in numeric_types or test_df[c].dtype not in numeric_types
+    ]
+    if non_numeric:
+        raise RuntimeError(f'WALKFORWARD FAIL: non-numeric features {non_numeric[:10]}')
+
+    train_ts_min = train_df['ts_event'].min()
+    train_ts_max = train_df['ts_event'].max()
+    test_ts_min = test_df['ts_event'].min()
+    test_ts_max = test_df['ts_event'].max()
+    if train_ts_max >= test_ts_min:
+        raise RuntimeError(
+            f'WALKFORWARD FAIL: train/test overlap train_max={train_ts_max} test_min={test_ts_min}'
+        )
+    horizon_minutes = _label_horizon_minutes(target_col)
+    cutoff = test_ts_min - timedelta(minutes=horizon_minutes)
+    purge_survivors = train_df.filter(pl.col('ts_event') <= cutoff).height
+    if purge_survivors == 0:
+        raise RuntimeError(
+            f'WALKFORWARD FAIL: purge would remove all train rows target={target_col} cutoff={cutoff}'
+        )
+    return {
+        'train_rows': train_df.height,
+        'test_rows': test_df.height,
+        'purged_train_rows': purge_survivors,
+        'feature_cols': len(feature_cols),
+        'target_col': target_col,
+        'train_ts_min': str(train_ts_min),
+        'train_ts_max': str(train_ts_max),
+        'test_ts_min': str(test_ts_min),
+        'test_ts_max': str(test_ts_max),
+    }
+
+
+def validate_walkforward_oos_predictions(result: pl.DataFrame, test_df: pl.DataFrame) -> None:
+    if result.height == 0:
+        raise RuntimeError('WALKFORWARD FAIL: empty result')
+    if 'prediction_prob' not in result.columns:
+        raise RuntimeError('WALKFORWARD FAIL: prediction_prob missing from result')
+    probs = result['prediction_prob'].to_numpy().astype(np.float64)
+    if not np.isfinite(probs).all():
+        raise RuntimeError('WALKFORWARD FAIL: non-finite prediction_prob')
+    if np.any((probs < 0.0) | (probs > 1.0)):
+        raise RuntimeError('WALKFORWARD FAIL: prediction_prob outside [0, 1]')
+    result_min = result['ts_event'].min()
+    result_max = result['ts_event'].max()
+    test_min = test_df['ts_event'].min()
+    test_max = test_df['ts_event'].max()
+    if result_min < test_min or result_max > test_max:
+        raise RuntimeError(
+            f'WALKFORWARD FAIL: result timestamps outside test window '
+            f'result=[{result_min}, {result_max}] test=[{test_min}, {test_max}]'
+        )
+
+
+def build_oos_prediction_frame(
+    result: pl.DataFrame,
+    target_col: str | None = None,
+) -> pl.DataFrame:
+    """
+    Step 8 artifact boundary: OOS predictions and raw model-derived signal.
+
+    This is a projection of the walkforward result, not a recomputation.
+    """
+    if 'ts_event' not in result.columns:
+        raise RuntimeError('OOS PREDICTION FAIL: ts_event missing')
+    if 'prediction_prob' not in result.columns:
+        raise RuntimeError('OOS PREDICTION FAIL: prediction_prob missing')
+
+    keep = ['ts_event', 'prediction_prob']
+    for col in ('raw_signal', target_col, 'target_exec'):
+        if col and col in result.columns and col not in keep:
+            keep.append(col)
+    out = result.select(keep)
+    validate_oos_prediction_frame(out)
+    return out
+
+
+def validate_oos_prediction_frame(df: pl.DataFrame) -> None:
+    if df.height == 0:
+        raise RuntimeError('OOS PREDICTION FAIL: empty prediction frame')
+    for col in ('ts_event', 'prediction_prob'):
+        if col not in df.columns:
+            raise RuntimeError(f'OOS PREDICTION FAIL: missing {col}')
+    if df['ts_event'].null_count() > 0:
+        raise RuntimeError('OOS PREDICTION FAIL: null ts_event values')
+    if not df['ts_event'].is_sorted():
+        raise RuntimeError('OOS PREDICTION FAIL: ts_event not sorted')
+    if df['ts_event'].n_unique() != df.height:
+        raise RuntimeError('OOS PREDICTION FAIL: duplicate ts_event values')
+    probs = df['prediction_prob'].to_numpy().astype(np.float64)
+    if not np.isfinite(probs).all():
+        raise RuntimeError('OOS PREDICTION FAIL: non-finite prediction_prob')
+    if np.any((probs < 0.0) | (probs > 1.0)):
+        raise RuntimeError('OOS PREDICTION FAIL: prediction_prob outside [0, 1]')
+    if 'raw_signal' in df.columns:
+        sig = df['raw_signal'].to_numpy().astype(np.float64)
+        if not np.isfinite(sig).all():
+            raise RuntimeError('OOS PREDICTION FAIL: non-finite raw_signal')
+        if not np.isin(sig, [-1.0, 0.0, 1.0]).all():
+            raise RuntimeError('OOS PREDICTION FAIL: raw_signal outside {-1,0,1}')
+
+
+def run_walkforward_modeling(
+    train_df: pl.DataFrame,
+    test_df: pl.DataFrame,
+    feature_cols: list,
+    target_col: str = 'target_sign',
+) -> pl.DataFrame:
+    """Step 7 boundary: train on train window and produce OOS test predictions."""
+    validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
+    print(
+        f'[WALKFORWARD] train_rows={validation["train_rows"]} '
+        f'purged_train_rows={validation["purged_train_rows"]} '
+        f'test_rows={validation["test_rows"]} features={validation["feature_cols"]}',
+        flush=True,
+    )
+    result = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
+    validate_walkforward_oos_predictions(result, test_df)
+    return result
+
+
+def run_walkforward_modeling_with_hmm(
+    train_df: pl.DataFrame,
+    test_df: pl.DataFrame,
+    feature_cols: list,
+    target_col: str = 'target_sign',
+) -> Tuple[pl.DataFrame, dict]:
+    validation = validate_walkforward_train_test(train_df, test_df, feature_cols, target_col)
+    print(
+        f'[WALKFORWARD-HMM] train_rows={validation["train_rows"]} '
+        f'purged_train_rows={validation["purged_train_rows"]} '
+        f'test_rows={validation["test_rows"]} features={validation["feature_cols"]}',
+        flush=True,
+    )
+    result, report = run_outer_train_test_eval_with_hmm(train_df, test_df, feature_cols, target_col)
+    validate_walkforward_oos_predictions(result, test_df)
+    report = dict(report)
+    report['walkforward_validation'] = validation
+    return result, report
+
+
 def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
                               feature_cols: list, target_col: str = 'target_sign') -> pl.DataFrame:
     if train_df.height == 0:
@@ -917,7 +1094,7 @@ def run_outer_train_test_eval(train_df: pl.DataFrame, test_df: pl.DataFrame,
     result = result.with_columns(compute_benchmark(result))
     print('[HEARTBEAT] execution simulation start', flush=True)
     t_exec = time.perf_counter()
-    result = simulate_execution_classification(result)
+    result = run_execution_simulation(result)
     dt_exec = time.perf_counter() - t_exec
     print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
     if dt_exec > 60:
@@ -978,7 +1155,7 @@ def run_outer_train_test_eval_with_hmm(train_df: pl.DataFrame, test_df: pl.DataF
     result = result.with_columns(compute_benchmark(result))
     print('[HEARTBEAT] execution simulation start', flush=True)
     t_exec = time.perf_counter()
-    result = simulate_execution_classification(result)
+    result = run_execution_simulation(result)
     dt_exec = time.perf_counter() - t_exec
     print(f'[HEARTBEAT] execution simulation done rows={result.height} seconds={dt_exec:.1f}', flush=True)
     if dt_exec > 60:

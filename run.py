@@ -21,6 +21,7 @@ import polars as pl
 import numpy as np
 from core.config import load_config, RootConfig, config as _ns_cfg
 from core.market import get_contract_multiplier
+from pipeline.data_gate.manifest import DatasetGateError, validate_dataset_gate
 
 _LOG_MODE = os.environ.get('LOG_MODE', 'clean').strip().lower()
 if _LOG_MODE not in {'clean', 'verbose', 'debug'}:
@@ -325,9 +326,16 @@ def _load_file_date_bounds(files: list[Path]) -> dict[int, tuple]:
         except ValueError:
             continue
         try:
-            lf = pl.scan_parquet(f).select(pl.col('ts_event'))
-            min_ts = lf.select(pl.col('ts_event').min()).collect().item()
-            max_ts = lf.select(pl.col('ts_event').max()).collect().item()
+            date_bounds = (
+                pl.scan_parquet(f)
+                .select([
+                    pl.col('ts_event').min().alias('min_ts'),
+                    pl.col('ts_event').max().alias('max_ts'),
+                ])
+                .collect()
+            )
+            min_ts = date_bounds['min_ts'][0]
+            max_ts = date_bounds['max_ts'][0]
             if min_ts is not None and max_ts is not None:
                 bounds[year] = (min_ts.date(), max_ts.date())
         except Exception:
@@ -492,40 +500,53 @@ def generate_walkforward_splits(files: list[Path], config: RootConfig) -> list[t
 
 
 _MIN_ROWS = 1000
-_MIN_PRICE = {'CL': 0.1, 'ES': 500, 'NQ': 1000, 'GC': 500, 'SI': 5, 'HG': 1,
+_MIN_PRICE = {'CL': 0.1, 'ES': 500, 'MES': 500, 'NQ': 1000, 'GC': 500, 'SI': 5, 'HG': 1,
               'ZB': 50, 'ZN': 50, 'ZC': 50, 'NG': 0.5}
-_MAX_PRICE = {'CL': 200, 'ES': 10000, 'NQ': 30000, 'GC': 5000, 'SI': 60, 'HG': 10,
+_MAX_PRICE = {'CL': 200, 'ES': 10000, 'MES': 10000, 'NQ': 30000, 'GC': 5000, 'SI': 60, 'HG': 10,
               'ZB': 250, 'ZN': 250, 'ZC': 20, 'NG': 30}
 
 
 def _validate_symbol_data(f: Path, config) -> bool:
     symbol = f.parent.name
     try:
-        df = pl.read_parquet(f)
+        stats = (
+            pl.scan_parquet(f)
+            .select([
+                pl.len().alias('rows'),
+                pl.col('ts_event').null_count().alias('null_ts'),
+                pl.col('close').mean().alias('close_mean'),
+                pl.col('ts_event').min().alias('ts_min'),
+                pl.col('ts_event').max().alias('ts_max'),
+            ])
+            .collect()
+        )
     except Exception as e:
+        try:
+            schema = pl.scan_parquet(f).collect_schema()
+        except Exception:
+            schema = {}
+        missing = [c for c in ('ts_event', 'close') if c not in schema]
+        if missing:
+            logger.error('[SAFETY] %s: missing columns %s -- SKIPPING', symbol, ','.join(missing))
+            return False
         logger.error('[SAFETY] Cannot read %s: %s -- SKIPPING', f, e)
         return False
-    if df.height < _MIN_ROWS:
-        logger.error('[SAFETY] %s: %d rows < %d minimum -- SKIPPING', symbol, df.height, _MIN_ROWS)
+    rows = int(stats['rows'][0])
+    if rows < _MIN_ROWS:
+        logger.error('[SAFETY] %s: %d rows < %d minimum -- SKIPPING', symbol, rows, _MIN_ROWS)
         return False
-    if 'ts_event' not in df.columns:
-        logger.error('[SAFETY] %s: missing ts_event column -- SKIPPING', symbol)
-        return False
-    if 'close' not in df.columns:
-        logger.error('[SAFETY] %s: missing close column -- SKIPPING', symbol)
-        return False
-    null_ts = df['ts_event'].null_count()
+    null_ts = int(stats['null_ts'][0])
     if null_ts > 0:
         logger.error('[SAFETY] %s: %d null ts_event values -- SKIPPING', symbol, null_ts)
         return False
-    close_mean = df['close'].mean()
+    close_mean = stats['close_mean'][0]
     lo, hi = _MIN_PRICE.get(symbol, 0), _MAX_PRICE.get(symbol, 1e9)
     if close_mean < lo or close_mean > hi:
         logger.error('[SAFETY] %s: close mean %.2f outside [%.2f, %.2f] -- SKIPPING',
                      symbol, close_mean, lo, hi)
         return False
-    ts_min = df['ts_event'].min()
-    ts_max = df['ts_event'].max()
+    ts_min = stats['ts_min'][0]
+    ts_max = stats['ts_max'][0]
     if ts_min is None or ts_max is None:
         logger.error('[SAFETY] %s: null ts_event range -- SKIPPING', symbol)
         return False
@@ -534,8 +555,6 @@ def _validate_symbol_data(f: Path, config) -> bool:
     if available_days < wf_window * 2:
         logger.warning('[SAFETY] %s: %d days available < %d required (2x window) -- may have few folds',
                        symbol, available_days, wf_window * 2)
-    logger.info('[SAFETY] %s: OK rows=%d close=%.2f range=%s->%s days=%d',
-                symbol, df.height, close_mean, ts_min.date(), ts_max.date(), available_days)
     return True
 
 
@@ -996,7 +1015,7 @@ def process_split(train_years: list[int], test_years: list[int], files: list[Pat
                 split_idx, symbol, f, mtime=f.stat().st_mtime if f.exists() else 0.0
             ))
             continue
-        out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}'
+        out_dir = Path('output') / symbol / f'{f.stem}_split_{split_idx}_{_ns_cfg.ACTIVE_PROFILE}'
         out_dir.mkdir(parents=True, exist_ok=True)
         # Purge stale backtest files from previous runs
         for _stale_name in ('backtest_results_hmm.parquet', 'backtest_results.parquet'):
@@ -1220,6 +1239,17 @@ if __name__ == '__main__':
     if not files:
         logger.warning('No files found after filtering')
         sys.exit(0)
+    if os.environ.get('QUANT_SKIP_DATASET_GATE', '0') != '1':
+        try:
+            validate_dataset_gate(
+                files,
+                symbols=config.symbols,
+                manifest_path=os.environ.get('QUANT_AUDIT_MANIFEST', 'reports/data_audit/audit_manifest.json'),
+                required=os.environ.get('QUANT_REQUIRE_DATASET_GATE', '0') == '1',
+                check_hash=os.environ.get('QUANT_DATASET_GATE_HASH', '0') == '1',
+            )
+        except DatasetGateError as exc:
+            raise SystemExit(str(exc)) from exc
     splits = generate_walkforward_splits(files, config)
     total = len(splits)
     print(

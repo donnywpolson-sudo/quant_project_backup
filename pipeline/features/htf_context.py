@@ -8,6 +8,29 @@ import polars as pl
 from core.config import config
 
 
+def _session_prior_close_table(df: pl.DataFrame) -> pl.DataFrame:
+    """One row per session with prior completed-session closes.
+
+    This must be computed at session granularity. Row-level shifts inside a
+    session leak the current session's final close into earlier rows.
+    """
+    return (
+        df.select(['session_id', 'ts_event', 'close'])
+        .sort('ts_event')
+        .group_by('session_id', maintain_order=True)
+        .agg([
+            pl.col('ts_event').first().alias('_session_start'),
+            pl.col('close').last().alias('_session_close'),
+        ])
+        .sort('_session_start')
+        .with_columns([
+            pl.col('_session_close').shift(1).alias('_prev_day_close'),
+            pl.col('_session_close').shift(2).alias('_two_days_ago_close'),
+        ])
+        .select(['session_id', '_prev_day_close', '_two_days_ago_close'])
+    )
+
+
 def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
     if df is None or df.height == 0:
         return df
@@ -29,15 +52,10 @@ def add_htf_context_features(df: pl.DataFrame) -> pl.DataFrame:
          / pl.col('_daily_low_expanding').clip(eps, None)).alias('htf_distance_to_daily_low'),
     ])
 
-    # Previous two completed days' closes:
-    # _prev_day_close = yesterday's final close (constant across all bars of today)
-    # _two_days_ago_close = day-before-yesterday's final close
-    prev_day = pl.col('close').last().over(pl.col('session_id')).shift(1).forward_fill().over(pl.col('session_id'))
-    two_ago = pl.col('close').last().over(pl.col('session_id')).shift(2).forward_fill().over(pl.col('session_id'))
-    df = df.with_columns([
-        prev_day.alias('_prev_day_close'),
-        two_ago.alias('_two_days_ago_close'),
-    ])
+    # Previous two completed sessions' closes.
+    # Compute at session granularity, then join back. Do not use row-level
+    # shift inside a session; that leaks the current session's final close.
+    df = df.join(_session_prior_close_table(df), on='session_id', how='left')
 
     # Daily return: previous FULL day's realized return (constant per day)
     # log(yesterday's close / day-before-yesterday's close)

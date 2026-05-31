@@ -122,6 +122,32 @@ profiles:
     walkforward:
       model_type: "LogisticRegression"
 
+  alpha_0_costs:
+    symbols:
+      - ES
+    data_years: 1
+    folds: 1
+    start_year: 2024
+    end_year: 2024
+    walkforward:
+      model_type: "LogisticRegression"
+    execution:
+      tx_cost_per_roundturn: 0.00015
+      commission_per_contract: 1.50
+
+  alpha_0_mes_costs:
+    symbols:
+      - MES
+    data_years: 1
+    folds: 1
+    start_year: 2024
+    end_year: 2024
+    walkforward:
+      model_type: "LogisticRegression"
+    execution:
+      tx_cost_per_roundturn: 0.00015
+      commission_per_contract: 0.75
+
   alpha_1:
     symbols:
       - ES

@@ -18,6 +18,31 @@ from core.config import config
 FIXED_CONTRACT_SIZE = 1.0
 
 
+def _cfg_float(name: str, default: float = 0.0) -> float:
+    value = getattr(config, name, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _transaction_cost_bps() -> float:
+    if hasattr(config, 'TRANSACTION_COST_BPS'):
+        return _cfg_float('TRANSACTION_COST_BPS')
+    if hasattr(config, 'TX_COST_BPS'):
+        return _cfg_float('TX_COST_BPS')
+    # Backward compatibility: existing TX_COST_PER_ROUNDTURN is decimal
+    # round-turn cost. A position change is one side, so divide by 2.
+    return _cfg_float('TX_COST_PER_ROUNDTURN') * 10000.0 / 2.0
+
+
+def _slippage_bps() -> float:
+    if hasattr(config, 'SLIPPAGE_BPS'):
+        return _cfg_float('SLIPPAGE_BPS')
+    # Backward compatibility: existing SLIPPAGE_K is treated as decimal bps rate.
+    return _cfg_float('SLIPPAGE_K') * 10000.0
+
+
 @numba.njit(cache=True)
 def simulate_intrabar_stops(
     open_arr: np.ndarray,
@@ -388,24 +413,18 @@ def simulate_execution_classification(df: pl.DataFrame) -> pl.DataFrame:
     df = df.with_columns(spread.alias('spread'))
 
     # ------------------------------------------------------------------------
-    # 10. Unified per-bar cost charged on position CHANGE (turnover).
-    #     Commission, slippage, vol penalty, and tx_cost_per_roundturn
-    #     are all consolidated into a single cost rate applied to
-    #     absolute position changes (entry + exit friction).
+    # 10. Per-bar bps cost rate charged on position CHANGE.
+    #     Dollar conversion happens in _compute_pnl_from_target_exec via:
+    #       notional_traded * bps / 10000
     # ------------------------------------------------------------------------
-    # TX_COST_PER_ROUNDTURN (1.5 bps) covers the full round-trip (entry + exit).
-    # unit_cost is charged per position change, and a round-trip has two
-    # position changes (enter and exit), so we divide by 2 to avoid double-charging.
-    unit_cost = (
-        config.COMMISSION_PER_TRADE
-        + config.SLIPPAGE_K * pl.col('spread')
-        + config.VOL_PENALTY * pl.col('vol')
-        + config.TX_COST_PER_ROUNDTURN / 2.0
-    ).clip(0.0, 0.01)
+    unit_cost = pl.lit(
+        max((_transaction_cost_bps() + _slippage_bps()) / 10000.0, 0.0),
+        dtype=pl.Float32,
+    )
     df = df.with_columns(unit_cost.alias('unit_cost'))
 
     df = _compute_pnl_from_target_exec(df, contract_multiplier)
-    return df
+    return validate_execution_simulation_result(df)
 
 
 def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float = 1.0) -> pl.DataFrame:
@@ -415,8 +434,9 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     This is the full PnL calculation pipeline used by both the main
     execution path and the HMM recompute path.  It assumes that
     ``target_exec`` (the signed, sized, gated position signal),
-    ``vol``, ``spread``, and ``unit_cost`` columns already exist on
-    the DataFrame.
+    ``vol`` and ``spread`` may exist on the DataFrame. Costs are computed
+    in dollars from absolute position change, open price, contract multiplier,
+    commission_per_contract, transaction bps, and slippage bps.
 
     Includes:
       - Execution return: buy at t+1 open, sell at t+1 close
@@ -425,11 +445,19 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
       - Intrabar stop-loss / take-profit with gap-slippage logic
       - PnL = pos * ret_exec * entry_price * multiplier
         + intrabar_pnl * multiplier
-        - unit_cost * pos_change
+        - contracts_changed * commission_per_contract
+        - notional_traded * transaction_cost_bps / 10000
+        - notional_traded * slippage_bps / 10000
         - round-turn settlement on flatting
       - Proportional PnL clip (5 % of notional)
     """
     eps = config.EPS
+
+    # Futures contracts are discrete. Fractional positions create impossible
+    # fills and understate execution constraints for low-risk accounts.
+    target_exec_sized = pl.col('target_exec').cast(pl.Float32)
+    df = df.with_columns(target_exec_sized.alias('target_exec_sized'))
+    df = df.with_columns(target_exec_sized.round(0).cast(pl.Float32).alias('target_exec'))
 
     # ------------------------------------------------------------------------
     # Execution return: signal[t-1] executed at open[t] earns return[t].
@@ -496,9 +524,21 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     gross_pnl = gross_pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(gross_pnl.alias('gross_pnl'))
 
-    pnl = pl.col('position') * pl.col('ret_exec') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
-    pnl = pnl + pl.col('intrabar_pnl') * pl.lit(contract_multiplier, dtype=pl.Float32)
-    pnl = pnl - pl.col('unit_cost') * pl.col('pos_change')
+    notional_turnover = pl.col('pos_change') * entry_price * pl.lit(contract_multiplier, dtype=pl.Float32)
+    commission_cost = pl.col('pos_change') * pl.lit(_cfg_float('COMMISSION_PER_CONTRACT'), dtype=pl.Float32)
+    transaction_cost = notional_turnover * pl.lit(_transaction_cost_bps() / 10000.0, dtype=pl.Float32)
+    slippage_cost = notional_turnover * pl.lit(_slippage_bps() / 10000.0, dtype=pl.Float32)
+    total_cost = commission_cost + transaction_cost + slippage_cost
+    df = df.with_columns([
+        notional_turnover.alias('notional_traded'),
+        commission_cost.alias('commission_cost'),
+        transaction_cost.alias('transaction_cost'),
+        slippage_cost.alias('slippage_cost'),
+        total_cost.alias('execution_cost'),
+        ((pl.lit(_transaction_cost_bps() + _slippage_bps(), dtype=pl.Float32)) / 10000.0).alias('unit_cost'),
+    ])
+
+    pnl = gross_pnl - pl.col('execution_cost')
     pnl = pnl.fill_nan(0.0)
     pnl = pnl.clip(-pnl_clip, pnl_clip)
     df = df.with_columns(pnl.alias('pnl'))
@@ -521,6 +561,73 @@ def _compute_pnl_from_target_exec(df: pl.DataFrame, contract_multiplier: float =
     )
 
     return df
+
+
+def validate_execution_simulation_result(df: pl.DataFrame) -> pl.DataFrame:
+    """Step 9 hard gate: execution simulation output contract."""
+    required = [
+        'ts_event', 'prediction_prob', 'raw_signal',
+        'target_exec', 'target_exec_sized',
+        'position', 'pos_change', 'ret_exec',
+        'gross_pnl', 'pnl',
+        'notional_traded', 'commission_cost', 'transaction_cost',
+        'slippage_cost', 'execution_cost',
+        'return_on_equity', 'gross_return_on_equity',
+        'equity_curve', 'gross_equity_curve', 'drawdown_pct',
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise RuntimeError(f'EXECUTION FAIL: missing columns {missing}')
+    if df.height == 0:
+        raise RuntimeError('EXECUTION FAIL: empty result')
+    if df['ts_event'].null_count() > 0:
+        raise RuntimeError('EXECUTION FAIL: null ts_event values')
+    if not df['ts_event'].is_sorted():
+        raise RuntimeError('EXECUTION FAIL: ts_event not sorted')
+    if df['ts_event'].n_unique() != df.height:
+        raise RuntimeError('EXECUTION FAIL: duplicate ts_event values')
+
+    numeric_cols = [c for c in required if c != 'ts_event']
+    for col in numeric_cols:
+        vals = df[col].to_numpy()
+        if not np.isfinite(vals.astype(np.float64)).all():
+            raise RuntimeError(f'EXECUTION FAIL: non-finite values in {col}')
+
+    probs = df['prediction_prob'].to_numpy().astype(np.float64)
+    if np.any((probs < 0.0) | (probs > 1.0)):
+        raise RuntimeError('EXECUTION FAIL: prediction_prob outside [0, 1]')
+
+    raw_signal = df['raw_signal'].to_numpy().astype(np.float64)
+    if not np.isin(raw_signal, [-1.0, 0.0, 1.0]).all():
+        raise RuntimeError('EXECUTION FAIL: raw_signal outside {-1,0,1}')
+
+    target_exec = df['target_exec'].to_numpy().astype(np.float64)
+    if not np.allclose(target_exec, np.round(target_exec), atol=1e-6):
+        raise RuntimeError('EXECUTION FAIL: target_exec contains fractional contracts')
+
+    non_negative_cols = [
+        'pos_change', 'notional_traded', 'commission_cost',
+        'transaction_cost', 'slippage_cost', 'execution_cost',
+    ]
+    for col in non_negative_cols:
+        vals = df[col].to_numpy().astype(np.float64)
+        if np.any(vals < -1e-9):
+            raise RuntimeError(f'EXECUTION FAIL: negative values in {col}')
+
+    gross = df['gross_pnl'].to_numpy().astype(np.float64)
+    net = df['pnl'].to_numpy().astype(np.float64)
+    costs = df['execution_cost'].to_numpy().astype(np.float64)
+    if not np.allclose(net, gross - costs, atol=1e-3):
+        raise RuntimeError('EXECUTION FAIL: pnl != gross_pnl - execution_cost')
+
+    return df
+
+
+def run_execution_simulation(df: pl.DataFrame) -> pl.DataFrame:
+    """Step 9 boundary: signal shift, sizing, costs/slippage, and PnL."""
+    if 'prediction_prob' not in df.columns:
+        raise RuntimeError('EXECUTION FAIL: prediction_prob missing before execution')
+    return validate_execution_simulation_result(simulate_execution_classification(df))
 
 
 def simulate_execution(df: pl.DataFrame) -> pl.DataFrame:

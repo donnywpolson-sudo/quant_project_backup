@@ -54,14 +54,12 @@ def align_htf_streams(
         if renames_daily:
             df_daily = df_daily.rename(renames_daily)
         df_5min = df_5min.join_asof(df_daily, on='ts_event', strategy='backward')
-        # Forward- and backward-fill daily columns to cover boundary bars:
-        # - bars that fall between the shifted daily timestamp and the next daily bar
-        #   need forward_fill to carry the prior completed day's data forward
-        # - bars at the very start of the series (before any match) need backward_fill
+        # Forward-fill only. Backward-fill within a session would leak a later
+        # daily value into earlier rows before that value is causally available.
         daily_cols = [c for c in df_5min.columns if c.startswith('daily_')]
         if daily_cols:
             df_5min = df_5min.with_columns(
-                [pl.col(c).forward_fill().over('session_id').backward_fill().over('session_id') for c in daily_cols]
+                [pl.col(c).forward_fill().over('session_id') for c in daily_cols]
             )
 
     return df_5min

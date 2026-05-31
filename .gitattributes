@@ -1,0 +1,14 @@
+/.gitattributes text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+
+*.parquet binary
+*.dbn.zst binary
+*.dbn.dzt binary
+*.zst binary
+*.pkl binary

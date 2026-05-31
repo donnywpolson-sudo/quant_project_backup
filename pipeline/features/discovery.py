@@ -15,6 +15,141 @@ from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 
+_FROZEN_FEATURE_PREFIXES = (
+    'feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_', '1h_', 'daily_',
+)
+_MODEL_METADATA_EXCLUDE_EXACT = {
+    'continuous_price',
+    'adjustment_factor',
+    'cumulative_factor',
+    'contract_multiplier',
+}
+_MODEL_METADATA_EXCLUDE_PREFIXES = (
+    'continuous_',
+    'roll_',
+    'front_contract',
+    'back_contract',
+)
+
+
+def _is_model_metadata_column(col: str) -> bool:
+    return col in _MODEL_METADATA_EXCLUDE_EXACT or col.startswith(_MODEL_METADATA_EXCLUDE_PREFIXES)
+
+
+def _is_selectable_feature_name(col: str) -> bool:
+    return col.startswith(_FROZEN_FEATURE_PREFIXES) and not _is_model_metadata_column(col)
+
+
+def load_frozen_feature_manifest(manifest_path: str) -> dict:
+    if not os.path.exists(manifest_path):
+        raise RuntimeError(f'FROZEN MANIFEST FAIL: missing manifest {manifest_path}')
+    with open(manifest_path, 'r', encoding='utf-8') as f:
+        manifest = json.load(f)
+    selected = manifest.get('feature_names')
+    if not isinstance(selected, list):
+        raise RuntimeError('FROZEN MANIFEST FAIL: feature_names must be a list')
+    if len(selected) != len(set(selected)):
+        raise RuntimeError('FROZEN MANIFEST FAIL: duplicate feature_names')
+    bad = [
+        f for f in selected
+        if not isinstance(f, str)
+        or f.startswith('target_')
+        or f in {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id'}
+        or _is_model_metadata_column(f)
+    ]
+    if bad:
+        raise RuntimeError(f'FROZEN MANIFEST FAIL: invalid selected features {bad[:10]}')
+    return manifest
+
+
+def apply_frozen_feature_manifest(
+    df: pl.DataFrame,
+    manifest_path: str,
+    target_col: str,
+) -> pl.DataFrame:
+    """Step 6 boundary: apply the frozen train-selected feature list to any window."""
+    manifest = load_frozen_feature_manifest(manifest_path)
+    selected = list(manifest.get('feature_names', []))
+    missing = [c for c in selected if c not in df.columns]
+    if missing:
+        raise RuntimeError(f'FROZEN MANIFEST FAIL: selected features missing from matrix {missing[:10]}')
+    if target_col not in df.columns:
+        raise RuntimeError(f'FROZEN MANIFEST FAIL: target column missing after matrix build: {target_col}')
+
+    essential = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
+    non_feature = [
+        c for c in df.columns
+        if not c.startswith(_FROZEN_FEATURE_PREFIXES)
+        and c not in essential
+        and not _is_model_metadata_column(c)
+    ]
+    keep = list({c for c in essential if c in df.columns}) + non_feature + selected
+    keep = list(dict.fromkeys(keep))
+    out = df.select(keep)
+    if target_col not in out.columns:
+        raise RuntimeError(f'FROZEN MANIFEST FAIL: target column removed: {target_col}')
+    return out
+
+
+def _parse_utc_boundary(value: str | None, label: str):
+    if value is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f'DISCOVERY WINDOW FAIL: invalid {label}: {value!r}') from exc
+    if dt.tzinfo is None:
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(pytz.utc)
+
+
+def _discovery_window_bounds(discovery_start: str | None, discovery_end: str | None):
+    if bool(discovery_start) != bool(discovery_end):
+        raise RuntimeError(
+            'DISCOVERY WINDOW FAIL: discovery_start and discovery_end must be provided together'
+        )
+    start_utc = _parse_utc_boundary(discovery_start, 'discovery_start')
+    end_utc = _parse_utc_boundary(discovery_end, 'discovery_end')
+    if start_utc is not None and end_utc is not None and start_utc >= end_utc:
+        raise RuntimeError(
+            f'DISCOVERY WINDOW FAIL: start >= end ({start_utc} >= {end_utc})'
+        )
+    return start_utc, end_utc
+
+
+def filter_feature_matrix_to_train_window(
+    df_features: pl.DataFrame,
+    discovery_start: str | None,
+    discovery_end: str | None,
+) -> pl.DataFrame:
+    """Hard train-only gate for feature discovery."""
+    start_utc, end_utc = _discovery_window_bounds(discovery_start, discovery_end)
+    if start_utc is None:
+        return df_features
+    if 'ts_event' not in df_features.columns:
+        raise RuntimeError('DISCOVERY WINDOW FAIL: ts_event missing from feature matrix')
+    if df_features['ts_event'].dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
+        df_features = df_features.with_columns(
+            pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
+        )
+    before = df_features.height
+    df_features = df_features.filter(
+        (pl.col('ts_event') >= start_utc) & (pl.col('ts_event') < end_utc)
+    )
+    if df_features.height == 0:
+        raise RuntimeError(
+            f'DISCOVERY WINDOW FAIL: train-only window [{start_utc}, {end_utc}) '
+            f'returned 0 rows from {before}'
+        )
+    ts_min = df_features['ts_event'].min()
+    ts_max = df_features['ts_event'].max()
+    if ts_min < start_utc or ts_max >= end_utc:
+        raise RuntimeError(
+            f'DISCOVERY WINDOW FAIL: rows outside train window '
+            f'ts=[{ts_min}, {ts_max}] window=[{start_utc}, {end_utc})'
+        )
+    return df_features
+
 
 def check_rss(limit_bytes):
     return psutil.Process().memory_info().rss > limit_bytes
@@ -105,8 +240,15 @@ def run_feature_discovery(
     # latest timestamp, compute the window boundary, then re-scan with the
     # predicate baked into the scan.
 
+    train_start_utc, train_end_utc = _discovery_window_bounds(discovery_start, discovery_end)
+
     # Pass 1 — cheap: read only ts_event to find the window boundary
     lf_ts = pl.scan_parquet(data_path).select('ts_event')
+    if train_start_utc is not None:
+        lf_ts = lf_ts.filter(
+            (pl.col('ts_event') >= train_start_utc)
+            & (pl.col('ts_event') < train_end_utc)
+        )
     try:
         df_ts = lf_ts.collect(engine='streaming')
     except TypeError:
@@ -138,6 +280,11 @@ def run_feature_discovery(
     # pl.scan_parquet supports predicate pushdown on raw columns.
     # Filtering on ts_event >= cutoff_utc allows parquet row-group pruning.
     lf = pl.scan_parquet(data_path)
+    if train_start_utc is not None:
+        lf = lf.filter(
+            (pl.col('ts_event') >= train_start_utc)
+            & (pl.col('ts_event') < train_end_utc)
+        )
     if cutoff_utc is not None:
         lf = lf.filter(pl.col('ts_event') >= cutoff_utc)
 
@@ -176,6 +323,12 @@ def run_feature_discovery(
         with open(manifest_out, 'w') as f:
             json.dump(placeholder, f, indent=4)
         return
+
+    df_features = filter_feature_matrix_to_train_window(
+        df_features,
+        discovery_start,
+        discovery_end,
+    )
 
     # Now that rows are pruned, apply timezone conversion and date extraction
     # on the much smaller dataframe
@@ -387,6 +540,8 @@ def run_feature_discovery(
     manifest = {
         'version': '1.0',
         'feature_names': final_selected,
+        'manifest_type': 'frozen_feature_manifest',
+        'frozen': True,
         'dtypes': {f: 'float32' for f in final_selected},
         'selection_seed': config.SEED,
         'selection_date': datetime.utcnow().isoformat() + 'Z',
@@ -429,3 +584,27 @@ def run_feature_discovery(
     with open(manifest_out, 'w') as f:
         json.dump(manifest, f, indent=4)
     logger.info(f'Manifest saved to {manifest_out}')
+
+
+def run_train_only_feature_discovery(
+    data_path: str,
+    manifest_out: str,
+    train_start: str,
+    train_end: str,
+) -> None:
+    """
+    Step 5 artifact boundary: train-window-only feature discovery.
+
+    Refuses to run without explicit train boundaries.
+    """
+    if not train_start or not train_end:
+        raise RuntimeError(
+            'TRAIN-ONLY DISCOVERY FAIL: train_start/train_end are required'
+        )
+    _discovery_window_bounds(train_start, train_end)
+    run_feature_discovery(
+        data_path,
+        manifest_out,
+        discovery_start=train_start,
+        discovery_end=train_end,
+    )

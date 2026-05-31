@@ -880,24 +880,24 @@ class HMMRegimeDetector:
         col_names = [f"hmm_regime_{i}" for i in range(self.config.n_states)]
 
         if df_1h is not None and df_1h.height > 0:
-            # Timestamp-based alignment: build a 1H frame with probs,
-            # truncate 5-min ts_event to the hour, and join.
+            # Timestamp-based causal alignment: probabilities from the 1H bar
+            # starting at T are only available after that bar closes at T+1h.
             prob_cols = {
                 col_names[i]: hourly_probs[:, i].astype(np.float32)
                 for i in range(self.config.n_states)
             }
+            ts_dtype = df_5min['ts_event'].dtype
             df_1h_probs = df_1h.select('ts_event').with_columns([
                 pl.Series(name, prob_cols[name]) for name in col_names
-            ])
-            df_5min = df_5min.with_columns(
-                pl.col('ts_event').dt.truncate('1h').alias('_ts_hour')
+            ]).with_columns(
+                (pl.col('ts_event') + pl.duration(hours=1)).cast(ts_dtype).alias('ts_event')
+            ).sort('ts_event')
+            df_5min = df_5min.sort('ts_event').join_asof(
+                df_1h_probs, on='ts_event', strategy='backward'
             )
-            df_5min = df_5min.join(df_1h_probs, left_on='_ts_hour', right_on='ts_event', how='left')
-            df_5min = df_5min.drop(['_ts_hour'])
-            # Forward-fill any gaps (hours missing from 1H data)
             for col in col_names:
                 if col in df_5min.columns:
-                    df_5min = df_5min.with_columns(pl.col(col).fill_null(strategy='forward').fill_null(0.0))
+                    df_5min = df_5min.with_columns(pl.col(col).fill_null(0.0))
             return df_5min
 
         # Fallback: positional mapping (legacy path when df_1h is unavailable)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import time
+from datetime import date, timedelta, time
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +15,22 @@ NUM_COLS = PRICE_COLS + ["volume"]
 DAY_TO_NUM = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[1]
+STALE_PRICE_RUN_MINUTES = 240
+TICK_SIZE = {
+    "CL": 0.01,
+    "ES": 0.25,
+    "MES": 0.25,
+    "GC": 0.10,
+    "HG": 0.0005,
+    "NG": 0.001,
+    "NQ": 0.25,
+    "RTY": 0.10,
+    "SI": 0.005,
+    "YM": 1.0,
+    "ZB": 1.0 / 32.0,
+    "ZC": 0.25,
+    "ZN": 1.0 / 64.0,
+}
 
 
 def issue(rows, severity, market, year, check, detail, n=None, sample=None):
@@ -44,6 +60,19 @@ def mad_z(x: pd.Series) -> pd.Series:
     if not np.isfinite(mad) or mad == 0:
         return pd.Series(np.zeros(len(x)), index=x.index)
     return 0.6745 * (x - med) / mad
+
+
+def max_true_run(mask: pd.Series) -> int:
+    if mask.empty:
+        return 0
+    groups = mask.ne(mask.shift(fill_value=False)).cumsum()
+    runs = mask.groupby(groups).sum()
+    return int(runs.max()) if not runs.empty else 0
+
+
+def off_tick_mask(values: pd.Series, tick: float, tol: float = 1e-7) -> pd.Series:
+    scaled = values / tick
+    return (scaled - np.round(scaled)).abs() > tol
 
 
 def coerce_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
@@ -101,6 +130,11 @@ def audit_core_file(path: Path, market: str, year: int):
 
     df = df.dropna(subset=["ts_event"]).sort_values("ts_event").reset_index(drop=True)
 
+    non_integer_volume = (df["volume"].dropna() % 1) != 0
+    if non_integer_volume.any():
+        idx = non_integer_volume[non_integer_volume].index
+        issue(issues, "WARN", market, year, "non_integer_volume", "volume is not integer-valued", int(non_integer_volume.sum()), sample_rows(df.loc[idx]))
+
     dup = df["ts_event"].duplicated(keep=False)
     if dup.any():
         issue(issues, "FAIL", market, year, "duplicate_ts", "duplicate timestamps", int(dup.sum()), sample_rows(df[dup]))
@@ -125,6 +159,23 @@ def audit_core_file(path: Path, market: str, year: int):
         if mask.any():
             issue(issues, "FAIL", market, year, name, "OHLCV invariant violation", int(mask.sum()), sample_rows(df[mask]))
 
+    tick = TICK_SIZE.get(market)
+    if tick is not None:
+        off_tick = pd.Series(False, index=df.index)
+        for c in PRICE_COLS:
+            off_tick |= off_tick_mask(df[c], tick)
+        if off_tick.any():
+            issue(
+                issues,
+                "WARN",
+                market,
+                year,
+                "price_off_tick_grid",
+                f"one or more OHLC prices not aligned to expected tick={tick}",
+                int(off_tick.sum()),
+                sample_rows(df[off_tick]),
+            )
+
     zero_vol = df["volume"] == 0
     if zero_vol.any():
         issue(issues, "WARN", market, year, "zero_volume", "zero-volume bars", int(zero_vol.sum()), sample_rows(df[zero_vol]))
@@ -132,6 +183,19 @@ def audit_core_file(path: Path, market: str, year: int):
     zero_range = df["high"] == df["low"]
     if zero_range.any():
         issue(issues, "WARN", market, year, "zero_range", "high == low bars", int(zero_range.sum()), sample_rows(df[zero_range]))
+
+    stale_close = df["close"].eq(df["close"].shift(1))
+    stale_run = max_true_run(stale_close)
+    if stale_run >= STALE_PRICE_RUN_MINUTES:
+        issue(
+            issues,
+            "WARN",
+            market,
+            year,
+            "stale_close_run",
+            f"close unchanged for >= {STALE_PRICE_RUN_MINUTES} consecutive minutes",
+            stale_run,
+        )
 
     ts = df["ts_event"]
     delta_min = ts.diff().dt.total_seconds().div(60)
@@ -183,6 +247,18 @@ def audit_core_file(path: Path, market: str, year: int):
         outliers.append(tmp)
         issue(issues, "WARN", market, year, "volume_mad_z_gt_25", "extreme volume spike", int(vol_spike.sum()), sample_rows(df[vol_spike]))
 
+    dollar_volume = df["close"] * df["volume"]
+    dv_z = mad_z(dollar_volume)
+    dv_spike = dv_z.abs() > 25
+    if dv_spike.any():
+        tmp = df.loc[dv_spike, REQ_COLS].copy()
+        tmp["market"] = market
+        tmp["year"] = year
+        tmp["dollar_volume_mad_z"] = dv_z.loc[dv_spike].values
+        tmp["check"] = "dollar_volume_mad_z_gt_25"
+        outliers.append(tmp)
+        issue(issues, "WARN", market, year, "dollar_volume_mad_z_gt_25", "extreme price*volume spike", int(dv_spike.sum()), sample_rows(df[dv_spike]))
+
     summary.append(
         {
             "market": market,
@@ -195,6 +271,7 @@ def audit_core_file(path: Path, market: str, year: int):
             "gap_count_gt_1min": int(gap_mask.sum()),
             "zero_volume": int(zero_vol.sum()),
             "zero_range": int(zero_range.sum()),
+            "stale_close_run_max": stale_run,
             "close_min": float(df["close"].min()),
             "close_max": float(df["close"].max()),
             "volume_sum": float(df["volume"].sum()),
@@ -226,6 +303,23 @@ def audit_cross_year(frames_by_market):
     return rows
 
 
+def audit_year_file_coverage(files: list[Path]) -> list[dict]:
+    rows = []
+    by_market: dict[str, set[int]] = {}
+    for path in files:
+        try:
+            year = int(path.stem)
+        except ValueError:
+            continue
+        by_market.setdefault(path.parent.name, set()).add(year)
+
+    for market, years in by_market.items():
+        for year in range(min(years), max(years) + 1):
+            if year not in years:
+                issue(rows, "FAIL", market, year, "missing_year_file", f"missing {market}/{year}.parquet")
+    return rows
+
+
 def parse_hhmm(x: str) -> time:
     h, m = map(int, x.split(":"))
     return time(h, m)
@@ -249,9 +343,110 @@ def validate_market_config(market: str, cfg: dict) -> dict | None:
                 missing.append(f"daily_break.{key}")
     if missing:
         return {"severity": "FAIL", "market": market, "year": "", "check": "invalid_market_config", "detail": f"Missing required session config keys: {','.join(sorted(missing))}"}
-    if not cfg.get("closed_dates") and not cfg.get("early_closes") and not cfg.get("allow_empty_holiday_calendar", False):
+    if (
+        not cfg.get("closed_dates")
+        and not cfg.get("early_closes")
+        and not cfg.get("holiday_calendar")
+        and not cfg.get("allow_empty_holiday_calendar", False)
+    ):
         return {"severity": "FAIL", "market": market, "year": "", "check": "incomplete_session_calendar", "detail": "closed_dates and early_closes are empty; expected-minute counts may be false positives"}
     return None
+
+
+def is_approximate_session_calendar(cfg: dict) -> bool:
+    return str(cfg.get("session_calendar_accuracy", "")).lower() == "approximate"
+
+
+def easter_date(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    cur = date(year, month, 1)
+    cur += timedelta(days=(weekday - cur.weekday()) % 7)
+    return cur + timedelta(days=7 * (n - 1))
+
+
+def last_weekday(year: int, month: int, weekday: int) -> date:
+    cur = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+    cur -= timedelta(days=(cur.weekday() - weekday) % 7)
+    return cur
+
+
+def observed_fixed(year: int, month: int, day: int) -> date:
+    d = date(year, month, day)
+    if d.weekday() == 5:  # Saturday observed Friday
+        return d - timedelta(days=1)
+    if d.weekday() == 6:  # Sunday observed Monday
+        return d + timedelta(days=1)
+    return d
+
+
+def generated_cme_globex_us_futures_holidays(years: set[int]) -> tuple[set[str], dict[str, str], dict[str, str]]:
+    closed_dates: set[str] = set()
+    early_closes: dict[str, str] = {}
+    late_opens: dict[str, str] = {}
+    for year in sorted(years):
+        new_years = observed_fixed(year, 1, 1)
+        christmas = observed_fixed(year, 12, 25)
+
+        # Treat Good Friday as a closed date for dataset completeness.
+        # Some vendor L0 yearly bars omit the shortened overnight holiday
+        # session entirely; the strategy should not require that special
+        # session to pass the raw dataset gate.
+        good_friday = easter_date(year) - timedelta(days=2)
+        closed_dates.add(good_friday.isoformat())
+        late_opens[new_years.isoformat()] = "17:00"
+        late_opens[christmas.isoformat()] = "17:00"
+
+        early_candidates = [
+            nth_weekday(year, 1, 0, 3),      # MLK
+            nth_weekday(year, 2, 0, 3),      # Presidents
+            last_weekday(year, 5, 0),        # Memorial
+            observed_fixed(year, 7, 4),      # Independence Day observed
+            nth_weekday(year, 9, 0, 1),      # Labor
+            nth_weekday(year, 11, 3, 4),     # Thanksgiving
+            nth_weekday(year, 11, 3, 4) + timedelta(days=1),  # day after Thanksgiving
+            date(year, 12, 24),              # Christmas Eve
+        ]
+        if year >= 2022:
+            early_candidates.append(observed_fixed(year, 6, 19))  # Juneteenth
+
+        for d in early_candidates:
+            if d.weekday() < 5 and d.isoformat() not in closed_dates:
+                early_closes.setdefault(d.isoformat(), "12:15")
+                if not (d.month == 12 and d.day == 24):
+                    late_opens.setdefault(d.isoformat(), "17:00")
+    return closed_dates, early_closes, late_opens
+
+
+def resolved_holiday_calendar(local_ts: pd.DatetimeIndex, cfg: dict) -> tuple[set[str], dict[str, str], dict[str, str]]:
+    closed_dates = set(str(x) for x in cfg.get("closed_dates", []))
+    early_closes = {str(k): str(v) for k, v in (cfg.get("early_closes", {}) or {}).items()}
+    late_opens = {str(k): str(v) for k, v in (cfg.get("late_opens", {}) or {}).items()}
+    if cfg.get("holiday_calendar") == "cme_globex_us_futures":
+        years = set(pd.Series(local_ts).dt.year.dropna().astype(int).tolist())
+        gen_closed, gen_early, gen_late = generated_cme_globex_us_futures_holidays(years)
+        closed_dates |= gen_closed
+        for k, v in gen_early.items():
+            early_closes.setdefault(k, v)
+        for k, v in gen_late.items():
+            late_opens.setdefault(k, v)
+    return closed_dates, early_closes, late_opens
 
 
 def is_active_local_index(local_ts: pd.DatetimeIndex, cfg: dict) -> pd.Series:
@@ -273,12 +468,22 @@ def is_active_local_index(local_ts: pd.DatetimeIndex, cfg: dict) -> pd.Series:
     active |= (wd == week_end_day) & (tt < week_end_time)
     active &= ~((tt >= break_start) & (tt < break_end))
 
-    closed_dates = set(str(x) for x in cfg.get("closed_dates", []))
+    closed_dates, early_closes, late_opens = resolved_holiday_calendar(local_ts, cfg)
     if closed_dates:
         active &= ~dstr.isin(closed_dates)
-    for date_str, close_hhmm in (cfg.get("early_closes", {}) or {}).items():
+    for date_str, open_hhmm in late_opens.items():
+        if date_str in early_closes:
+            continue
+        open_t = parse_hhmm(str(open_hhmm))
+        active &= ~((dstr == str(date_str)) & (tt < open_t))
+    for date_str, close_hhmm in early_closes.items():
         close_t = parse_hhmm(str(close_hhmm))
-        active &= ~((dstr == str(date_str)) & (tt >= close_t))
+        reopen_hhmm = late_opens.get(date_str)
+        if reopen_hhmm is not None:
+            reopen_t = parse_hhmm(str(reopen_hhmm))
+            active &= ~((dstr == str(date_str)) & (tt >= close_t) & (tt < reopen_t))
+        else:
+            active &= ~((dstr == str(date_str)) & (tt >= close_t))
     return active
 
 
@@ -294,8 +499,15 @@ def audit_session_file(path: Path, market: str, year: int, cfg: dict):
     local_ts = ts.tz_convert(tz)
     outside = pd.DataFrame({"ts_event": ts, "ts_local": local_ts})[~is_active_local_index(local_ts, cfg).to_numpy()]
 
-    expected_utc = pd.date_range(pd.Timestamp(f"{year}-01-01T00:00:00Z"), pd.Timestamp(f"{year + 1}-01-01T00:00:00Z"), freq="1min", inclusive="left")
-    expected_utc = expected_utc[is_active_local_index(expected_utc.tz_convert(tz), cfg).to_numpy()]
+    full_expected_utc = pd.date_range(pd.Timestamp(f"{year}-01-01T00:00:00Z"), pd.Timestamp(f"{year + 1}-01-01T00:00:00Z"), freq="1min", inclusive="left")
+    full_expected_utc = full_expected_utc[is_active_local_index(full_expected_utc.tz_convert(tz), cfg).to_numpy()]
+
+    # Audit completeness only between the file's observed first/last timestamp.
+    # This avoids falsely failing an intentionally partial current-year file,
+    # while still exposing partial file bounds in the summary.
+    first_ts = ts.min().floor("min")
+    last_ts = ts.max().floor("min")
+    expected_utc = full_expected_utc[(full_expected_utc >= first_ts) & (full_expected_utc <= last_ts)]
     missing = expected_utc.difference(pd.DatetimeIndex(ts))
 
     missing_df = pd.DataFrame({"market": market, "year": year, "missing_ts_event": missing, "missing_ts_local": missing.tz_convert(tz)})
@@ -305,18 +517,36 @@ def audit_session_file(path: Path, market: str, year: int, cfg: dict):
 
     missing_n = len(missing_df)
     outside_n = len(outside_df)
-    severity = "PASS" if missing_n == 0 and outside_n == 0 else "FAIL" if missing_n > 0 else "WARN"
+    partial_start = bool(len(full_expected_utc) and first_ts > full_expected_utc.min())
+    partial_end = bool(len(full_expected_utc) and last_ts < full_expected_utc.max())
+    partial_bounds = partial_start or partial_end
+    coverage_pct = 100.0 * (1.0 - (missing_n / len(expected_utc))) if len(expected_utc) else 0.0
+    min_coverage_pct = float(cfg.get("min_session_coverage_pct", 99.0))
+    severity = (
+        "FAIL" if coverage_pct < min_coverage_pct
+        else "WARN" if missing_n > 0 or outside_n > 0 or partial_bounds
+        else "PASS"
+    )
     summary = {
         "severity": severity,
         "market": market,
         "year": year,
         "check": "session_calendar",
         "actual_rows": len(ts),
+        "full_year_expected_session_minutes": len(full_expected_utc),
         "expected_session_minutes": len(expected_utc),
         "missing_expected_minutes": missing_n,
+        "coverage_pct": coverage_pct,
         "outside_session_rows": outside_n,
-        "first_ts": ts.min(),
-        "last_ts": ts.max(),
+        "partial_file_bounds": partial_bounds,
+        "partial_start": partial_start,
+        "partial_end": partial_end,
+        "full_year_expected_first_ts": full_expected_utc.min() if len(full_expected_utc) else pd.NaT,
+        "full_year_expected_last_ts": full_expected_utc.max() if len(full_expected_utc) else pd.NaT,
+        "expected_first_ts": expected_utc.min() if len(expected_utc) else pd.NaT,
+        "expected_last_ts": expected_utc.max() if len(expected_utc) else pd.NaT,
+        "first_ts": first_ts,
+        "last_ts": last_ts,
     }
     print(f"DONE  session audit {market} {year} | actual={len(ts):,} expected={len(expected_utc):,} missing={missing_n:,} outside={outside_n:,}", flush=True)
     return [summary], missing_df, outside_df
@@ -325,14 +555,27 @@ def audit_session_file(path: Path, market: str, year: int, cfg: dict):
 def find_parquet_files(root: Path) -> list[Path]:
     for candidate in [root, root / "L0_ohlcv_1m", root / "ohlcv_1m"]:
         if candidate.exists():
-            files = sorted(candidate.glob("*/*.parquet"))
+            files = sorted(p for p in candidate.glob("*/*.parquet") if p.stem.isdigit() and len(p.stem) == 4)
             if files:
                 return files
     raise SystemExit(f"No parquet files found under {root}/{{market}}/{{year}}.parquet")
 
 
+def filter_files(files: list[Path], markets: list[str] | None, years: list[int] | None) -> list[Path]:
+    if markets:
+        keep_markets = {m.upper() for m in markets}
+        files = [p for p in files if p.parent.name.upper() in keep_markets]
+    if years:
+        keep_years = {str(y) for y in years}
+        files = [p for p in files if p.stem in keep_years]
+    if not files:
+        raise SystemExit("ERROR: no parquet files matched selected --markets/--years filters")
+    return files
+
+
 def run_core_audit(files: list[Path], out: Path) -> tuple[int, int]:
     all_issues, all_gaps, all_outliers, all_summary = [], [], [], []
+    all_issues.extend(audit_year_file_coverage(files))
     frames_by_market = {}
     for path in files:
         market = path.parent.name
@@ -378,6 +621,19 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
         if config_issue is not None:
             issues.append(config_issue)
             continue
+        if is_approximate_session_calendar(markets_cfg[market]):
+            issues.append(
+                {
+                    "severity": "WARN",
+                    "market": market,
+                    "year": "",
+                    "check": "approximate_session_calendar",
+                    "detail": markets_cfg[market].get(
+                        "approximate_reason",
+                        "session calendar marked approximate; excluded from hard session FAIL gating",
+                    ),
+                }
+            )
         valid_markets.add(market)
 
     for path in files:
@@ -390,6 +646,12 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
             issues.append({"severity": "FAIL", "market": market, "year": path.stem, "check": "bad_filename", "detail": "filename stem is not integer year"})
             continue
         summary, missing_df, outside_df = audit_session_file(path, market, year, markets_cfg[market])
+        if is_approximate_session_calendar(markets_cfg[market]):
+            for row in summary:
+                if row.get("severity") == "FAIL":
+                    row["severity"] = "WARN"
+                row["calendar_accuracy"] = "approximate"
+                row["approximate_reason"] = markets_cfg[market].get("approximate_reason", "")
         summaries.extend(summary)
         if not missing_df.empty:
             missing_all.append(missing_df)
@@ -404,7 +666,11 @@ def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[
     (pd.concat(outside_all, ignore_index=True) if outside_all else pd.DataFrame()).to_csv(out / "session_outside_rows.csv", index=False)
 
     fail_issues = 0 if issues_df.empty else int((issues_df["severity"] == "FAIL").sum())
-    fail_summaries = 0 if summaries_df.empty else int((summaries_df["severity"] == "FAIL").sum())
+    if not summaries_df.empty and "calendar_accuracy" in summaries_df.columns:
+        hard_summary_mask = ~summaries_df["calendar_accuracy"].fillna("").eq("approximate")
+        fail_summaries = int(((summaries_df["severity"] == "FAIL") & hard_summary_mask).sum())
+    else:
+        fail_summaries = 0 if summaries_df.empty else int((summaries_df["severity"] == "FAIL").sum())
     warn_summaries = 0 if summaries_df.empty else int((summaries_df["severity"] == "WARN").sum())
     return fail_issues + fail_summaries, warn_summaries
 
@@ -414,6 +680,8 @@ def main() -> None:
     ap.add_argument("--root", default=str(SCRIPT_DIR))
     ap.add_argument("--config", default=str(PROJECT_ROOT / "data" / "market_sessions.yaml"))
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "audits" / "L0_ohlcv_1m_audit"))
+    ap.add_argument("--markets", nargs="*", help="Optional market filter, e.g. --markets ES NQ CL")
+    ap.add_argument("--years", nargs="*", type=int, help="Optional year filter, e.g. --years 2024 2025")
     ap.add_argument("--core-only", action="store_true")
     ap.add_argument("--sessions-only", action="store_true")
     args = ap.parse_args()
@@ -421,7 +689,7 @@ def main() -> None:
     if args.core_only and args.sessions_only:
         raise SystemExit("ERROR: choose at most one of --core-only or --sessions-only")
 
-    files = find_parquet_files(Path(args.root))
+    files = filter_files(find_parquet_files(Path(args.root)), args.markets, args.years)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 

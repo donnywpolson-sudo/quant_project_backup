@@ -85,7 +85,7 @@ def compute_roll_dates(
 
     current = start_date
 
-    equity_symbols = {'ES', 'NQ', 'YM', 'RTY'}
+    equity_symbols = {'ES', 'MES', 'NQ', 'YM', 'RTY'}
     energy_symbols = {'CL', 'NG'}
     bond_symbols = {'ZB', 'ZN', 'ZT', 'ZF'}
 

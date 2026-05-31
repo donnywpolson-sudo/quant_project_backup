@@ -1,0 +1,70 @@
+import json
+from pathlib import Path
+
+import polars as pl
+import pytest
+
+from pipeline.features.discovery import apply_frozen_feature_manifest, load_frozen_feature_manifest
+
+
+def _write_manifest(path: Path, feature_names: list[str]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "manifest_type": "frozen_feature_manifest",
+                "frozen": True,
+                "feature_names": feature_names,
+                "selected_K": len(feature_names),
+                "discovery_status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _matrix() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "ts_event": [1, 2],
+            "open": [10.0, 11.0],
+            "high": [11.0, 12.0],
+            "low": [9.0, 10.0],
+            "close": [10.5, 11.5],
+            "volume": [100, 101],
+            "session_id": ["a", "a"],
+            "target_sign_4h": [1, 0],
+            "target_4h": [0.1, -0.1],
+            "feature_ret_1": [0.01, 0.02],
+            "ratio_x": [1.0, 2.0],
+            "continuous_price": [10.5, 11.5],
+        }
+    )
+
+
+def test_apply_frozen_feature_manifest_keeps_only_selected_features(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, ["feature_ret_1"])
+
+    out = apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_4h")
+
+    assert "feature_ret_1" in out.columns
+    assert "ratio_x" not in out.columns
+    assert "target_sign_4h" in out.columns
+    assert "continuous_price" not in out.columns
+
+
+def test_frozen_manifest_rejects_missing_selected_feature(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, ["feature_missing"])
+
+    with pytest.raises(RuntimeError, match="selected features missing"):
+        apply_frozen_feature_manifest(_matrix(), str(manifest), "target_sign_4h")
+
+
+def test_frozen_manifest_rejects_target_as_feature(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, ["target_4h"])
+
+    with pytest.raises(RuntimeError, match="invalid selected features"):
+        load_frozen_feature_manifest(str(manifest))

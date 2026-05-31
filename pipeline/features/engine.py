@@ -2,7 +2,9 @@ import polars as pl
 import logging
 import numpy as np
 from datetime import timedelta
+from pathlib import Path
 from core.config import config
+from core.io.canonical import write_canonical_parquet
 
 from pipeline.features.baseline import compute_baseline_features, load_baseline_feature_names
 from pipeline.features.expansion import expand_features, add_cross_timeframe_interactions
@@ -12,6 +14,8 @@ from pipeline.target.target import add_target_5m, add_target_1h, add_target_4h
 from pipeline.target.triple_barrier import add_triple_barrier_target
 from pipeline.meta.meta_label import add_meta_label_target
 logger = logging.getLogger(__name__)
+
+_FEATURE_PREFIXES = ('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_')
 
 
 def _stage(df: pl.DataFrame, name: str, fn, *args, **kwargs) -> pl.DataFrame:
@@ -199,3 +203,60 @@ def generate_features(df: pl.DataFrame) -> pl.DataFrame:
                 df.height, len(feature_cols),
                 'on' if config.ENABLE_EXPANSION else 'off')
     return df
+
+
+def validate_feature_target_matrix(
+    df: pl.DataFrame,
+    target_col: str = 'target_sign_4h',
+) -> pl.DataFrame:
+    if df.is_empty():
+        raise RuntimeError('FEATURE/TARGET FAIL: matrix is empty')
+    if 'ts_event' not in df.columns:
+        raise RuntimeError('FEATURE/TARGET FAIL: ts_event missing')
+    if df['ts_event'].dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
+        df = df.with_columns(
+            pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
+        )
+    if df['ts_event'].null_count() > 0:
+        raise RuntimeError('FEATURE/TARGET FAIL: null ts_event values')
+    if not df['ts_event'].is_sorted():
+        raise RuntimeError('FEATURE/TARGET FAIL: ts_event not sorted')
+    if df['ts_event'].n_unique() != df.height:
+        raise RuntimeError('FEATURE/TARGET FAIL: duplicate ts_event values')
+    if target_col not in df.columns:
+        raise RuntimeError(f'FEATURE/TARGET FAIL: target column missing: {target_col}')
+    if df[target_col].null_count() > 0:
+        raise RuntimeError(
+            f'FEATURE/TARGET FAIL: {df[target_col].null_count()} null values in {target_col}'
+        )
+    feature_cols = [c for c in df.columns if c.startswith(_FEATURE_PREFIXES)]
+    if not feature_cols:
+        raise RuntimeError('FEATURE/TARGET FAIL: no feature columns generated')
+    return df
+
+
+def load_or_build_feature_target_matrix(
+    df_aligned: pl.DataFrame,
+    cache_path: str | Path | None = None,
+    target_col: str = 'target_sign_4h',
+) -> pl.DataFrame:
+    """
+    Step 4 artifact boundary: feature + target matrix.
+
+    Input: Step 3 aligned/continuous DataFrame.
+    Output: cached full feature matrix containing features and target columns.
+    """
+    if cache_path and Path(cache_path).exists():
+        print(f'[FEATURE-TARGET] Loading matrix from cache: {cache_path}', flush=True)
+        cached = pl.read_parquet(cache_path)
+        return validate_feature_target_matrix(cached, target_col=target_col)
+
+    print('[FEATURE-TARGET] Building feature + target matrix...', flush=True)
+    df_features = generate_features(df_aligned)
+    df_features = validate_feature_target_matrix(df_features, target_col=target_col)
+
+    if cache_path:
+        print(f'[FEATURE-TARGET] Caching matrix to {cache_path}', flush=True)
+        write_canonical_parquet(df_features, str(cache_path))
+
+    return df_features

@@ -21,6 +21,30 @@ import hashlib
 import time
 from core.io.atomic import atomic_write_parquet, atomic_write_json
 
+_MODEL_METADATA_EXCLUDE_EXACT = {
+    'continuous_price',
+    'adjustment_factor',
+    'cumulative_factor',
+    'contract_multiplier',
+}
+_MODEL_METADATA_EXCLUDE_PREFIXES = (
+    'continuous_',
+    'roll_',
+    'front_contract',
+    'back_contract',
+)
+
+
+def _is_model_metadata_column(col: str) -> bool:
+    return col in _MODEL_METADATA_EXCLUDE_EXACT or col.startswith(_MODEL_METADATA_EXCLUDE_PREFIXES)
+
+
+def _model_feature_columns(df: pl.DataFrame) -> list[str]:
+    _exclude = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime', 'date', 'benchmark_pnl'}
+    _exclude |= {c for c in df.columns if c.startswith('target_') or _is_model_metadata_column(c)}
+    _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
+    return [c for c in df.columns if c not in _exclude and df[c].dtype in _numeric_types]
+
 
 def _check_target_contract(y, X, target_col):
     """Hard target validation — must pass before walkforward."""
@@ -47,12 +71,13 @@ def _diag(df, stage):
         t = df.select([pl.col('ts_event').min().alias('lo'), pl.col('ts_event').max().alias('hi')])
         print(f'[DIAG]   ts_event min={t["lo"][0]} max={t["hi"][0]}', flush=True)
 from core.config import config, load_config
-from _legacy.ingest import load_and_clean_data
-from pipeline.features.engine import generate_features
-from pipeline.features.discovery import run_feature_discovery
-from pipeline.walkforward.walkforward import run_walkforward, run_walkforward_with_hmm, run_outer_train_test_eval, run_outer_train_test_eval_with_hmm
+from pipeline.ingest.ingest import load_and_clean_data
+from pipeline.features.engine import load_or_build_feature_target_matrix
+from pipeline.features.discovery import apply_frozen_feature_manifest, run_train_only_feature_discovery
+from pipeline.walkforward.walkforward import build_oos_prediction_frame, run_walkforward, run_walkforward_with_hmm, run_walkforward_modeling, run_walkforward_modeling_with_hmm
 from core.io.canonical import write_canonical_parquet
-from pipeline.analytics.aggregate import calculate_metrics, run_aggregation
+from pipeline.analytics.aggregate import build_metrics_report, calculate_metrics, run_aggregation
+from pipeline.risk.risk import run_risk_gates
 logger = logging.getLogger(__name__)
 
 def check_memory_safety():
@@ -63,18 +88,47 @@ def check_memory_safety():
     except ImportError:
         pass
 
-def prune_features_by_manifest(df, manifest_path, target_col):
-    with open(manifest_path, 'r') as f:
-        manifest = json.load(f)
-    selected = manifest['feature_names']
-    essential = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime'}
-    non_feature = [c for c in df.columns if not c.startswith(('feature_', 'ratio_', 'pair_', 'zscore', 'cross_', 'htf_', '1h_', 'daily_')) and c not in essential]
-    keep = list({c for c in essential if c in df.columns}) + non_feature + [c for c in selected if c in df.columns]
-    keep = list(dict.fromkeys(keep))
-    return df.select(keep)
+def _jsonable(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _jsonable(value[k]) for k in sorted(value)}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return str(value)
 
-def _stable_data_tag(data_arg: str, start: str = None, end: str = None) -> str:
-    key = f"{config.ACTIVE_PROFILE}|{data_arg}"
+
+def _file_sha256(path: str | None) -> str | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return None
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _cache_config_fingerprint(manifest_path: str | None = None) -> str:
+    names = [
+        'ACTIVE_PROFILE', 'CONFIG_SOURCE', 'CURRENT_SYMBOL',
+        'TARGET_5M_HORIZON', 'TARGET_SCALE_FACTOR',
+        'ENABLE_EXPANSION', 'ENABLE_DISCOVERY',
+        'MODEL_TYPE', 'RIDGE_PARAMS', 'PROBABILITY_SMOOTHING_ALPHA',
+        'CORR_THRESHOLD', 'WF_MODE', 'DISCOVERY_TARGET',
+        'EXECUTE_AT', 'SLIPPAGE_K', 'TX_COST_PER_ROUNDTURN',
+        'COMMISSION_PER_CONTRACT', 'MAX_LEVERAGE',
+        'HTF_TREND_ALIGNMENT', 'HTF_VOL_SCALING',
+        'ROLL_WINDOWS', 'ROLL_WINDOWS_1H', 'ROLL_WINDOWS_DAILY',
+    ]
+    payload = {name: _jsonable(getattr(config, name, None)) for name in names}
+    payload['alpha_yaml_sha256'] = _file_sha256('configs/alpha.yaml')
+    payload['market_config_sha256'] = _file_sha256((getattr(config, 'MARKET_CONFIGS', {}) or {}).get(getattr(config, 'CURRENT_SYMBOL', None)))
+    payload['manifest_sha256'] = _file_sha256(manifest_path)
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _stable_data_tag(data_arg: str, start: str = None, end: str = None, manifest_path: str = None) -> str:
+    key = f"{config.ACTIVE_PROFILE}|{data_arg}|{_cache_config_fingerprint(manifest_path)}"
     if start:
         key += '|' + start
     if end:
@@ -155,9 +209,14 @@ def main():
         cache_dir.mkdir(parents=True, exist_ok=True)
         data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        canonical_cache = cache_dir / f'canonical_data_{data_tag}.parquet'
         print(f'[DISCOVERY-WINDOW] start={getattr(args, "start", None)} end={getattr(args, "end", None)} cache_key={data_tag}', flush=True)
         print('[CLI] Loading and cleaning data...', flush=True)
-        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache))
+        df_aligned = load_and_clean_data(
+            args.data,
+            cache_path=str(aligned_cache),
+            canonical_cache_path=str(canonical_cache),
+        )
         print(f'[CLI] Data loaded. Rows: {df_aligned.height}', flush=True)
         df_aligned = _slice_optional_window(
             df_aligned,
@@ -168,45 +227,46 @@ def main():
         if getattr(args, 'start', None) and getattr(args, 'end', None):
             print(f'[DISCOVERY-WINDOW] bounded rows={df_aligned.height} [{args.start}, {args.end})', flush=True)
         _diag(df_aligned, 'post-ingest')
-        print('[CLI] Generating feature matrix...', flush=True)
-        df_features = generate_features(df_aligned)
-        _diag(df_features, 'post-generate-features')
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
-        write_canonical_parquet(df_features, str(feature_cache))
+        df_features = load_or_build_feature_target_matrix(
+            df_aligned,
+            cache_path=feature_cache,
+            target_col='target_sign_4h',
+        )
+        _diag(df_features, 'post-generate-features')
         print(f'[CLI] Feature matrix saved to {feature_cache}', flush=True)
         print('[CLI] Running feature discovery...', flush=True)
-        run_feature_discovery(
+        run_train_only_feature_discovery(
             str(feature_cache),
             args.out,
-            discovery_start=getattr(args, 'start', None),
-            discovery_end=getattr(args, 'end', None),
+            train_start=getattr(args, 'start', None),
+            train_end=getattr(args, 'end', None),
         )
     elif args.command == 'run':
         print('\n[CLI] === PHASE 2: WALKFORWARD & EXECUTION ===', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        canonical_cache = cache_dir / f'canonical_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
         print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[CLI] Loading aligned data...', flush=True)
-        df_aligned = load_and_clean_data(args.data, cache_path=str(aligned_cache) if aligned_cache.exists() else None)
+        df_aligned = load_and_clean_data(
+            args.data,
+            cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+            canonical_cache_path=str(canonical_cache),
+        )
         print(f'[CLI] Aligned data: {df_aligned.height} rows (from {"cache" if aligned_cache.exists() else "fresh ingest"})', flush=True)
-        if feature_cache.exists():
-            print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
-            df_features = pl.read_parquet(feature_cache)
-            ts_dtype = df_features['ts_event'].dtype
-            if ts_dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
-                df_features = df_features.with_columns(
-                    pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
-                )
-        else:
-            print('[CLI] Generating feature matrix (no cache)...', flush=True)
-            df_features = generate_features(df_aligned)
+        df_features = load_or_build_feature_target_matrix(
+            df_aligned,
+            cache_path=feature_cache,
+            target_col=target_col,
+        )
         print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
-        print('[CLI] Applying manifest...', flush=True)
+        print('[CLI] Applying frozen feature manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
-            df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+            df_pruned = apply_frozen_feature_manifest(df_features, args.manifest, target_col)
         else:
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
@@ -250,21 +310,33 @@ def main():
         # ---- Target contract enforcement (run path) ----
         _check_target_contract(y, X, target_col)
 
-        _exclude = {'ts_event', 'open', 'high', 'low', 'close', 'volume', 'session_id', 'regime', 'date', 'benchmark_pnl'}
-        _exclude |= {c for c in X.columns if c.startswith('target_')}
-        _numeric_types = (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
-        feature_cols = [c for c in X.columns if c not in _exclude and X[c].dtype in _numeric_types]
+        feature_cols = _model_feature_columns(X)
         print(f'[CLI] Running walkforward with {len(feature_cols)} features...', flush=True)
         if getattr(config, 'WF_MODE', '') == 'outer_split':
             assert getattr(args, 'train_start', None), 'OUTER_SPLIT active but --train-start missing from CLI args'
             assert getattr(args, 'train_end', None), 'OUTER_SPLIT active but --train-end missing from CLI args'
             train_df = _slice_window(df_pruned, getattr(args, 'train_start', None), getattr(args, 'train_end', None), 'train')
             test_df = _slice_window(df_pruned, getattr(args, 'start', None), getattr(args, 'end', None), 'test')
-            result_df = run_outer_train_test_eval(train_df, test_df, feature_cols, target_col)
+            result_df = run_walkforward_modeling(train_df, test_df, feature_cols, target_col)
         else:
             result_df = run_walkforward(X, y, feature_cols, target_col)
         print(f'[CLI] Walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
+        pred_path = os.path.join(args.out, 'oos_predictions.parquet')
+        pred_df = build_oos_prediction_frame(result_df, target_col=target_col)
+        atomic_write_parquet(pred_df, pred_path)
+        print(f'[CLI] OOS predictions saved to {pred_path}', flush=True)
+        risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
+        risk_path = os.path.join(args.out, 'risk_report.json')
+        atomic_write_json(risk_report, risk_path)
+        print(f'[CLI] Risk report saved to {risk_path}', flush=True)
+        metrics_report = build_metrics_report(
+            result_df,
+            context={'command': args.command, 'out': args.out, 'risk_report': risk_path},
+        )
+        metrics_path = os.path.join(args.out, 'metrics_report.json')
+        atomic_write_json(metrics_report, metrics_path)
+        print(f'[CLI] Metrics report saved to {metrics_path}', flush=True)
         out_path = os.path.join(args.out, 'backtest_results.parquet')
         atomic_write_parquet(result_df, out_path)
         print(f'[CLI] Results saved to {out_path}', flush=True)
@@ -283,8 +355,9 @@ def main():
         print(f'[HEARTBEAT] config loaded WF_MODE={getattr(config, "WF_MODE", "")!r}', flush=True)
         target_col = 'target_sign_4h'  # 4h direction — features frozen from triple-barrier discovery
         cache_dir = Path('output/cache')
-        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None))
+        data_tag = _stable_data_tag(args.data, getattr(args, 'start', None), getattr(args, 'end', None), getattr(args, 'manifest', None))
         aligned_cache = cache_dir / f'aligned_data_{data_tag}.parquet'
+        canonical_cache = cache_dir / f'canonical_data_{data_tag}.parquet'
         feature_cache = cache_dir / f'full_feature_matrix_{data_tag}.parquet'
         print(f'[CLI] Cache key={data_tag} start={getattr(args, "start", None)} end={getattr(args, "end", None)}', flush=True)
         print('[HEARTBEAT] loading aligned data start', flush=True)
@@ -292,6 +365,7 @@ def main():
         df_aligned = load_and_clean_data(
             args.data,
             cache_path=str(aligned_cache) if aligned_cache.exists() else None,
+            canonical_cache_path=str(canonical_cache),
         )
         dt_load = time.perf_counter() - t_load
         print(f'[HEARTBEAT] loading aligned data done rows={df_aligned.height} seconds={dt_load:.1f}', flush=True)
@@ -299,27 +373,21 @@ def main():
             print(f'[SLOW] stage=load_aligned_data seconds={dt_load:.1f}', flush=True)
         print('[HEARTBEAT] generating/loading feature matrix start', flush=True)
         t_feat = time.perf_counter()
-        if feature_cache.exists():
-            print(f'[CLI] Loading cached feature matrix: {feature_cache}', flush=True)
-            df_features = pl.read_parquet(feature_cache)
-            ts_dtype = df_features['ts_event'].dtype
-            if ts_dtype != pl.Datetime(time_unit='us', time_zone='UTC'):
-                df_features = df_features.with_columns(
-                    pl.col('ts_event').cast(pl.Datetime(time_unit='us', time_zone='UTC'))
-                )
-        else:
-            print('[CLI] Generating feature matrix (no cache)...', flush=True)
-            df_features = generate_features(df_aligned)
+        df_features = load_or_build_feature_target_matrix(
+            df_aligned,
+            cache_path=feature_cache,
+            target_col=target_col,
+        )
         dt_feat = time.perf_counter() - t_feat
         print(f'[HEARTBEAT] feature matrix done rows={df_features.height} cols={len(df_features.columns)} seconds={dt_feat:.1f}', flush=True)
         if dt_feat > 60:
             print(f'[SLOW] stage=feature_matrix seconds={dt_feat:.1f}', flush=True)
         print(f'[CLI] Feature matrix: {df_features.height} rows, {len(df_features.columns)} cols', flush=True)
-        print('[HEARTBEAT] applying manifest start', flush=True)
+        print('[HEARTBEAT] applying frozen manifest start', flush=True)
         t_man = time.perf_counter()
-        print('[CLI] Applying manifest...', flush=True)
+        print('[CLI] Applying frozen feature manifest...', flush=True)
         if config.ENABLE_DISCOVERY:
-            df_pruned = prune_features_by_manifest(df_features, args.manifest, target_col)
+            df_pruned = apply_frozen_feature_manifest(df_features, args.manifest, target_col)
         else:
             print('[CLI] Discovery disabled - skipping manifest pruning.', flush=True)
             df_pruned = df_features
@@ -360,19 +428,7 @@ def main():
         # ---- Target contract enforcement (hmm path) ----
         _check_target_contract(y, X, target_col)
 
-        _exclude = {
-            'ts_event', 'open', 'high', 'low', 'close', 'volume',
-            'session_id', 'regime', 'date', 'benchmark_pnl',
-        }
-        _exclude |= {c for c in X.columns if c.startswith('target_')}
-        _numeric_types = (
-            pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-        )
-        feature_cols = [
-            c for c in X.columns
-            if c not in _exclude and X[c].dtype in _numeric_types
-        ]
+        feature_cols = _model_feature_columns(X)
         print(
             f'[CLI] Running HMM-aware walkforward with '
             f'{len(feature_cols)} features '
@@ -392,7 +448,7 @@ def main():
                 print(f'[SLOW] stage=slicing seconds={dt_slice:.1f}', flush=True)
             print('[HEARTBEAT] walkforward+hmm start', flush=True)
             t_wf = time.perf_counter()
-            result_df, validation = run_outer_train_test_eval_with_hmm(
+            result_df, validation = run_walkforward_modeling_with_hmm(
                 train_df, test_df, feature_cols, target_col,
             )
             dt_wf = time.perf_counter() - t_wf
@@ -406,6 +462,21 @@ def main():
             )
         print(f'[CLI] HMM walkforward result: {result_df.height} rows (input was {X.height} rows, features={len(feature_cols)})', flush=True)
         os.makedirs(args.out, exist_ok=True)
+        pred_path = os.path.join(args.out, 'oos_predictions_hmm.parquet')
+        pred_df = build_oos_prediction_frame(result_df, target_col=target_col)
+        atomic_write_parquet(pred_df, pred_path)
+        print(f'[CLI] HMM OOS predictions saved to {pred_path}', flush=True)
+        risk_report = run_risk_gates(result_df, context={'command': args.command, 'out': args.out})
+        risk_path = os.path.join(args.out, 'risk_report_hmm.json')
+        atomic_write_json(risk_report, risk_path)
+        print(f'[CLI] HMM risk report saved to {risk_path}', flush=True)
+        metrics_report = build_metrics_report(
+            result_df,
+            context={'command': args.command, 'out': args.out, 'risk_report': risk_path},
+        )
+        metrics_path = os.path.join(args.out, 'metrics_report_hmm.json')
+        atomic_write_json(metrics_report, metrics_path)
+        print(f'[CLI] HMM metrics report saved to {metrics_path}', flush=True)
         out_path = os.path.join(args.out, 'backtest_results_hmm.parquet')
         print('[HEARTBEAT] writing parquet start', flush=True)
         t_write = time.perf_counter()

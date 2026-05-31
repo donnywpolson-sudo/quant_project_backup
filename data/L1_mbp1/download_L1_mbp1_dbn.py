@@ -20,6 +20,7 @@ DEFAULT_OUT_ROOT = _SCRIPT_DIR if _SCRIPT_DIR.name == "L1_mbp1" else _SCRIPT_DIR
 SUPPORTED_MARKETS = [
     "CL",
     "ES",
+    "MES",
     "GC",
     "HG",
     "NG",

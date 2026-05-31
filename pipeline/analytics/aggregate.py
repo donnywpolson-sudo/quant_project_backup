@@ -104,6 +104,110 @@ def compute_backtest_metrics(df: pl.DataFrame) -> dict:
     )
 
 
+def _json_sanitize(value):
+    if isinstance(value, dict):
+        return {str(k): _json_sanitize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_sanitize(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_sanitize(v) for v in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        value = float(value)
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    return value
+
+
+def build_metrics_report(df: pl.DataFrame, *, context: dict | None = None) -> dict:
+    """Step 11 boundary: risk/alpha/execution metrics report."""
+    required = ['ts_event', 'pnl', 'position', 'prediction_prob', 'ret_exec']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise RuntimeError(f'METRICS FAIL: missing columns {missing}')
+    if df.height == 0:
+        raise RuntimeError('METRICS FAIL: empty backtest result')
+
+    metrics = compute_backtest_metrics(df)
+    pnl = df['pnl'].to_numpy().astype(np.float64)
+    pred = df['prediction_prob'].to_numpy().astype(np.float64)
+    pos = df['position'].to_numpy().astype(np.float64)
+    ret_exec = df['ret_exec'].to_numpy().astype(np.float64)
+
+    if not np.isfinite(pnl).all():
+        raise RuntimeError('METRICS FAIL: non-finite pnl')
+    if not np.isfinite(pred).all():
+        raise RuntimeError('METRICS FAIL: non-finite prediction_prob')
+    if not np.isfinite(pos).all():
+        raise RuntimeError('METRICS FAIL: non-finite position')
+    if not np.isfinite(ret_exec).all():
+        raise RuntimeError('METRICS FAIL: non-finite ret_exec')
+
+    bars_per_year = int(metrics['bars_per_year'])
+    gross_metrics = None
+    cost_drag = None
+    if 'gross_pnl' in df.columns:
+        gross = df['gross_pnl'].to_numpy().astype(np.float64)
+        if not np.isfinite(gross).all():
+            raise RuntimeError('METRICS FAIL: non-finite gross_pnl')
+        gross_sharpe_per_bar, gross_sharpe_ann = _sharpe_pair(gross, bars_per_year)
+        gross_metrics = {
+            'total_pnl': round(float(gross.sum()), 6),
+            'sharpe_per_bar': round(gross_sharpe_per_bar, 8),
+            'sharpe_annualized': round(gross_sharpe_ann, 3),
+        }
+        cost_drag = round(float(gross.sum() - pnl.sum()), 6)
+
+    pred_dist = {
+        'min': round(float(pred.min()), 8),
+        'max': round(float(pred.max()), 8),
+        'mean': round(float(pred.mean()), 8),
+        'std': round(float(pred.std()), 8),
+        'gt_0_55_frac': round(float((pred > 0.55).mean()), 8),
+        'lt_0_45_frac': round(float((pred < 0.45).mean()), 8),
+    }
+    active = np.abs(pos) > 1e-12
+    position_dist = {
+        'active_bars': int(active.sum()),
+        'active_frac': round(float(active.mean()), 8),
+        'long_bars': int((pos > 1e-12).sum()),
+        'short_bars': int((pos < -1e-12).sum()),
+        'flat_bars': int((np.abs(pos) <= 1e-12).sum()),
+        'max_abs_position': round(float(np.abs(pos).max()), 8),
+    }
+
+    report = {
+        'status': 'OK',
+        'context': context or {},
+        'rows': df.height,
+        'ts_min': str(df['ts_event'].min()),
+        'ts_max': str(df['ts_event'].max()),
+        'net': metrics,
+        'gross': gross_metrics,
+        'cost_drag': cost_drag,
+        'prediction_distribution': pred_dist,
+        'position_distribution': position_dist,
+        'diagnostics': {
+            'spearman_ic': metrics.get('spearman_ic'),
+            'spearman_ic_pvalue': metrics.get('spearman_ic_pvalue'),
+            'bar_hit_rate_active_bars': metrics.get('bar_hit_rate_active_bars'),
+            'bar_hit_rate_active_bars_n': metrics.get('bar_hit_rate_active_bars_n'),
+            'position_turnover': metrics.get('position_turnover'),
+            'position_change_events': metrics.get('position_change_events'),
+            'trade_hit_rate': metrics.get('trade_hit_rate'),
+            'trade_hit_rate_n': metrics.get('trade_hit_rate_n'),
+        },
+    }
+    print(
+        f'[METRICS] rows={df.height} net_sharpe={metrics["sharpe_annualized"]:.3f} '
+        f'pnl={metrics["total_pnl"]:.2f} ic={metrics.get("spearman_ic")} '
+        f'turnover={metrics.get("position_turnover")}',
+        flush=True,
+    )
+    return _json_sanitize(report)
+
+
 def compute_ic(predictions: pl.Series, targets: pl.Series) -> dict:
     """Compute Information Coefficient using Spearman rank correlation.
 
@@ -145,16 +249,10 @@ def compute_pro_metrics(
     # --- Core PnL metrics ---
     total_pnl = float(pnl.sum())
 
-    # Proper return-on-capital: use the instrument's typical notional value.
-    # PnL is measured in log-return space (unitless). The sum of log returns
-    # approximates cumulative log return. We normalize by number of observations
-    # to get average log return, then annualize.
+    # PnL is dollar-scaled. Percent returns must be normalized by account equity.
     avg_pnl = float(pnl.mean())
     std_pnl = float(pnl.std())
     sharpe_per_bar, sharpe = _sharpe_pair(pnl, bars_per_year)
-
-    # Total return as cumulative log return (sum of log returns = log(total_return))
-    total_return_pct = float(total_pnl * 100.0)  # Convert to percentage
 
     # --- Sortino ratio ---
     downside = pnl[pnl < 0]
@@ -177,6 +275,7 @@ def compute_pro_metrics(
     drawdown_pct = equity_curve / np.maximum(running_equity_max, eps) - 1.0
     max_drawdown_pct = float(drawdown_pct.min()) if len(drawdown_pct) else 0.0
     total_return_on_equity = total_pnl / starting_equity
+    total_return_pct = total_return_on_equity * 100.0
 
     # --- Calmar ratio ---
     annualized_return = avg_pnl * bars_per_year
@@ -244,7 +343,13 @@ def compute_pro_metrics(
         bench_max = np.maximum.accumulate(bench_cum)
         benchmark_maxdd = float((bench_cum - bench_max).min())
 
-        if len(pnl) == len(bench) and np.isfinite(pnl).all() and np.isfinite(bench).all():
+        if (
+            len(pnl) == len(bench)
+            and np.isfinite(pnl).all()
+            and np.isfinite(bench).all()
+            and float(np.std(pnl)) > eps
+            and float(np.std(bench)) > eps
+        ):
             try:
                 corr_matrix = np.corrcoef(pnl, bench)
                 correlation = float(corr_matrix[0, 1])
@@ -305,12 +410,19 @@ def load_all_backtests(artifacts_root='output') -> dict:
     """
     root = Path(artifacts_root)
     results = {}
+    active_profile = str(getattr(config, 'ACTIVE_PROFILE', '') or '')
+    profile_suffix = f'_{active_profile}' if active_profile else ''
+    use_profile_filter = bool(
+        profile_suffix and list(root.glob(f'*/*_split_*{profile_suffix}/backtest_results*.parquet'))
+    )
 
     # Search for backtest_results*.parquet in split-aware directories:
     #   <root>/<market>/<year>_split_<idx>/backtest_results_hmm.parquet
     #   <root>/<market>/<year>_split_<idx>/backtest_results.parquet
     for f in sorted(root.glob('*/*_split_*/backtest_results*.parquet')):
         try:
+            if use_profile_filter and not f.parent.name.endswith(profile_suffix):
+                continue
             # Projection: read only columns we'll actually use downstream.
             # Polars will read the parquet footer to discover which of the
             # requested columns exist; missing columns are silently ignored

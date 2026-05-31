@@ -1,29 +1,58 @@
-markets:
-  ES:
+profiles:
+  cme_globex_23h: &cme_globex_23h
     timezone: America/Chicago
-
-    # CME Globex-style index futures session:
-    # Sunday 17:00 CT through Friday 16:00 CT,
-    # excluding daily 16:00-17:00 CT maintenance break.
     week_start_day: Sun
     week_start_time: "17:00"
     week_end_day: Fri
     week_end_time: "16:00"
-
     daily_break:
       start: "16:00"
       end: "17:00"
 
-    allow_empty_holiday_calendar: false
+    # Generated inside audit_L0_ohlcv_1m.py:
+    # Good Friday early close;
+    # New Year's Day and Christmas late opens;
+    # MLK, Presidents, Memorial, Juneteenth, Independence Day,
+    # Labor, Thanksgiving, day-after-Thanksgiving, Christmas Eve,
+    # New Year's Eve early-close/late-reopen halts.
+    holiday_calendar: cme_globex_us_futures
 
-    # Add known full market closures here as LOCAL exchange dates.
-    # Expected format:
-    # closed_dates:
-    #   - "2024-01-01"
+    # Manual overrides only. Keep these for exchange notices, outages,
+    # one-off closures, or product-specific deviations.
     closed_dates: []
-
-    # Add early closes manually when needed.
-    # Expected format:
-    # early_closes:
-    #   "2024-07-03": "12:00"
     early_closes: {}
+    late_opens: {}
+
+markets:
+  CL:
+    <<: *cme_globex_23h
+  ES:
+    <<: *cme_globex_23h
+  MES:
+    <<: *cme_globex_23h
+  GC:
+    <<: *cme_globex_23h
+  HG:
+    <<: *cme_globex_23h
+  NG:
+    <<: *cme_globex_23h
+  NQ:
+    <<: *cme_globex_23h
+  RTY:
+    <<: *cme_globex_23h
+  SI:
+    <<: *cme_globex_23h
+  YM:
+    <<: *cme_globex_23h
+  ZB:
+    <<: *cme_globex_23h
+  ZN:
+    <<: *cme_globex_23h
+
+  # Corn has product-specific CBOT agricultural hours. This profile is a
+  # broad Globex approximation for audit coverage; use manual overrides if
+  # exact ZC session completeness is required.
+  ZC:
+    <<: *cme_globex_23h
+    session_calendar_accuracy: approximate
+    approximate_reason: "CBOT corn has product-specific agricultural hours; cme_globex_23h is not exact."
