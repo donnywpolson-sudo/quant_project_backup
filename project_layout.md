@@ -4,7 +4,7 @@ This repo is organized by code responsibility. Runtime order is controlled by
 `run.py` and `pipeline/cli.py`; do not create parallel modules just to match a
 flowchart label.
 
-| Runtime step | Source location | Runtime artifacts |
+| Runtime step | Source location | Runtime artifacts / notes |
 |---|---|---|
 | 0. Raw data ingestion | `data/L0_ohlcv_1m/`, `data/L1_mbp1/` | local files under `data/` |
 | 1. Dataset gate | `pipeline/data_gate/` | `output/reports/data_audit/audit_manifest.json` |
@@ -13,11 +13,16 @@ flowchart label.
 | 4. Feature + target matrix | `pipeline/features/`, `pipeline/target/` | `output/cache/full_feature_matrix_*.parquet` |
 | 5. Train-only feature discovery | `pipeline/features/discovery.py` | `output/manifest_*_<profile>.json` |
 | 6. Frozen feature manifest | `pipeline/features/discovery.py` | same manifest applied to test windows |
-| 7. Walk-forward modeling | `pipeline/walkforward/` | OOS result frame |
-| 8. OOS predictions | `pipeline/walkforward/`, `pipeline/cli.py` | `oos_predictions*.parquet` |
-| 9. Execution simulation | `pipeline/execution/` | `backtest_results*.parquet` |
+| 7. Walk-forward modeling | `pipeline/walkforward/` | train window -> test-window `prediction_prob` |
+| 8. Execution simulation | `pipeline/execution/` called from `pipeline/walkforward/` | shifted signal, position, costs, PnL |
+| 9. OOS/backtest artifacts | `pipeline/walkforward/`, `pipeline/cli.py` | `oos_predictions*.parquet`, `backtest_results*.parquet` |
 | 10. Risk gates | `pipeline/risk/` | `risk_report*.json` |
 | 11. Metrics / analytics | `pipeline/analytics/` | `metrics_report*.json`, `output/aggregated/` |
+
+Optional branches:
+
+- HMM/regime filtering: `pipeline/regime/`, `pipeline/walkforward/`, enabled by config.
+- Meta-labeling: `pipeline/meta/`, currently optional/disabled by profile.
 
 ## Shared infrastructure
 
