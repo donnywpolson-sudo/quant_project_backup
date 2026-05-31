@@ -12,6 +12,7 @@ __pycache__/
 # Project Data / runtime outputs (Do not sync these)
 output/
 reports/
+audit/full_code.txt
 futures/
 data/ohlcv_1m/**/*.parquet
 data/l1_mbp1/raw_dbn/**

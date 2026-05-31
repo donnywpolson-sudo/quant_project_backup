@@ -2,6 +2,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+import glob
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -46,6 +47,18 @@ def has_changes() -> bool:
     )
     return bool(result.stdout.strip())
 
+
+def existing_git_add_paths() -> list[str]:
+    """Return only existing add pathspecs so missing optional dirs do not abort git add."""
+    paths: list[str] = []
+    for raw in GIT_ADD_PATHS:
+        if any(ch in raw for ch in "*?[]"):
+            matches = sorted(glob.glob(str(REPO_ROOT / raw)))
+            paths.extend(str(Path(m).relative_to(REPO_ROOT)).replace("\\", "/") for m in matches)
+        elif (REPO_ROOT / raw).exists():
+            paths.append(raw)
+    return paths
+
 def git_commit_and_push(commit_message=None):
     if INDEX_LOCK.exists():
         raise SystemExit(
@@ -63,7 +76,11 @@ def git_commit_and_push(commit_message=None):
     
     try:
         # 1. Stage all changes
-        run_git(["add", "-A", "--", *GIT_ADD_PATHS], timeout=600)
+        add_paths = existing_git_add_paths()
+        if not add_paths:
+            print("No existing code paths to stage.")
+            return
+        run_git(["add", "-A", "--", *add_paths], timeout=600)
 
         if not has_changes():
             print("No staged changes to commit.")
