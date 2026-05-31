@@ -38,9 +38,7 @@ markets:
     <<: *cme_globex_23h
   ZN:
     <<: *cme_globex_23h
-
   ZC:
     <<: *cme_globex_23h
     session_calendar_accuracy: approximate
     approximate_reason: "CBOT corn has product-specific agricultural hours; cme_globex_23h is not exact."
-``
