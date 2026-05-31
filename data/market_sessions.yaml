@@ -15,30 +15,39 @@ profiles:
     early_closes: {}
     late_opens: {}
 
+  cme_globex_energy_historical: &cme_globex_energy_historical
+    <<: *cme_globex_23h
+    daily_break:
+      start: "16:15"
+      end: "17:00"
+
+  cme_globex_ag_approx: &cme_globex_ag_approx
+    <<: *cme_globex_23h
+    session_calendar_accuracy: approximate
+    approximate_reason: "CBOT agricultural futures have product-specific historical sessions; broad Globex 23h profile is diagnostic only."
+
 markets:
   CL:
-    <<: *cme_globex_23h
-  ES:
-    <<: *cme_globex_23h
-  GC:
-    <<: *cme_globex_23h
-  HG:
-    <<: *cme_globex_23h
+    <<: *cme_globex_energy_historical
   NG:
+    <<: *cme_globex_energy_historical
+  ES:
     <<: *cme_globex_23h
   NQ:
     <<: *cme_globex_23h
   RTY:
     <<: *cme_globex_23h
+  YM:
+    <<: *cme_globex_23h
+  GC:
+    <<: *cme_globex_23h
   SI:
     <<: *cme_globex_23h
-  YM:
+  HG:
     <<: *cme_globex_23h
   ZB:
     <<: *cme_globex_23h
   ZN:
     <<: *cme_globex_23h
   ZC:
-    <<: *cme_globex_23h
-    session_calendar_accuracy: approximate
-    approximate_reason: "CBOT corn has product-specific agricultural hours; cme_globex_23h is not exact."
+    <<: *cme_globex_ag_approx
