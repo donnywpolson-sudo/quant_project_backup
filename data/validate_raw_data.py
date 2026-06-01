@@ -13,7 +13,17 @@ PRICE_COLS = ["open", "high", "low", "close"]
 NUM_COLS = PRICE_COLS + ["volume"]
 DAY_TO_NUM = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+
+
+def resolve_project_root() -> Path:
+    for candidate in (SCRIPT_DIR, SCRIPT_DIR.parent, Path.cwd()):
+        if (candidate / "data" / "raw").exists():
+            return candidate
+    return SCRIPT_DIR.parent
+
+
+PROJECT_ROOT = resolve_project_root()
+DEFAULT_RAW_ROOT = SCRIPT_DIR / "raw" if (SCRIPT_DIR / "raw").exists() else PROJECT_ROOT / "data" / "raw"
 STALE_PRICE_RUN_MINUTES = 240
 MAX_GAP_ROWS_PER_FILE = 1000
 TICK_SIZE = {
@@ -811,7 +821,7 @@ def write_validated_files(files: list[Path], out_root: Path, audit_out: Path) ->
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=str(PROJECT_ROOT / "data" / "raw"))
+    ap.add_argument("--root", default=str(DEFAULT_RAW_ROOT))
     ap.add_argument("--config", default=str(PROJECT_ROOT / "data" / "market_sessions.yaml"))
     ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "reports" / "L0_ohlcv_1m_audit"))
     ap.add_argument("--validated-out", default=str(PROJECT_ROOT / "data" / "validated" / "L0_ohlcv_1m"))
