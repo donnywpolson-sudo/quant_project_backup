@@ -1,2 +1,32 @@
-﻿.venv
+# Environment / secrets
+.venv/
 .env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.nbc
+*.nbi
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated model/research outputs
+output/
+outputs/
+reports/
+logs/
+full_code.txt
+
+# Generated/derived data
+data/validated/
+data/processed/
+data/cache/
+data/features/
+data/model_inputs/

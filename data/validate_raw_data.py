@@ -146,7 +146,7 @@ def audit_core_file(path: Path, market: str, year: int):
 
     wrong_year = df["ts_event"].dt.year != year
     if wrong_year.any():
-        issue(issues, "WARN", market, year, "timestamp_outside_file_year", f"ts_event UTC year != filename year {year}; verify partition convention", int(wrong_year.sum()), sample_rows(df[wrong_year]))
+        issue(issues, "FAIL", market, year, "timestamp_outside_file_year", f"ts_event UTC year != filename year {year}; UTC year partitions must not cross walkforward year boundaries", int(wrong_year.sum()), sample_rows(df[wrong_year]))
 
     checks = {
         "high_lt_low": df["high"] < df["low"],
@@ -472,7 +472,10 @@ def is_active_local_index(local_ts: pd.DatetimeIndex, cfg: dict) -> pd.Series:
 
 def audit_session_file(path: Path, market: str, year: int, cfg: dict):
     print(f"START session audit {market} {year} | {path}", flush=True)
-    df = pd.read_parquet(path, columns=["ts_event"])
+    try:
+        df = pd.read_parquet(path, columns=["ts_event"])
+    except Exception as e:
+        return ([{"severity": "FAIL", "market": market, "year": year, "check": "session_read_parquet", "path": str(path), "detail": repr(e)}], pd.DataFrame(), pd.DataFrame())
     raw_rows = len(df)
     ts_raw = pd.to_datetime(df["ts_event"], utc=True, errors="coerce").dropna()
     ts_sorted = pd.DatetimeIndex(ts_raw).sort_values()
@@ -485,11 +488,14 @@ def audit_session_file(path: Path, market: str, year: int, cfg: dict):
     local_ts = ts.tz_convert(tz)
     outside = pd.DataFrame({"ts_event": ts, "ts_local": local_ts})[~is_active_local_index(local_ts, cfg).to_numpy()]
 
-    local_start = pd.Timestamp(f"{year}-01-01 00:00", tz=tz)
-    local_end = pd.Timestamp(f"{year + 1}-01-01 00:00", tz=tz)
+    utc_start = pd.Timestamp(f"{year}-01-01 00:00", tz="UTC")
+    utc_end = pd.Timestamp(f"{year + 1}-01-01 00:00", tz="UTC")
+    local_start = utc_start.tz_convert(tz)
+    local_end = utc_end.tz_convert(tz)
     full_expected_local = pd.date_range(local_start, local_end, freq="1min", inclusive="left")
     full_expected_local = full_expected_local[is_active_local_index(full_expected_local, cfg).to_numpy()]
     full_expected_utc = full_expected_local.tz_convert("UTC")
+    full_expected_utc = full_expected_utc[(full_expected_utc >= utc_start) & (full_expected_utc < utc_end)]
 
     first_ts = ts.min().floor("min")
     last_ts = ts.max().floor("min")
@@ -646,6 +652,7 @@ def summarize_gaps(gaps: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def run_core_audit(files: list[Path], out: Path) -> tuple[int, int]:
+    out.mkdir(parents=True, exist_ok=True)
     all_issues, all_gaps, all_outliers, all_summary = [], [], [], []
     all_issues.extend(audit_year_file_coverage(files))
     bounds_by_market = {}
@@ -681,6 +688,7 @@ def run_core_audit(files: list[Path], out: Path) -> tuple[int, int]:
 
 
 def run_session_audit(files: list[Path], out: Path, config_path: Path) -> tuple[int, int]:
+    out.mkdir(parents=True, exist_ok=True)
     markets_cfg = load_session_config(config_path)["markets"]
     summaries, issues, missing_all, outside_all = [], [], [], []
     files_by_market = {}
@@ -823,7 +831,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(DEFAULT_RAW_ROOT))
     ap.add_argument("--config", default=str(PROJECT_ROOT / "data" / "market_sessions.yaml"))
-    ap.add_argument("--out", default=str(PROJECT_ROOT / "output" / "reports" / "L0_ohlcv_1m_audit"))
+    ap.add_argument("--out", default=str(PROJECT_ROOT / "reports" / "raw_data"))
     ap.add_argument("--validated-out", default=str(PROJECT_ROOT / "data" / "validated" / "L0_ohlcv_1m"))
     ap.add_argument("--markets", nargs="*", help="Optional market filter, e.g. --markets ES NQ CL")
     ap.add_argument("--years", nargs="*", type=int, help="Optional year filter, e.g. --years 2024 2025")

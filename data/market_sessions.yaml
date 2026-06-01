@@ -18,10 +18,10 @@ profiles:
 
   cme_globex_energy: &cme_globex_energy
     <<: *cme_globex_23h
-    week_start_time: "16:59"
-    week_end_time: "16:16"
+    week_start_time: "17:00"
+    week_end_time: "16:00"
     daily_break:
-      start: "16:16"
+      start: "16:00"
       end: "17:00"
     holiday_early_close_time: "13:30"
 
